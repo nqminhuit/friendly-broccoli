@@ -40,7 +40,7 @@ jobs:
         run: |
           meson setup build
           meson compile -C build
-          meson install -C build
+          # meson install -C build
           ls -lah
         shell: bash
 
