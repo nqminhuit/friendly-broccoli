@@ -6,7 +6,7 @@ on:
 jobs:
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
 
@@ -28,9 +28,3 @@ jobs:
       with:
         name: podman
         path: /usr/bin/podman
-    # - name: Commit & Push changes
-    #   uses: actions-js/push@master
-    #   with:
-    #     github_token: ${{ secrets.GITHUB_TOKEN }}
-    #     branch: master
-    #     message: publish podman
