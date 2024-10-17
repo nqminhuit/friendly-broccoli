@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ccache g++-mingw-w64 gcc-multilib meson nasm ninja-build pkg-config
+          sudo apt-get install -y libavcodec-dev libavfilter-dev libplacebo-dev libass-dev ccache g++-mingw-w64 gcc-multilib meson nasm ninja-build pkg-config
         shell: bash
 
       - name: Build with meson
