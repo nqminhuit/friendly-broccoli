@@ -1,0 +1,38 @@
+name: Build netavark for Podman
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'netavark version'
+        required: true
+        default: v1.12.2
+      ubuntu-version:
+        description: 'ubuntu version'
+        required: true
+        default: 22.04
+
+jobs:
+
+  build:
+    runs-on: ubuntu-${{inputs.ubuntu-version}}
+    steps:
+    - name: Checkout netavark repository
+      uses: actions/checkout@v4
+      with:
+        repository: containers/netavark
+        ref: ${{inputs.version}}
+        token: ${{ secrets.PUBLIC_PAT }}
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+
+    - run: make
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: netavark
+        path: bin
