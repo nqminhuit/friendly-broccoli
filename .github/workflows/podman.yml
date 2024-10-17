@@ -1,10 +1,7 @@
 name: Build Podman from source
 
 on:
-  push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
+  workflow_dispatch:
 
 jobs:
 
