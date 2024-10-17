@@ -1,0 +1,29 @@
+name: Debian base image
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'
+
+env:
+  REGISTRY: docker.io
+  DEBIAN_VERSION: 12
+  IMAGE_NAME: debian-base
+
+
+jobs:
+  build:
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Debian ${{env.DEBIAN_VERSION}} image base
+        run: podman build --no-cache --build-arg DEBIAN_VERSION=${{env.DEBIAN_VERSION}} -f containers/Containerfile-${{env.IMAGE_NAME}} -t ${{env.IMAGE_NAME}}:${{env.DEBIAN_VERSION}}
+        shell: bash
+
+      - name: Push ${{env.IMAGE_NAME}} image to ${{env.REGISTRY}}
+        run: podman push --quiet --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} ${{env.IMAGE_NAME}}:${{env.DEBIAN_VERSION}} docker://docker.io/nqminhuit/${{env.IMAGE_NAME}}:${{env.DEBIAN_VERSION}}
+        shell: bash
