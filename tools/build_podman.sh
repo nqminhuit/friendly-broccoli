@@ -49,10 +49,10 @@ rm -rf $TOOLS_DIR/runc
 test ! -d /etc/containers && sudo mkdir -p /etc/containers # test if directory existed
 test ! -f /etc/containers/registries.conf && \
     sudo curl -L -o /etc/containers/registries.conf \
-         https://src.fedoraproject.org/rpms/containers-common/raw/main/f/registries.conf
+         https://raw.githubusercontent.com/containers/image/main/registries.conf
 test ! -f /etc/containers/policy.json && \
     sudo curl -L -o /etc/containers/policy.json \
-         https://src.fedoraproject.org/rpms/containers-common/raw/main/f/default-policy.json
+         https://raw.githubusercontent.com/containers/image/main/default-policy.json
 
 git clone --depth=1 -b $PODMAN_VERSION https://github.com/containers/podman.git $TOOLS_DIR/podman
 cd $TOOLS_DIR/podman
