@@ -35,23 +35,14 @@ jobs:
           sudo apt-get install -y ccache g++-mingw-w64 gcc-multilib meson nasm ninja-build pkg-config
         shell: bash
 
-      - name: Install Meson Wraps
-        run: |
-          mkdir subprojects -p
-          meson wrap install mujs
-
-      - name: Build libraries
-        run: |
-          ./ci/build-mingw64.sh
-        env:
-          TARGET: x86_64-w64-mingw32
-
       - name: Build with meson
         id: build
         run: |
-          ./ci/build-mingw64.sh meson pack
-        env:
-          TARGET: x86_64-w64-mingw32
+          meson setup build
+          meson compile -C build
+          meson install -C build
+          ls -lah
+        shell: bash
 
       - uses: actions/upload-artifact@v4
         with:
