@@ -19,7 +19,7 @@ env:
 jobs:
   build:
 
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout mpv repository
@@ -33,16 +33,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libavcodec-dev libavfilter-dev libplacebo-dev libass-dev ccache g++-mingw-w64 gcc-multilib meson nasm ninja-build pkg-config
-        shell: bash
 
       - name: Build with meson
         id: build
         run: |
-          meson setup build
-          meson compile -C build
-          # meson install -C build
-          ls -lah
-        shell: bash
+          git clone https://github.com/mesonbuild/meson.git ~/meson
+          ~/meson/meson.py setup build
+          ~/meson/meson.py compile -C build
 
       - uses: actions/upload-artifact@v4
         with:
