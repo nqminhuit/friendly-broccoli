@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 
 TOOLS_DIR=$HOME/tools
-PODMAN_VERSION=v4.9.5
+PODMAN_VERSION=$1
 
 printf "Attempt to install Podman\n"
 

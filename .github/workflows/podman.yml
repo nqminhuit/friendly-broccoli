@@ -2,6 +2,11 @@ name: Build Podman from source
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'podman version'
+        required: true
+        default: v4.9.5
 
 jobs:
 
@@ -17,12 +22,13 @@ jobs:
         
     - name: make executable
       run: chmod +x ./tools/build_podman.sh
+
     - name: install podman
-      run: ./tools/build_podman.sh
+      run: ./tools/build_podman.sh ${{inputs.version}}
       shell: bash
-    - run: podman version
-    - run: ls -lah /usr/bin/podman
-    - run: du -sh /usr/bin/podman
+
+    - run: podman version > $GITHUB_STEP_SUMMARY
+
     - name: Upload podman
       uses: actions/upload-artifact@v4
       with:
