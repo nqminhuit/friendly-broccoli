@@ -7,11 +7,15 @@ on:
         description: 'podman version'
         required: true
         default: v4.9.5
+      ubuntu-version:
+        description: 'ubuntu version'
+        required: true
+        default: 22.04
 
 jobs:
 
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-${{inputs.ubuntu-version}}
     steps:
     - uses: actions/checkout@v4
 
