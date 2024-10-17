@@ -1,0 +1,88 @@
+name: mpv
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'mpv version'
+        required: true
+        default: v0.39.0
+      debian_version:
+        description: 'Debian version'
+        required: true
+        default: 12
+
+env:
+  REGISTRY: docker.io
+  NAME: mpv
+
+jobs:
+  build:
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout mpv repository
+        uses: actions/checkout@v4
+        with:
+          repository: mpv-player/mpv
+          ref: ${{inputs.version}}
+          token: ${{ secrets.PUBLIC_PAT }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache g++-mingw-w64 gcc-multilib meson nasm ninja-build pkg-config
+        shell: bash
+
+      - name: Install Meson Wraps
+        run: |
+          mkdir subprojects -p
+          meson wrap install mujs
+
+      - name: Build libraries
+        run: |
+          ./ci/build-mingw64.sh
+        env:
+          TARGET: x86_64-w64-mingw32
+
+      - name: Build with meson
+        id: build
+        run: |
+          ./ci/build-mingw64.sh meson pack
+        env:
+          TARGET: x86_64-w64-mingw32
+
+      - name: Print meson log
+        if: ${{ failure() && steps.build.outcome == 'failure' }}
+        run: |
+          cat ./mingw_build/meson-logs/meson-log.txt
+
+      - name: Functional test
+        run: |
+          cd artifact && wine ./mpv.com -v --no-config
+        env:
+          WINEDEBUG: '+loaddll'
+
+      - name: Run meson tests
+        id: tests
+        run: |
+          meson test -C mingw_build
+
+      - name: Print meson test log
+        if: ${{ failure() && steps.tests.outcome == 'failure' }}
+        run: |
+          cat ./mingw_build/meson-logs/testlog.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpv
+          path: mpv-git-*.zip
+
+      # - name: Build ${{env.NAME}} image
+      #   run: podman build --build-arg DEBIAN_VERSION=${{inputs.debian_version}} --build-arg VERSION=${{inputs.version}} -f containers/Containerfile-${{env.NAME}} -t ${{env.NAME}}:${{inputs.version}}
+      #   shell: bash
+
+      # - name: Push ${{env.NAME}} image to ${{env.REGISTRY}}
+      #   run: podman push --quiet --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} ${{env.NAME}}:${{inputs.version}} docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}
+      #   shell: bash
