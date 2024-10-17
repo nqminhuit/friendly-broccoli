@@ -30,7 +30,6 @@ sudo apt-get install -y make curl \
      libseccomp-dev \
      libselinux1-dev \
      libsystemd-dev \
-     containernetworking-plugins \
      pkg-config \
      uidmap \
      slirp4netns \
