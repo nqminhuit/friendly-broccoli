@@ -22,12 +22,41 @@ jobs:
     runs-on: ubuntu-${{inputs.ubuntu-version}}
     steps:
     - uses: actions/checkout@v4
+    - name: install dependencies
+      run: >-
+        sudo apt-get install -y make curl
+        btrfs-progs
+        iptables
+        libassuan-dev
+        libbtrfs-dev
+        libc6-dev
+        libdevmapper-dev
+        libglib2.0-dev
+        libgpgme-dev
+        libgpg-error-dev
+        libprotobuf-dev
+        libprotobuf-c-dev
+        libseccomp-dev
+        libselinux1-dev
+        libsystemd-dev
+        pkg-config
+        uidmap
+        slirp4netns
+        catatonit
+        fuse-overlayfs
+        libapparmor-dev
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.23'
+        cache-dependency-path: "**/*.sum"
     - name: make executable
-      run: chmod +x ./tools/build_podman.sh
+      run: |
+        chmod +x ./tools/build_podman_dependencies.sh
+        chmod +x ./tools/build_podman.sh
+    - name: compile podman dependencies
+      run: ./tools/build_podman_dependencies.sh
+      shell: bash
     - name: install podman
       run: ./tools/build_podman.sh ${{inputs.version}}
       shell: bash
@@ -36,7 +65,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: podman
-        path: /usr/bin/podman
+        path: $HOME/tools/podman
 
   compile_netavark:
     name: Build netavark from source
