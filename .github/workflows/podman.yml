@@ -17,13 +17,56 @@ on:
         default: 22.04
 
 jobs:
-  compile_podman:
-    name: Build podman from source
+  compile_conmon:
+    name: Compile conmon
     runs-on: ubuntu-${{inputs.ubuntu-version}}
     steps:
     - uses: actions/checkout@v4
+      with:
+        repository: containers/conmon
+        token: ${{ secrets.PUBLIC_PAT }}
+    - run: go version
+    - name: compile conmon
+      run: GOCACHE=$HOME/.go; make; sudo make podman
+    - name: Upload conmon
+      uses: actions/upload-artifact@v4
+      with:
+        name: conmon
+        path: /usr/bin/conmon
+
+  compile_runc:
+    name: Compile runc
+    runs-on: ubuntu-${{inputs.ubuntu-version}}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: opencontainers/runc
+        token: ${{ secrets.PUBLIC_PAT }}
+    - name: install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y make libseccomp-dev
+    - run: go version
+    - name: compile runc
+      run: make BUILDTAGS="selinux seccomp"; sudo cp runc /usr/bin/runc
+    - name: Upload conmon
+      uses: actions/upload-artifact@v4
+      with:
+        name: runc
+        path: /usr/bin/runc
+
+  compile_podman:
+    name: Compile podman from source
+    runs-on: ubuntu-${{inputs.ubuntu-version}}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: containers/podman
+        token: ${{ secrets.PUBLIC_PAT }}
+        ref: ${{inputs.version}}
     - name: install dependencies
       run: >-
+        sudo apt-get update &&
         sudo apt-get install -y make curl
         btrfs-progs
         iptables
@@ -45,30 +88,19 @@ jobs:
         catatonit
         fuse-overlayfs
         libapparmor-dev
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.23'
-        cache-dependency-path: "**/*.sum"
-    - name: make executable
-      run: |
-        chmod +x ./tools/build_podman_dependencies.sh
-        chmod +x ./tools/build_podman.sh
+    - run: go version
     - name: compile podman dependencies
-      run: ./tools/build_podman_dependencies.sh
-      shell: bash
-    - name: install podman
-      run: ./tools/build_podman.sh ${{inputs.version}}
+      run: make BUILDTAGS="selinux seccomp" PREFIX=/usr; sudo make install PREFIX=/usr
       shell: bash
     - run: podman version > $GITHUB_STEP_SUMMARY
     - name: Upload podman
       uses: actions/upload-artifact@v4
       with:
         name: podman
-        path: $HOME/tools/podman
+        path: /usr/bin/podman
 
   compile_netavark:
-    name: Build netavark from source
+    name: Compile netavark from source
     runs-on: ubuntu-${{inputs.ubuntu-version}}
     steps:
     - name: Checkout netavark repository
@@ -77,10 +109,11 @@ jobs:
         repository: containers/netavark
         ref: ${{inputs.netavark_version}}
         token: ${{ secrets.PUBLIC_PAT }}
-    - name: Install dependencies
+    - name: install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y protobuf-compiler
+        sudo apt-get install -y make protobuf-compiler
+    - run: rustc --version
     - run: make
     - name: Upload artifact
       uses: actions/upload-artifact@v4
