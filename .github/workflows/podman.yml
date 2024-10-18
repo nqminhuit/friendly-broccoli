@@ -7,34 +7,54 @@ on:
         description: 'podman version'
         required: true
         default: v4.9.5
+      netavark_version:
+        description: 'netavark version'
+        required: true
+        default: v1.12.2
       ubuntu-version:
         description: 'ubuntu version'
         required: true
         default: 22.04
 
 jobs:
-
-  build:
+  compile_podman:
+    name: Build podman from source
     runs-on: ubuntu-${{inputs.ubuntu-version}}
     steps:
     - uses: actions/checkout@v4
-
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
         go-version: '1.21'
-        
     - name: make executable
       run: chmod +x ./tools/build_podman.sh
-
     - name: install podman
       run: ./tools/build_podman.sh ${{inputs.version}}
       shell: bash
-
     - run: podman version > $GITHUB_STEP_SUMMARY
-
     - name: Upload podman
       uses: actions/upload-artifact@v4
       with:
         name: podman
         path: /usr/bin/podman
+
+  compile_netavark:
+    name: Build netavark from source
+    runs-on: ubuntu-${{inputs.ubuntu-version}}
+    steps:
+    - name: Checkout netavark repository
+      uses: actions/checkout@v4
+      with:
+        repository: containers/netavark
+        ref: ${{inputs.netavark_version}}
+        token: ${{ secrets.PUBLIC_PAT }}
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+    - run: make
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: netavark
+        path: bin
