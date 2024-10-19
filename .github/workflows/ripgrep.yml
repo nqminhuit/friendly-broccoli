@@ -1,0 +1,31 @@
+name: ripgrep
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'rg version'
+        required: true
+        default: 14.1.1
+      ubuntu-version:
+        description: 'ubuntu version'
+        required: true
+        default: 22.04
+
+jobs:
+  build:
+    runs-on: ubuntu-${{inputs.ubuntu-version}}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          repository: BurntSushi/ripgrep
+          token: ${{ secrets.PUBLIC_PAT }}
+          ref: ${{inputs.version}}
+      - name: compile ripgrep
+        run: cargo build --release --quiet --features 'pcre2'
+      - run: ./target/release/rg --version > $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rg
+          path: target/release/rg
