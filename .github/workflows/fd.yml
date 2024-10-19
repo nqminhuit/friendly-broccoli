@@ -1,0 +1,31 @@
+name: fd-find
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'fd version'
+        required: true
+        default: v10.2.0
+      ubuntu-version:
+        description: 'ubuntu version'
+        required: true
+        default: 22.04
+
+jobs:
+  build:
+    runs-on: ubuntu-${{inputs.ubuntu-version}}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          repository: sharkdp/fd
+          token: ${{ secrets.PUBLIC_PAT }}
+          ref: ${{inputs.version}}
+      - name: compile ripgrep
+        run: cargo build --release --quiet
+      - run: ./target/release/fd --version > $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fd
+          path: target/release/fd
