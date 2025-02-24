@@ -1,0 +1,10 @@
+ARG DEBIAN_VERSION
+FROM docker.io/nqminhuit/debian-base:$DEBIAN_VERSION
+ARG INSTALL_PATH
+ARG VERSION
+RUN git clone --depth 1 -b $VERSION https://github.com/FFmpeg/FFmpeg.git
+RUN nala update > /dev/null && nala install -y libsdl2-dev > /dev/null
+WORKDIR /FFmpeg
+RUN mkdir -p $INSTALL_PATH
+RUN ./configure --prefix=$INSTALL_PATH
+RUN make -j 8; make install
