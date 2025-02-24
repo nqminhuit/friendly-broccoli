@@ -6,7 +6,7 @@ on:
       version:
         description: 'tmux version'
         required: true
-        default: 3.4
+        default: 3.5a
       debian_version:
         description: 'Debian version'
         required: true
