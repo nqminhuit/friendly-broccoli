@@ -1,4 +1,4 @@
-name: ripgrep
+name: ripgrep-binary
 
 on:
   workflow_dispatch:

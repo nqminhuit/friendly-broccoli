@@ -1,0 +1,6 @@
+ARG DEBIAN_VERSION
+FROM docker.io/nqminhuit/debian-base:$DEBIAN_VERSION
+ARG VERSION
+RUN git clone --depth=1 -b $VERSION https://github.com/BurntSushi/ripgrep.git
+WORKDIR /ripgrep
+RUN cargo build --release --quiet --features 'pcre2'
