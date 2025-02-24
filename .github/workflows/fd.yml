@@ -1,4 +1,4 @@
-name: fd-find
+name: fd-find-binary
 
 on:
   workflow_dispatch:
