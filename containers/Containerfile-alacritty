@@ -1,0 +1,6 @@
+ARG DEBIAN_VERSION
+FROM docker.io/nqminhuit/debian-base:$DEBIAN_VERSION
+ARG VERSION
+RUN git clone --depth=1 -b $VERSION https://github.com/alacritty/alacritty.git
+WORKDIR /alacritty
+RUN cargo build --release --quiet
