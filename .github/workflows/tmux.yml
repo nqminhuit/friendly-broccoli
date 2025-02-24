@@ -1,0 +1,38 @@
+name: tmux
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'tmux version'
+        required: true
+        default: 3.4
+      debian_version:
+        description: 'Debian version'
+        required: true
+        default: 12
+
+env:
+  REGISTRY: docker.io
+  NAME: tmux
+
+jobs:
+  build:
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare environment
+        run: sudo apt-get install -y libevent-core-2.1-7 > /dev/null
+        shell: bash
+
+      - name: Build ${{env.NAME}} image
+        run: podman build --build-arg DEBIAN_VERSION=${{inputs.debian_version}} --build-arg VERSION=${{inputs.version}} -f containers/Containerfile-${{env.NAME}} -t ${{env.NAME}}:${{inputs.version}}
+        shell: bash
+
+      - name: Push ${{env.NAME}} image to ${{env.REGISTRY}}
+        run: podman push --quiet --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} ${{env.NAME}}:${{inputs.version}} docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}
+        shell: bash
