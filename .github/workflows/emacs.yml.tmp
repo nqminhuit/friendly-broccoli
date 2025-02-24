@@ -1,0 +1,129 @@
+name: Emacs
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Emacs version'
+        required: true
+        default: 30.1
+      debian_version:
+        description: 'Debian version'
+        required: true
+        default: 12
+      tree_sitter_version:
+        description: 'Tree sitter version'
+        required: true
+        default: v0.24.3
+      build_doom:
+        description: 'Build Doom Emacs?'
+        required: false
+
+env:
+  REGISTRY: docker.io
+  NAME: emacs
+  EPATH: ${{secrets.TOOLS_DIR}}/emacs
+  DOOM_IMG_NAME: doom-emacs
+
+jobs:
+  build:
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare environemnt
+        run: |
+          sudo apt-get update && sudo apt-get install -y libgccjit0 libgif7 libwebpdemux2 libgtk-3-0 libjpeg62 librsvg2-2 > /dev/null
+          mkdir -p ${{env.EPATH}}
+        shell: bash
+
+      - name: Build Emacs image
+        run: podman build --build-arg DEBIAN_VERSION=${{inputs.debian_version}} --build-arg VERSION=${{inputs.version}} --build-arg INSTALL_PATH=${{env.EPATH}} --build-arg TREE_SITTER_VERSION=${{inputs.tree_sitter_version}} -f containers/Containerfile-${{env.NAME}} -t ${{env.NAME}}:${{inputs.version}}
+        shell: bash
+
+      - name: Push Emacs image to ${{env.REGISTRY}}
+        run: podman push --quiet --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} ${{env.NAME}}:${{inputs.version}} docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}
+        shell: bash
+
+      - name: Install Emacs
+        run: |
+          podman create --name dkemacs_ docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}
+          podman cp dkemacs_:${{secrets.TOOLS_DIR}}/emacs/. ${{env.EPATH}}
+          sudo ln -sfn ${{env.EPATH}}/bin/emacs /usr/bin
+          sudo ln -sfn ${{env.EPATH}}/bin/emacsclient /usr/bin
+
+          if [[ -f /usr/lib/x86_64-linux-gnu/libtiff.so.5 ]] && [[ ! -f /usr/lib/x86_64-linux-gnu/libtiff.so.6 ]]; then
+              sudo ln -s /usr/lib/x86_64-linux-gnu/libtiff.so.5 /usr/lib/x86_64-linux-gnu/libtiff.so.6
+          elif [[ -f /usr/lib/x86_64-linux-gnu/libtiff.so.6 ]] && [[ ! -f /usr/lib/x86_64-linux-gnu/libtiff.so.5 ]]; then
+              sudo ln -s /usr/lib/x86_64-linux-gnu/libtiff.so.6 /usr/lib/x86_64-linux-gnu/libtiff.so.5
+          fi
+
+          git clone --depth 1 --branch ${{inputs.tree_sitter_version}} https://github.com/tree-sitter/tree-sitter.git ${{secrets.TOOLS_DIR}}/tree-sitter
+          (
+              cd ${{secrets.TOOLS_DIR}}/tree-sitter
+              make
+              sudo make install
+          )
+          export LD_LIBRARY_PATH=/usr/local/lib/
+          emacs --version || return 1
+          echo "LD_LIBRARY_PATH=/usr/local/lib/" >> "$GITHUB_ENV"
+          printf "\t$(emacs --version | head -n 1) built successful\n"
+        shell: bash
+
+      - name: Build Doom image
+        if: inputs.build_doom == 'yes'
+        run: |
+          emacs --version || return 1
+          EMACS_DIR=$HOME/.config/.emacs.d
+          echo "EMACS_DIR=$HOME/.config/.emacs.d" >> "$GITHUB_ENV"
+          git clone --depth 1 --single-branch https://github.com/doomemacs/doomemacs $EMACS_DIR
+          PATH=$PATH:$EMACS_DIR/bin
+          PATH=$PATH:$TOOLS_DIR/emacs/bin
+          export LSP_USE_PLISTS=true
+          echo "LSP_USE_PLISTS=true" >> "$GITHUB_ENV"
+
+          m_doom_dir=$HOME/.doom.d
+          mkdir -p $m_doom_dir
+          DOTFILES_DIR=configs/dotfiles
+          cp -r $DOTFILES_DIR/emacs/doom-emacs/config.el $m_doom_dir/config.el
+          cp -r $DOTFILES_DIR/emacs/doom-emacs/init.el $m_doom_dir/init.el
+          cp -r $DOTFILES_DIR/emacs/doom-emacs/packages.el $m_doom_dir/packages.el
+          cp -r $DOTFILES_DIR/emacs/doom-emacs/snippets $m_doom_dir/snippets
+          cp -r $DOTFILES_DIR/emacs/doom-emacs/modules $m_doom_dir/
+
+          podman build --build-arg DEBIAN_VERSION=${{inputs.debian_version}} --build-arg VERSION=${{inputs.version}} --build-arg INSTALL_PATH=${{secrets.TOOLS_DIR}}/emacs -f containers/Containerfile-${{env.DOOM_IMG_NAME}} -t ${{env.DOOM_IMG_NAME}}:${{inputs.version}} $DOTFILES_DIR/emacs/doom-emacs/
+        shell: bash
+
+      - name: Push Doom Emacs image to ${{env.REGISTRY}}
+        if: inputs.build_doom == 'yes'
+        run: podman push --quiet --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} ${{env.DOOM_IMG_NAME}}:${{inputs.version}} docker://docker.io/nqminhuit/${{env.DOOM_IMG_NAME}}:${{inputs.version}}
+        shell: bash
+
+      - name: Install Doom Emacs
+        if: inputs.build_doom == 'yes'
+        run: |
+          podman create --name ctdoomemacs_ docker.io/nqminhuit/${{env.DOOM_IMG_NAME}}:${{inputs.version}}
+          mkdir -p $EMACS_DIR/.local/
+          podman cp ctdoomemacs_:/.emacs.d/.local/straight $EMACS_DIR/.local
+          podman cp ctdoomemacs_:/.emacs.d/.local/etc $EMACS_DIR/.local
+          podman cp ctdoomemacs_:/.emacs.d/.local/cache $EMACS_DIR/.local
+          podman rm -f ctdoomemacs_
+          rm -rf $EMACS_DIR/.local/straight/build-*-cache.el
+
+          echo "Executing doom-emacs image...."
+          $EMACS_DIR/bin/doom env
+          $EMACS_DIR/bin/doom install
+          mkdir -p ${{secrets.TOOLS_DIR}}/java-libs/
+          wget https://repo1.maven.org/maven2/org/projectlombok/lombok/1.18.34/lombok-1.18.34.jar -P ${{secrets.TOOLS_DIR}}/java-libs
+          echo "Done executing doom-emacs image...."
+
+          $EMACS_DIR/bin/doom version
+          echo "doom doctor result:"
+          $EMACS_DIR/bin/doom doctor | tee $GITHUB_STEP_SUMMARY
+          echo "\ndoom info result:"
+          $EMACS_DIR/bin/doom info | tee -a $GITHUB_STEP_SUMMARY
+          printf "\tDoom Emacs setup finished\n"
+        shell: bash
