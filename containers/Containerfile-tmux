@@ -1,6 +1,7 @@
 ARG DEBIAN_VERSION
 FROM docker.io/nqminhuit/debian-base:$DEBIAN_VERSION
 ARG VERSION
+RUN apt-get update && apt-get install -y libevent-core-2.1-7
 RUN git clone --depth 1 -b $VERSION https://github.com/tmux/tmux.git
 WORKDIR /tmux
 RUN ./autogen.sh && bash configure && make;
