@@ -1,0 +1,70 @@
+name: Emacs
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Emacs version'
+        required: true
+        default: 30.2
+      debian_version:
+        description: 'Debian version'
+        required: true
+        default: 12
+      tree_sitter_version:
+        description: 'Tree sitter version'
+        required: true
+        default: v0.24.3
+
+env:
+  REGISTRY: docker.io
+  NAME: emacs
+  EPATH: ${{secrets.TOOLS_DIR}}/emacs
+
+jobs:
+  build:
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare environemnt
+        run: |
+          sudo apt-get update && sudo apt-get install -y libgccjit0 libgif7 libwebpdemux2 libgtk-3-0 libjpeg62 librsvg2-2
+          mkdir -p ${{env.EPATH}}
+        shell: bash
+
+      - name: Build Emacs image
+        run: podman build --build-arg DEBIAN_VERSION=${{inputs.debian_version}} --build-arg VERSION=${{inputs.version}} --build-arg INSTALL_PATH=${{env.EPATH}} --build-arg TREE_SITTER_VERSION=${{inputs.tree_sitter_version}} -f containers/Containerfile-${{env.NAME}} -t ${{env.NAME}}:${{inputs.version}}
+        shell: bash
+
+      - name: Push Emacs image to ${{env.REGISTRY}}
+        run: podman push --quiet --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} ${{env.NAME}}:${{inputs.version}} docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}
+        shell: bash
+
+      - name: Install Emacs
+        run: |
+          podman create --name dkemacs_ docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}
+          podman cp dkemacs_:${{secrets.TOOLS_DIR}}/emacs/. ${{env.EPATH}}
+          sudo ln -sfn ${{env.EPATH}}/bin/emacs /usr/bin
+          sudo ln -sfn ${{env.EPATH}}/bin/emacsclient /usr/bin
+
+          if [[ -f /usr/lib/x86_64-linux-gnu/libtiff.so.5 ]] && [[ ! -f /usr/lib/x86_64-linux-gnu/libtiff.so.6 ]]; then
+              sudo ln -s /usr/lib/x86_64-linux-gnu/libtiff.so.5 /usr/lib/x86_64-linux-gnu/libtiff.so.6
+          elif [[ -f /usr/lib/x86_64-linux-gnu/libtiff.so.6 ]] && [[ ! -f /usr/lib/x86_64-linux-gnu/libtiff.so.5 ]]; then
+              sudo ln -s /usr/lib/x86_64-linux-gnu/libtiff.so.6 /usr/lib/x86_64-linux-gnu/libtiff.so.5
+          fi
+
+          git clone --depth 1 --branch ${{inputs.tree_sitter_version}} https://github.com/tree-sitter/tree-sitter.git ${{secrets.TOOLS_DIR}}/tree-sitter
+          (
+              cd ${{secrets.TOOLS_DIR}}/tree-sitter
+              make
+              sudo make install
+          )
+          export LD_LIBRARY_PATH=/usr/local/lib/
+          emacs --version || return 1
+          echo "LD_LIBRARY_PATH=/usr/local/lib/" >> "$GITHUB_ENV"
+          printf "\t$(emacs --version | head -n 1) built successful\n"
+        shell: bash
