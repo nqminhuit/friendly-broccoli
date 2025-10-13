@@ -29,8 +29,3 @@ RUN mkdir -p $INSTALL_PATH && \
     --with-x11 \
     --prefix=$INSTALL_PATH && \
     make -j$(nproc) && make install
-
-# WORKDIR /
-# RUN rm -rf emacs-$VERSION.tar.gz
-# RUN rm -rf tree-sitter
-# RUN rm -rf emacs-emacs-$VERSION
