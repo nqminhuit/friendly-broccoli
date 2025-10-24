@@ -6,7 +6,7 @@ on:
       version:
         description: 'ripgrep version'
         required: true
-        default: 15.0.0
+        default: 15.1.0
       debian_version:
         description: 'Debian version'
         required: true
