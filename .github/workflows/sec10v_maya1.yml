@@ -1,0 +1,85 @@
+name: sec10v-maya1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-external:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout external repository
+        uses: actions/checkout@v4
+        with:
+          repository: nqminhuit/sec10v
+          path: sec10v
+          ref: maya1
+          token: ${{ secrets.SEC10V_ACCESS_TOKEN }}
+
+      # Move to the external repo directory and build
+      - name: Build 
+        working-directory: sec10v
+        run: |
+          echo "Files in external-repo:"
+          ls -la
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/setup.py', '**/pyproject.toml', '**/poetry.lock', '**/Pipfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install transformers snac soundfile numpy accelerate
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Run TTS script
+        working-directory: sec10v
+        env:
+          MODEL_PATH: maya1-GGUF/maya1.Q4_K_M.gguf
+        run: python maya1_offline_cpu_tts.py
+
+      - name: Rename output to custom name
+        working-directory: sec10v
+        run: mv maya_voice.wav "out/maya_voice.wav"
+
+      - name: List generated files
+        working-directory: sec10v
+        run: |
+          echo "Generated files in out/:"
+          ls -lah out/
+
+      - name: Upload audio artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: maya1
+          path: |
+            sec10v/out/*
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Show audio info
+        working-directory: sec10v
+        run: |
+          for file in out/*; do
+            if [ -f "$file" ]; then
+              echo "=== Audio info for $file ==="
+              ffprobe -v error -show_entries stream=codec_name,channels,sample_rate,bit_rate,duration -of default=noprint_wrappers=1 "$file"
+            fi
+          done
