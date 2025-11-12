@@ -1,0 +1,29 @@
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-external:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout external repository
+        uses: actions/checkout@v4
+        with:
+          repository: nqminhuit/sec10v
+          path: sec10v
+          ref: master
+          token: ${{ secrets.SEC10V_ACCESS_TOKEN }}
+
+      # Move to the external repo directory and build
+      - name: Build 
+        working-directory: sec10v
+        run: |
+          echo "Files in external-repo:"
+          ls -la
