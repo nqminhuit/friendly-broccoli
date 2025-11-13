@@ -115,7 +115,7 @@ jobs:
             sec10v/out/*.mp3
             sec10v/out/*.srt
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
 
       - name: Show audio info
         working-directory: sec10v
