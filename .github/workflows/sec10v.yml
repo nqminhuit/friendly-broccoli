@@ -7,11 +7,6 @@ on:
         description: 'Text to synthesize'
         required: true
         type: string
-      audio_rate:
-        description: 'Audio playback rate (0.9 = 10% slower, 1.0 = normal)'
-        required: false
-        type: string
-        default: '0.9'
       output_name:
         description: 'Output filename (without extension)'
         required: true
@@ -74,7 +69,7 @@ jobs:
       - name: Verify voice prompt exists
         working-directory: sec10v
         run: |
-          if [ ! -f "resources/voices/_live/maddpren_cut_magician_12_maugham_128kb.mp3" ]; then
+          if [ ! -f "resources/voices/_live/maddpren_enhanced_slowed_cut_magician_12_maugham_128kb.wav" ]; then
             echo "❌ Error: Voice prompt file not found!"
             exit 1
           fi
@@ -86,10 +81,7 @@ jobs:
 
       - name: Run TTS generation
         working-directory: sec10v
-        run: |
-          python scripts/audiobook.py \
-            --tts "${{ github.event.inputs.tts_text }}" \
-            --audio-rate "${{ github.event.inputs.audio_rate }}"
+        run: python scripts/audiobook.py --tts "${{ github.event.inputs.tts_text }}" 
 
       - name: Rename output to custom name
         working-directory: sec10v
