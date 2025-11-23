@@ -74,7 +74,7 @@ jobs:
       - name: Verify voice prompt exists
         working-directory: sec10v
         run: |
-          if [ ! -f "resources/voices/_live/maddpren_enhanced_slowed_cut_magician_12_maugham_128kb.wav" ]; then
+          if [ ! -f "resources/voices/_live/maddpren_enhanced_cut_magician_12_maugham_128kb.wav" ]; then
             echo "❌ Error: Voice prompt file not found!"
             exit 1
           fi
