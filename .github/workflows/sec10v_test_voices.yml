@@ -1,0 +1,115 @@
+name: sec10v_test_voices
+
+on:
+  workflow_dispatch:
+    inputs:
+      tts_text:
+        description: 'Text to synthesize'
+        required: true
+        type: string
+      voice:
+        description: 'Voice to test'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-external:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -y -o Dir::Etc::sourcelist="sources.list" \
+              -o Dir::Etc::sourceparts="-" \
+              -o APT::Get::List-Cleanup="0"
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Checkout external repository
+        uses: actions/checkout@v4
+        with:
+          repository: nqminhuit/sec10v
+          path: sec10v
+          ref: master
+          token: ${{ secrets.SEC10V_ACCESS_TOKEN }}
+
+      # Move to the external repo directory and build
+      - name: Build 
+        working-directory: sec10v
+        run: |
+          echo "Files in external-repo:"
+          ls -la
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements_no_cuda.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Python dependencies
+        working-directory: sec10v
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements_no_cuda.txt
+
+      - name: Create output directory
+        working-directory: sec10v
+        run: mkdir -p out
+
+      - name: Run TTS generation
+        working-directory: sec10v
+        run: |
+          python scripts/audiobook.py \
+            --tts "${{ github.event.inputs.tts_text }}" \
+            --voice-in-result \
+            --voice "${{ github.event.inputs.voice }}"
+
+      - name: Rename output to custom name
+        working-directory: sec10v
+        run: |
+          if [ -f "out/audiobook.mp3" ]; then
+            mv out/audiobook.mp3 "out/${{ github.event.inputs.voice }}.mp3"
+            if [ -f "out/audiobook.srt" ]; then
+              mv out/audiobook.srt "out/${{ github.event.inputs.voice }}.srt"
+            fi
+          fi
+
+      - name: List generated files
+        working-directory: sec10v
+        run: |
+          echo "Generated files in out/:"
+          ls -lah out/
+
+      - name: Upload audio artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-audio-${{ github.event.inputs.voice }}
+          path: |
+            sec10v/out/*.mp3
+            sec10v/out/*.srt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Show audio info
+        working-directory: sec10v
+        run: |
+          for file in out/*.mp3; do
+            if [ -f "$file" ]; then
+              echo "=== Audio info for $file ==="
+              ffprobe -v error -show_entries stream=codec_name,channels,sample_rate,bit_rate,duration -of default=noprint_wrappers=1 "$file"
+            fi
+          done
