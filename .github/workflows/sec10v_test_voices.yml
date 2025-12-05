@@ -19,6 +19,12 @@ jobs:
   build-external:
     runs-on: ubuntu-latest
     steps:
+      - name: Sanitize voice input
+        run: |
+          OUTPUT="${{ github.event.inputs.voice }}"
+          OUTPUT="${OUTPUT//\//_}"
+          echo "OUTPUT_VOICE=$OUTPUT" >> "$GITHUB_ENV"
+
       - name: Checkout this repo
         uses: actions/checkout@v4
         with:
@@ -82,9 +88,9 @@ jobs:
         working-directory: sec10v
         run: |
           if [ -f "out/audiobook.mp3" ]; then
-            mv out/audiobook.mp3 "out/${{ github.event.inputs.voice }}.mp3"
+            mv out/audiobook.mp3 "out/${{ env.OUTPUT_VOICE }}.mp3"
             if [ -f "out/audiobook.srt" ]; then
-              mv out/audiobook.srt "out/${{ github.event.inputs.voice }}.srt"
+              mv out/audiobook.srt "out/${{ env.OUTPUT_VOICE }}.srt"
             fi
           fi
 
@@ -97,7 +103,7 @@ jobs:
       - name: Upload audio artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: tts-audio-${{ github.event.inputs.voice }}
+          name: tts-audio-${{ env.OUTPUT_VOICE }}
           path: |
             sec10v/out/*.mp3
             sec10v/out/*.srt
