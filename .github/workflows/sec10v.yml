@@ -11,7 +11,7 @@ on:
         description: 'Audio playback rate (0.9 = 10% slower, 1.0 = normal)'
         required: false
         type: string
-        default: '0.9'
+        default: '1.0'
       output_name:
         description: 'Output filename (without extension)'
         required: true
