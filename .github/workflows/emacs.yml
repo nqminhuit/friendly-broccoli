@@ -14,7 +14,7 @@ on:
       tree_sitter_version:
         description: 'Tree sitter version'
         required: true
-        default: v0.26.5
+        default: v0.25.10
 
 env:
   REGISTRY: docker.io
