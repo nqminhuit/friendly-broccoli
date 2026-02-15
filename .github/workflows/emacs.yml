@@ -7,10 +7,10 @@ on:
         description: 'Emacs version'
         required: true
         default: 30.2
-      debian_version:
-        description: 'Debian version'
+      osbase_version:
+        description: 'OS image base version'
         required: true
-        default: 12
+        default: 'ubuntu-base:25.10'
       tree_sitter_version:
         description: 'Tree sitter version'
         required: true
@@ -37,7 +37,7 @@ jobs:
         shell: bash
 
       - name: Build Emacs image
-        run: podman build --build-arg DEBIAN_VERSION=${{inputs.debian_version}} --build-arg VERSION=${{inputs.version}} --build-arg INSTALL_PATH=${{env.EPATH}} --build-arg TREE_SITTER_VERSION=${{inputs.tree_sitter_version}} -f containers/Containerfile-${{env.NAME}} -t ${{env.NAME}}:${{inputs.version}}
+        run: podman build --build-arg OSBASE_VERSION=${{inputs.osbase_version}} --build-arg VERSION=${{inputs.version}} --build-arg INSTALL_PATH=${{env.EPATH}} --build-arg TREE_SITTER_VERSION=${{inputs.tree_sitter_version}} -f containers/Containerfile-${{env.NAME}} -t ${{env.NAME}}:${{inputs.version}}
         shell: bash
 
       - name: Push Emacs image to ${{env.REGISTRY}}
