@@ -1,0 +1,29 @@
+name: Ubuntu base image
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'
+
+env:
+  REGISTRY: docker.io
+  UBUNTU_VERSION: "25.10"
+  IMAGE_NAME: ubuntu-base
+
+
+jobs:
+  build:
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Ubuntu ${{env.UBUNTU_VERSION}} image base
+        run: podman build --no-cache --build-arg UBUNTU_VERSION=${{env.UBUNTU_VERSION}} -f containers/Containerfile-${{env.IMAGE_NAME}} -t ${{env.IMAGE_NAME}}:${{env.UBUNTU_VERSION}}
+        shell: bash
+
+      - name: Push ${{env.IMAGE_NAME}} image to ${{env.REGISTRY}}
+        run: podman push --quiet --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} ${{env.IMAGE_NAME}}:${{env.UBUNTU_VERSION}} docker://docker.io/nqminhuit/${{env.IMAGE_NAME}}:${{env.UBUNTU_VERSION}}
+        shell: bash
