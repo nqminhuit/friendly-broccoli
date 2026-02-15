@@ -32,7 +32,7 @@ jobs:
 
       - name: Prepare environemnt
         run: |
-          sudo apt-get update && sudo apt-get install -y libgccjit0 libgif7 libwebpdemux2 libgtk-3-0 libjpeg62 librsvg2-2 libwebp7
+          sudo apt-get update && sudo apt-get install -y libgccjit0 libgif7 libwebpdemux2 libgtk-3-0 libjpeg62 librsvg2-2 libwebpdecoder3 libxml2-16
           mkdir -p ${{env.EPATH}}
         shell: bash
 
