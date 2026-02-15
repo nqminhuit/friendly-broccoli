@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  DEBIAN_VERSION: 12
+  DEBIAN_VERSION: 13
   IMAGE_NAME: debian-base
 
 
