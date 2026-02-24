@@ -75,7 +75,7 @@ jobs:
             podman push \
                 --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} \
                 ${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}} \
-                docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}}
+                docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}-${{inputs.osbase_version}}-${{inputs.window_system}}
 
       - name: Install Emacs
         run: |
