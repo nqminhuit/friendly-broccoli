@@ -1,9 +1,7 @@
 ARG UBUNTU_VERSION
 FROM docker.io/ubuntu:$UBUNTU_VERSION
 
-RUN apt-get update > /dev/null && apt-get install nala -y > /dev/null
-RUN yes | nala fetch --fetches 3 --auto
-RUN nala update > /dev/null && nala install -y curl git-core gnupg locales wget \
+RUN apt-get update && apt-get install -y curl git-core gnupg locales wget \
     build-essential libncurses5-dev libncursesw5-dev librsvg2-dev \
     automake libevent-dev ncurses-dev bison cmake libxml2-dev \
     texinfo libx11-dev libxpm-dev libjpeg-dev libpng-dev libgif-dev libtiff-dev \
@@ -11,8 +9,8 @@ RUN nala update > /dev/null && nala install -y curl git-core gnupg locales wget 
     libgccjit0 libgccjit-14-dev gcc-11 g++-11 libgnutls28-dev \
     libgtk-3-dev libncurses-dev autoconf pkg-config libfreetype6-dev \
     libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev python3 \
-    libcairo2-dev libjansson-dev libtree-sitter-dev libwebp-dev mailutils \
-    && apt-get clean && rm -rf /var/lib/apt/lists/* > /dev/null
+    libcairo2-dev libjansson-dev libtree-sitter-dev libwebp-dev mailutils && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --no-modify-path -y;
 ENV PATH=/root/.cargo/bin:"$PATH"
