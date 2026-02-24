@@ -1,0 +1,21 @@
+ARG OSBASE_VERSION
+FROM docker.io/nqminhuit/$OSBASE_VERSION
+ARG INSTALL_PATH
+ARG VERSION
+ARG TREE_SITTER_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CC=gcc-14
+ENV LD_LIBRARY_PATH=/usr/local/lib/
+
+RUN git clone --depth 1 --branch $TREE_SITTER_VERSION https://github.com/tree-sitter/tree-sitter.git && \
+    git clone --depth 1 --branch emacs-$VERSION https://github.com/emacs-mirror/emacs.git
+
+WORKDIR /tree-sitter
+RUN make -j$(nproc) && make install && make clean
+
+WORKDIR /emacs
+COPY emacs/emacs.desktop etc/emacs.desktop
+COPY emacs/emacs.png etc/images/icons/hicolor/{16x16,24x24,32x32,48x48,128x128}/apps/emacs.png
+COPY emacs/emacs.svg etc/images/icons/hicolor/scalable/apps/emacs.svg
+COPY emacs/emacs.ico etc/images/icons/hicolor/scalable/apps/emacs.ico
