@@ -11,11 +11,11 @@ on:
       osbase_version:
         description: OS image base version
         required: true
-        default: ubuntu-base:25.10
+        default: debian-base:13
         type: choice
         options:
-          - ubuntu-base:25.10
-          - ubuntu-base:24.04
+          # - ubuntu-base:25.10
+          # - ubuntu-base:24.04
           - debian-base:13
       tree_sitter_version:
         description: Tree sitter version
@@ -53,25 +53,34 @@ jobs:
           sudo apt-get install -y libxml2-dev || echo "=== libxml2-dev not available, skip it ==="
           mkdir -p ${{env.EPATH}}
 
+      - name: Build Emacs base image
+        run: |
+            podman build \
+                --build-arg OSBASE_VERSION=${{inputs.osbase_version}} \
+                --build-arg VERSION=${{inputs.version}} \
+                --build-arg INSTALL_PATH=${{env.EPATH}} \
+                --build-arg TREE_SITTER_VERSION=${{inputs.tree_sitter_version}} \
+                -f containers/Containerfile-${{env.NAME}}.base \
+                -t ${{env.NAME}}-base
+
       - name: Build Emacs image
         run: |
-            podman build --build-arg OSBASE_VERSION=${{inputs.osbase_version}} \
-            --build-arg VERSION=${{inputs.version}} \
-            --build-arg INSTALL_PATH=${{env.EPATH}} \
-            --build-arg TREE_SITTER_VERSION=${{inputs.tree_sitter_version}} \
-            -f containers/Containerfile-${{env.NAME}}-${{inputs.window_system}} \
-            -t ${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}}
+            podman build \
+                --build-arg INSTALL_PATH=${{env.EPATH}} \
+                -f containers/Containerfile-${{env.NAME}}-${{inputs.window_system}} \
+                -t ${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}}
 
       - name: Push Emacs image to ${{env.REGISTRY}}
         run: |
-            podman push --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} \
-            ${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}} \
-            docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}}
+            podman push \
+                --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} \
+                ${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}} \
+                docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}}
 
       - name: Install Emacs
         run: |
-          podman create --name dkemacs_ docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}}
-          podman cp dkemacs_:${{secrets.TOOLS_DIR}}/emacs/. ${{env.EPATH}}
+          cid=$(podman create docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}} /bin/true)
+          podman cp "$cid:/" ${{env.EPATH}}
           sudo ln -sfn ${{env.EPATH}}/bin/emacs /usr/bin
           sudo ln -sfn ${{env.EPATH}}/bin/emacsclient /usr/bin
 
