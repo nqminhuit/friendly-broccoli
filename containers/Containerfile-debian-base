@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y curl git-core gnupg locales wget \
     automake libevent-dev ncurses-dev bison cmake libxml2-dev \
     texinfo libx11-dev libxpm-dev libjpeg-dev libpng-dev libgif-dev libtiff-dev \
     nasm libx264-dev libxext-dev libxfixes-dev zlib1g-dev \
-    libgccjit0 libgccjit-14-dev gcc-11 g++-11 libgnutls28-dev \
+    libgccjit0 libgccjit-14-dev gcc-14 g++-14 libgnutls28-dev \
     libgtk-3-dev libncurses-dev autoconf pkg-config libfreetype6-dev \
     libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev python3 \
     libcairo2-dev libjansson-dev libtree-sitter-dev libwebp-dev mailutils && \
