@@ -4,3 +4,6 @@ ARG VERSION
 RUN git clone --depth=1 -b $VERSION https://github.com/sharkdp/fd.git
 WORKDIR /fd
 RUN cargo build --release --quiet
+
+FROM scratch
+COPY --from=0 /fd/target/release/fd /

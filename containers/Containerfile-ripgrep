@@ -4,3 +4,6 @@ ARG VERSION
 RUN git clone --depth=1 -b $VERSION https://github.com/BurntSushi/ripgrep.git
 WORKDIR /ripgrep
 RUN cargo build --release --quiet --features 'pcre2'
+
+FROM scratch
+COPY --from=0 /ripgrep/target/release/rg /

@@ -5,3 +5,6 @@ RUN apt-get update && apt-get install -y libevent-core-2.1-7
 RUN git clone --depth 1 -b $VERSION https://github.com/tmux/tmux.git
 WORKDIR /tmux
 RUN ./autogen.sh && bash configure && make;
+
+FROM scratch
+COPY --from=0 /tmux/tmux /
