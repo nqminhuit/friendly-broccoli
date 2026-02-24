@@ -31,3 +31,7 @@ RUN mkdir -p $INSTALL_PATH && \
         --with-cairo \
         --prefix=$INSTALL_PATH && \
     make -j$(nproc) && make install
+
+FROM scratch
+ARG INSTALL_PATH
+COPY --from=0 $INSTALL_PATH/ /
