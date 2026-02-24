@@ -15,6 +15,7 @@ on:
         type: choice
         options:
           - ubuntu-base:25.10
+          - ubuntu-base:24.04
           - debian-base:13
       tree_sitter_version:
         description: Tree sitter version
