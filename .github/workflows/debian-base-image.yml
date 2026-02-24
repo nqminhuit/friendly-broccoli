@@ -1,6 +1,6 @@
 name: Debian base image
 
-run-name: Build and push Debian base image version ${{inputs.version || '12'}}
+run-name: Build and push Debian base image version ${{inputs.version || '13'}}
 
 on:
   workflow_dispatch:
@@ -11,30 +11,24 @@ on:
         default: '13'
         type: choice
         options:
-            - '12'
             - '13'
   schedule:
     - cron: '0 0 * * 0'
 
 env:
   REGISTRY: docker.io
-  VERSION: ${{inputs.version || '12'}}
+  VERSION: ${{inputs.version || '13'}}
   IMAGE_NAME: debian-base
-
 
 jobs:
   build:
-
     runs-on: ubuntu-24.04
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Build Debian ${{env.VERSION}} image base
         run: podman build --no-cache --build-arg VERSION=${{env.VERSION}} -f containers/Containerfile-${{env.IMAGE_NAME}} -t ${{env.IMAGE_NAME}}:${{env.VERSION}}
-        shell: bash
 
       - name: Push ${{env.IMAGE_NAME}} image to ${{env.REGISTRY}}
         run: podman push --quiet --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} ${{env.IMAGE_NAME}}:${{env.VERSION}} docker://docker.io/nqminhuit/${{env.IMAGE_NAME}}:${{env.VERSION}}
-        shell: bash
