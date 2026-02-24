@@ -20,12 +20,14 @@ COPY emacs/emacs.png etc/images/icons/hicolor/{16x16,24x24,32x32,48x48,128x128}/
 COPY emacs/emacs.svg etc/images/icons/hicolor/scalable/apps/emacs.svg
 COPY emacs/emacs.ico etc/images/icons/hicolor/scalable/apps/emacs.ico
 RUN mkdir -p $INSTALL_PATH && \
-    ./autogen.sh && ./configure \
-    --with-tree-sitter \
-    --with-x-toolkit=gtk3 \
-    --without-compress-install \
-    --with-mailutils \
-    --with-rsvg \
-    --with-x11 \
-    --prefix=$INSTALL_PATH && \
+    ./autogen.sh && \
+    CFLAGS="-O3" \
+    ./configure \
+        --with-tree-sitter \
+        --with-x-toolkit=gtk3 \
+        --without-compress-install \
+        --with-mailutils \
+        --with-rsvg \
+        --with-x11 \
+        --prefix=$INSTALL_PATH && \
     make -j$(nproc) && make install

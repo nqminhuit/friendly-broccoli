@@ -4,17 +4,29 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Emacs version'
+        description: Emacs version
         required: true
         default: 30.2
       osbase_version:
-        description: 'OS image base version'
+        description: OS image base version
         required: true
-        default: 'ubuntu-base:25.10'
+        default: ubuntu-base:25.10
+        type: choice
+        options:
+          - ubuntu-base:25.10
+          - debian-base:12
       tree_sitter_version:
-        description: 'Tree sitter version'
+        description: Tree sitter version
         required: true
         default: v0.25.10
+      window_system:
+        description: Choose between x11 or wayland
+        required: true
+        default: x11
+        type: choice
+        options:
+          - x11
+          - wayland
 
 env:
   REGISTRY: docker.io
@@ -32,21 +44,32 @@ jobs:
 
       - name: Prepare environemnt
         run: |
-          sudo apt-get update && sudo apt-get install -y libgccjit0 libgif7 libwebpdemux2 libgtk-3-0 libjpeg62 librsvg2-2 libwebpdecoder3 libxml2-16
+          sudo apt-get update && sudo apt-get install -y \
+            libgccjit0 libgif7 libwebpdemux2 libgtk-3-0 libjpeg62 librsvg2-2 libwebpdecoder3 \
+            build-essential autoconf texinfo libgnutls28-dev \
+            libgtk-3-dev libcairo2-dev librsvg2-dev libjpeg-dev libpng-dev \
+            libtiff-dev libgif-dev libxpm-dev libncurses-dev libjansson-dev \
+            libgccjit-14-dev libtree-sitter-dev libwebp-dev mailutils
           mkdir -p ${{env.EPATH}}
-        shell: bash
 
       - name: Build Emacs image
-        run: podman build --build-arg OSBASE_VERSION=${{inputs.osbase_version}} --build-arg VERSION=${{inputs.version}} --build-arg INSTALL_PATH=${{env.EPATH}} --build-arg TREE_SITTER_VERSION=${{inputs.tree_sitter_version}} -f containers/Containerfile-${{env.NAME}} -t ${{env.NAME}}:${{inputs.version}}
-        shell: bash
+        run: |
+            podman build --build-arg OSBASE_VERSION=${{inputs.osbase_version}} \
+            --build-arg VERSION=${{inputs.version}} \
+            --build-arg INSTALL_PATH=${{env.EPATH}} \
+            --build-arg TREE_SITTER_VERSION=${{inputs.tree_sitter_version}} \
+            -f containers/Containerfile-${{env.NAME}}-${{inputs.window_system}} \
+            -t ${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}}
 
       - name: Push Emacs image to ${{env.REGISTRY}}
-        run: podman push --quiet --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} ${{env.NAME}}:${{inputs.version}} docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}
-        shell: bash
+        run: |
+            podman push --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} \
+            ${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}} \
+            docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}}
 
       - name: Install Emacs
         run: |
-          podman create --name dkemacs_ docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}
+          podman create --name dkemacs_ docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}-${{inputs.window_system}}
           podman cp dkemacs_:${{secrets.TOOLS_DIR}}/emacs/. ${{env.EPATH}}
           sudo ln -sfn ${{env.EPATH}}/bin/emacs /usr/bin
           sudo ln -sfn ${{env.EPATH}}/bin/emacsclient /usr/bin
@@ -67,4 +90,3 @@ jobs:
           emacs --version || return 1
           echo "LD_LIBRARY_PATH=/usr/local/lib/" >> "$GITHUB_ENV"
           printf "\t$(emacs --version | head -n 1) built successful\n"
-        shell: bash
