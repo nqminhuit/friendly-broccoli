@@ -7,6 +7,10 @@ on:
         description: 'tmux version'
         required: true
         default: 3.5a
+        type: choice
+        options:
+          - 3.5a
+          - 3.6a
       debian_version:
         description: 'Debian version'
         required: true
