@@ -29,6 +29,5 @@ RUN mkdir -p $INSTALL_PATH && \
         --with-mailutils \
         --with-rsvg \
         --with-cairo \
-        --with-xwidgets \
         --prefix=$INSTALL_PATH && \
     make -j$(nproc) && make install
