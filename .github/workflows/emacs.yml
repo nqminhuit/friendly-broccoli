@@ -16,6 +16,7 @@ on:
         options:
           - ubuntu-base:25.10
           - debian-base:12
+          - debian-base:13
       tree_sitter_version:
         description: Tree sitter version
         required: true
