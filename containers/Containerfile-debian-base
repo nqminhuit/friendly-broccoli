@@ -1,5 +1,5 @@
-ARG DEBIAN_VERSION
-FROM docker.io/debian:$DEBIAN_VERSION
+ARG VERSION
+FROM docker.io/debian:$VERSION
 
 RUN apt-get update && apt-get install -y curl git-core gnupg locales wget \
     build-essential libncurses5-dev libncursesw5-dev librsvg2-dev \
