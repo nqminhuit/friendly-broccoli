@@ -50,9 +50,7 @@ jobs:
             libgtk-3-dev libcairo2-dev librsvg2-dev libjpeg-dev libpng-dev \
             libtiff-dev libgif-dev libxpm-dev libncurses-dev libjansson-dev \
             libgccjit-14-dev libtree-sitter-dev libwebp-dev mailutils
-          if [[ "${{inputs.osbase_version}}" == "ubuntu-base:25.10" ]]; then
-            sudo apt-get install -y libxml2-dev
-          fi
+          sudo apt-get install -y libxml2-dev || echo "=== libxml2-dev not available, skip it ==="
           mkdir -p ${{env.EPATH}}
 
       - name: Build Emacs image
