@@ -1,4 +1,5 @@
 name: Emacs
+run-name: Emacs ${{inputs.version}} ${{inputs.osbase_version}} ${{inputs.window_system}}
 
 on:
   workflow_dispatch:

@@ -1,5 +1,7 @@
 name: Ubuntu base image
 
+run-name: Build and push Ubuntu base image version ${{inputs.version || '24.04'}}
+
 on:
   workflow_dispatch:
     inputs:

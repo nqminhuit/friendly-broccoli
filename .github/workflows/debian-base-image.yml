@@ -1,5 +1,7 @@
 name: Debian base image
 
+run-name: Build and push Debian base image version ${{inputs.version || '12'}}
+
 on:
   workflow_dispatch:
     inputs:
