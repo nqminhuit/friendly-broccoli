@@ -28,6 +28,7 @@ RUN mkdir -p $INSTALL_PATH && \
         --without-compress-install \
         --with-mailutils \
         --with-rsvg \
-        --with-x11 \
+        --with-cairo \
+        --with-xwidgets \
         --prefix=$INSTALL_PATH && \
     make -j$(nproc) && make install
