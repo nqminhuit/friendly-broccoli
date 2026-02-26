@@ -14,7 +14,7 @@ on:
 
 env:
   NAME: emacs
-  EPATH: ${{secrets.TOOLS_DIR}}/emacs
+  EPATH: /opt/emacs
 
 jobs:
   build:
