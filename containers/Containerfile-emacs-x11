@@ -1,17 +1,19 @@
 FROM localhost/emacs-base:latest
 ARG INSTALL_PATH
-RUN mkdir -p $INSTALL_PATH && \
-    ./autogen.sh && \
-    CFLAGS="-O3" \
-    ./configure \
-        --with-tree-sitter \
-        --with-x-toolkit=gtk3 \
-        --without-compress-install \
-        --with-mailutils \
-        --with-rsvg \
-        --with-cairo \
-        --prefix=$INSTALL_PATH && \
-    make -j$(nproc) && make install
+RUN mkdir -p $INSTALL_PATH
+RUN ./autogen.sh
+RUN CFLAGS="-O3" ./configure \
+    --without-compress-install \
+    --with-tree-sitter \
+    --with-mailutils \
+    --with-cairo \
+    --with-native-compilation=yes \
+    --with-rsvg \
+    --with-sqlite3 \
+    --with-x-toolkit=gtk3 \
+    --prefix=$INSTALL_PATH
+RUN make -j$(nproc)
+RUN make install
 
 FROM scratch
 ARG INSTALL_PATH
