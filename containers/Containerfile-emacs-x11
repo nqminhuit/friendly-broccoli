@@ -5,11 +5,9 @@ RUN ./autogen.sh
 RUN CFLAGS="-O3" ./configure \
     --without-compress-install \
     --with-tree-sitter \
-    --with-mailutils \
     --with-cairo \
-    --with-native-compilation=yes \
+    --with-native-compilation=aot \
     --with-rsvg \
-    --with-sqlite3 \
     --with-x-toolkit=gtk3 \
     --prefix=$INSTALL_PATH
 RUN make -j$(nproc)
