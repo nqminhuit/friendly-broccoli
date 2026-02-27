@@ -15,6 +15,9 @@ WORKDIR /tree-sitter
 RUN make -j$(nproc) && make install && make clean
 
 WORKDIR /emacs
+RUN rm -f etc/themes/light-blue-theme.el
+RUN rm -rf etc/tutorials
+
 COPY emacs/emacs.desktop etc/emacs.desktop
 COPY emacs/emacs.png etc/images/icons/hicolor/{16x16,24x24,32x32,48x48,128x128}/apps/emacs.png
 COPY emacs/emacs.svg etc/images/icons/hicolor/scalable/apps/emacs.svg
