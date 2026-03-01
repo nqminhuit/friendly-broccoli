@@ -4,7 +4,7 @@ Name=Emacs
 GenericName=More than just a text editor
 Comment=Everything I do, I want to do it on Emacs
 MimeType=text/plain;text/x-c;text/x-c++;text/x-csrc;text/x-chdr;text/x-c++src;text/x-c++hdr;text/x-java;text/x-makefile;text/x-shellscript;text/x-tex;text/x-pascal;text/x-tcl;text/x-moc;text/english
-Icon=/opt/minh/tools/emacs/share/icons/hicolor/scalable/apps/emacs.svg
+Icon=/opt/emacs/share/icons/hicolor/scalable/apps/emacs.svg
 Exec=env XMODIFIERS= /usr/bin/emacs
 Type=Application
 Terminal=false
