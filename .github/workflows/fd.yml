@@ -6,7 +6,7 @@ on:
       version:
         description: 'fd version'
         required: true
-        default: v10.2.0
+        default: v10.3.0
       ubuntu-version:
         description: 'ubuntu version'
         required: true
