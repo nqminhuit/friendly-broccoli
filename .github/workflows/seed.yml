@@ -1,0 +1,25 @@
+name: Seed
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        required: true
+        type: string
+      filename:
+        required: true
+        type: string
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download
+        run: curl -L -o "${{ github.event.inputs.filename }}" "${{ github.event.inputs.url }}"
+      - name: Upload 
+        uses: actions/upload-artifact@v7
+        with:
+          path: "${{ github.event.inputs.filename }}"
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
