@@ -6,7 +6,7 @@ on:
       version:
         description: 'fd-find version'
         required: true
-        default: v10.3.0
+        default: v10.4.2
       debian_version:
         description: 'Debian version'
         required: true

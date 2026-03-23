@@ -6,11 +6,11 @@ on:
       version:
         description: 'fd version'
         required: true
-        default: v10.3.0
+        default: v10.4.2
       ubuntu-version:
         description: 'ubuntu version'
         required: true
-        default: 22.04
+        default: 24.04
 
 jobs:
   build:
@@ -25,7 +25,9 @@ jobs:
       - name: compile ripgrep
         run: cargo build --release --quiet
       - run: ./target/release/fd --version > $GITHUB_STEP_SUMMARY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: fd
           path: target/release/fd
+          archive: false
+          if-no-files-found: error
