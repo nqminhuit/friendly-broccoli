@@ -204,11 +204,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: tts-audio-${{ github.event.inputs.output_name }}
-          path: |
-            sec10v/out/*.mp3
-            sec10v/out/*.srt
+          path: sec10v/out/*.mp3
           if-no-files-found: error
           retention-days: 1
+          archive: false
 
       - name: Show audio info
         working-directory: sec10v
