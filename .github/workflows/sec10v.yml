@@ -60,7 +60,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements_no_cuda.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('sec10v/requirements_no_cuda.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
@@ -84,12 +84,87 @@ jobs:
         working-directory: sec10v
         run: mkdir -p out
 
-      - name: Run TTS generation
+      - name: Run TTS generation (attempt 1)
+        id: tts1
         working-directory: sec10v
         run: |
           python scripts/audiobook.py \
             --tts "${{ github.event.inputs.tts_text }}" \
             --audio-rate "${{ github.event.inputs.audio_rate }}"
+          if [ -f "out/audiobook.mp3" ]; then
+            echo "✅ TTS audio file generated successfully"
+            ffprobe -v error -show_entries format=duration,bit_rate -of default=noprint_wrappers=1 out/audiobook.mp3
+          else
+            echo "❌ Error: TTS audio file not found!"
+            exit 1
+          fi
+
+      - name: Text-to-Speech with Whisper (attempt 1)
+        id: whisper1
+        uses: appleboy/whisper-action@v0.1.1
+        with:
+            model: small.en
+            audio_path: ${{ github.workspace }}/sec10v/out/audiobook.mp3
+            output_filename: ${{ github.workspace }}/sec10v/audiobook.gen.txt
+            print_segment: true
+            debug: true
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+            go-version: '1.24'
+            cache: true
+
+      - name: Verify TTS output (attempt 1)
+        id: verify1
+        working-directory: sec10v
+        continue-on-error: true
+        run: |
+            echo "${{ github.event.inputs.tts_text }}" > expected_text.txt
+            if [ ! -f "audiobook.gen.txt" ]; then
+                echo "❌ Transcription file missing"
+                exit 1
+            fi
+            go run scripts/levenshtein.go expected_text.txt audiobook.gen.txt
+
+      - name: Run TTS generation (retry)
+        if: steps.verify1.outcome == 'failure'
+        id: tts2
+        working-directory: sec10v
+        run: |
+            echo "🔁 Retry triggered due to verification failure"
+            python scripts/audiobook.py \
+                --tts "${{ github.event.inputs.tts_text }}" \
+                --audio-rate "${{ github.event.inputs.audio_rate }}"
+
+            if [ ! -f "out/audiobook.mp3" ]; then
+                echo "❌ Retry failed to generate audio"
+                exit 1
+            fi
+
+      - name: Whisper transcription (retry)
+        if: steps.tts2.outcome == 'success'
+        uses: appleboy/whisper-action@v0.1.1
+        with:
+            model: small.en
+            audio_path: ${{ github.workspace }}/sec10v/out/audiobook.mp3
+            output_filename: ${{ github.workspace }}/sec10v/audiobook.gen.txt
+
+      - name: Verify TTS output (retry)
+        if: steps.tts2.outcome == 'success'
+        working-directory: sec10v
+        run: |
+            echo "${{ github.event.inputs.tts_text }}" > expected_text.txt
+            if [ ! -f "audiobook.gen.txt" ]; then
+                echo "❌ Transcription file missing"
+                exit 1
+            fi
+            if go run scripts/levenshtein.go expected_text.txt audiobook.gen.txt; then
+                echo "✅ Retry success"
+            else
+                echo "❌ Retry failed"
+                exit 1
+            fi
 
       - name: Rename output to custom name
         working-directory: sec10v
