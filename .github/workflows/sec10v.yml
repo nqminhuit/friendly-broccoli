@@ -103,7 +103,7 @@ jobs:
         id: whisper1
         uses: appleboy/whisper-action@v0.1.1
         with:
-            model: small.en
+            model: small
             audio_path: ${{ github.workspace }}/sec10v/out/audiobook.mp3
             output_filename: ${{ github.workspace }}/sec10v/audiobook.gen.txt
             print_segment: true
@@ -146,7 +146,7 @@ jobs:
         if: steps.tts2.outcome == 'success'
         uses: appleboy/whisper-action@v0.1.1
         with:
-            model: small.en
+            model: small
             audio_path: ${{ github.workspace }}/sec10v/out/audiobook.mp3
             output_filename: ${{ github.workspace }}/sec10v/audiobook.gen.txt
 
