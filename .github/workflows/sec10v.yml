@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout this repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
@@ -37,12 +37,29 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: Checkout external repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: nqminhuit/sec10v
           path: sec10v
           ref: master
           token: ${{ secrets.SEC10V_ACCESS_TOKEN }}
+          fetch-depth: 1
+
+      - name: Checkout ggml-org/whisper.cpp
+        uses: actions/checkout@v6
+        with:
+          repository: ggml-org/whisper.cpp
+          path: whisper.cpp
+          ref: master
+          fetch-depth: 1
+
+      - name: Build whisper.cpp
+        working-directory: whisper.cpp
+        run: |
+            sh ./models/download-ggml-model.sh small.en
+            cmake -B build
+            cmake --build build -j --config Release
+            ./build/bin/whisper-cli --help
 
       # Move to the external repo directory and build
       - name: Build 
@@ -101,13 +118,12 @@ jobs:
 
       - name: Text-to-Speech with Whisper (attempt 1)
         id: whisper1
-        uses: appleboy/whisper-action@v0.1.1
-        with:
-            model: small
-            audio_path: ${{ github.workspace }}/sec10v/out/audiobook.mp3
-            output_filename: ${{ github.workspace }}/sec10v/audiobook.gen.txt
-            print_segment: true
-            debug: true
+        working-directory: whisper.cpp
+        run: |
+            ./build/bin/whisper-cli -m models/ggml-small.en.bin \
+                -f ${{ github.workspace }}/sec10v/out/audiobook.mp3 \
+                -np -nt > ${{ github.workspace }}/sec10v/audiobook.gen.txt
+            cat ${{ github.workspace }}/sec10v/audiobook.gen.txt
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -121,6 +137,7 @@ jobs:
         continue-on-error: true
         run: |
             echo "${{ github.event.inputs.tts_text }}" > expected_text.txt
+            cat expected_text.txt
             if [ ! -f "audiobook.gen.txt" ]; then
                 echo "❌ Transcription file missing"
                 exit 1
@@ -144,11 +161,12 @@ jobs:
 
       - name: Whisper transcription (retry)
         if: steps.tts2.outcome == 'success'
-        uses: appleboy/whisper-action@v0.1.1
-        with:
-            model: small
-            audio_path: ${{ github.workspace }}/sec10v/out/audiobook.mp3
-            output_filename: ${{ github.workspace }}/sec10v/audiobook.gen.txt
+        working-directory: whisper.cpp
+        run: |
+            ./build/bin/whisper-cli -m models/ggml-small.en.bin \
+                -f ${{ github.workspace }}/sec10v/out/audiobook.mp3 \
+                -np -nt > ${{ github.workspace }}/sec10v/audiobook.gen.txt
+            cat ${{ github.workspace }}/sec10v/audiobook.gen.txt
 
       - name: Verify TTS output (retry)
         if: steps.tts2.outcome == 'success'
