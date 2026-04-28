@@ -65,14 +65,14 @@ jobs:
           path: |
             whisper.cpp/build
             whisper.cpp/models/ggml-small.en.bin
-          key: ${{ runner.os }}-whisper-cpp-${{ steps.whisper-sha.outputs.sha }}
+          key: ${{ runner.os }}-whisper-cpp-${{ steps.whisper-sha.outputs.sha }}-cpu-compat
 
       - name: Build whisper.cpp
         if: steps.cache-whisper.outputs.cache-hit != 'true'
         working-directory: whisper.cpp
         run: |
             sh ./models/download-ggml-model.sh small.en
-            cmake -B build
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF
             cmake --build build -j --config Release
             ./build/bin/whisper-cli --help
 
