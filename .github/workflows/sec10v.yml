@@ -1,4 +1,5 @@
 name: sec10v
+run-name: ${{ inputs.output_name }}
 
 on:
   workflow_dispatch:
