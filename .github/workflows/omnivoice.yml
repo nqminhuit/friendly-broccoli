@@ -95,7 +95,6 @@ jobs:
 
           if [ -f "out/audiobook.mp3" ]; then
             echo "✅ TTS audio file generated successfully"
-            ffprobe -v error -show_entries format=duration,bit_rate -of default=noprint_wrappers=1 out/audiobook.mp3
           else
             echo "❌ Error: TTS audio file not found!"
             exit 1
@@ -119,13 +118,3 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           archive: false
-
-      - name: Show audio info
-        working-directory: sec10v
-        run: |
-          for file in out/*.mp3; do
-            if [ -f "$file" ]; then
-              echo "=== Audio info for $file ==="
-              ffprobe -v error -show_entries stream=codec_name,channels,sample_rate,bit_rate,duration -of default=noprint_wrappers=1 "$file"
-            fi
-          done
