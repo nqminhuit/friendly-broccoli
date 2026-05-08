@@ -30,6 +30,13 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -y -o Dir::Etc::sourcelist="sources.list" \
+              -o Dir::Etc::sourceparts="-" \
+              -o APT::Get::List-Cleanup="0"
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Checkout external repository
         uses: actions/checkout@v6
         with:
