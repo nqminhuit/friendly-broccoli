@@ -1,0 +1,131 @@
+name: omnivoice
+run-name: ${{ inputs.output_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tts_text:
+        description: 'Text to synthesize'
+        required: true
+        type: string
+      audio_rate:
+        description: 'Audio playback rate (0.9 = 10% slower, 1.0 = normal)'
+        required: false
+        type: string
+        default: '1.0'
+      output_name:
+        description: 'Output filename (without extension)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-external:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Checkout external repository
+        uses: actions/checkout@v6
+        with:
+          repository: nqminhuit/sec10v
+          path: sec10v
+          ref: master
+          token: ${{ secrets.SEC10V_ACCESS_TOKEN }}
+          fetch-depth: 1
+
+      # Move to the external repo directory and build
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Cache Python venv
+        id: cache-venv
+        uses: actions/cache@v5
+        with:
+          path: sec10v/.venv
+          key: ${{ runner.os }}-venv-py3.13-${{ hashFiles('sec10v/requirements-omnivoice.txt') }}-torch-cpu
+
+      - name: Install Python dependencies
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        working-directory: sec10v
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          .venv/bin/pip install -r requirements-omnivoice.txt
+
+      - name: Activate Python venv
+        run: echo "${{ github.workspace }}/sec10v/.venv/bin" >> $GITHUB_PATH
+
+      - name: Verify ref files exist
+        working-directory: sec10v
+        run: |
+          if [ ! -f "resources/voices/_live/thestorygirl_clean9s.mp3" ]; then
+            echo "❌ Error: Voice ref file not found!"
+            exit 1
+          fi
+          if [ ! -f "resources/thestorygirl_clean9s.ref.txt" ]; then
+            echo "❌ Error: Text ref file not found!"
+            exit 1
+          fi
+          echo "✅ Ref files found"
+
+      - name: Create output directory
+        working-directory: sec10v
+        run: mkdir -p out
+
+      - name: Run TTS generation (attempt 1)
+        id: tts1
+        working-directory: sec10v
+        run: |
+          python scripts/audiobook_omnivoice.py \
+            --tts "${{ github.event.inputs.tts_text }}" \
+            --ref-audio "resources/voices/_live/thestorygirl_clean9s.mp3" \
+            --ref-text-file "resources/thestorygirl_clean9s.ref.txt" \
+            --language "vi" \
+            --audio-format mp3
+
+          if [ -f "out/audiobook.mp3" ]; then
+            echo "✅ TTS audio file generated successfully"
+            ffprobe -v error -show_entries format=duration,bit_rate -of default=noprint_wrappers=1 out/audiobook.mp3
+          else
+            echo "❌ Error: TTS audio file not found!"
+            exit 1
+          fi
+
+      - name: Rename output to custom name
+        working-directory: sec10v
+        run: |
+          if [ -f "out/audiobook.mp3" ]; then
+            mv out/audiobook.mp3 "out/${{ github.event.inputs.output_name }}.mp3"
+            if [ -f "out/audiobook.srt" ]; then
+              mv out/audiobook.srt "out/${{ github.event.inputs.output_name }}.srt"
+            fi
+          fi
+
+      - name: Upload audio artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: tts-audio-${{ github.event.inputs.output_name }}
+          path: sec10v/out/*.mp3
+          if-no-files-found: error
+          retention-days: 1
+          archive: false
+
+      - name: Show audio info
+        working-directory: sec10v
+        run: |
+          for file in out/*.mp3; do
+            if [ -f "$file" ]; then
+              echo "=== Audio info for $file ==="
+              ffprobe -v error -show_entries stream=codec_name,channels,sample_rate,bit_rate,duration -of default=noprint_wrappers=1 "$file"
+            fi
+          done
