@@ -75,11 +75,11 @@ jobs:
       - name: Verify ref files exist
         working-directory: sec10v
         run: |
-          if [ ! -f "resources/voices/_live/thestorygirl_clean9s.mp3" ]; then
+          if [ ! -f "resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned.mp3" ]; then
             echo "❌ Error: Voice ref file not found!"
             exit 1
           fi
-          if [ ! -f "resources/thestorygirl_clean9s.ref.txt" ]; then
+          if [ ! -f "resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned.txt" ]; then
             echo "❌ Error: Text ref file not found!"
             exit 1
           fi
@@ -95,8 +95,8 @@ jobs:
         run: |
           python scripts/audiobook_omnivoice.py \
             --tts "${{ github.event.inputs.tts_text }}" \
-            --ref-audio "resources/voices/_live/thestorygirl_clean9s.mp3" \
-            --ref-text-file "resources/thestorygirl_clean9s.ref.txt" \
+            --ref-audio "resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned.mp3" \
+            --ref-text-file "resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned.txt" \
             --language "vi" \
             --audio-format mp3
 
