@@ -2,6 +2,9 @@ name: omnivoice
 run-name: ${{ inputs.output_name }}
 
 on:
+  push:
+    paths:
+      - 'text/omnivoice.txt'
   workflow_dispatch:
     inputs:
       tts_text:
@@ -17,6 +20,11 @@ on:
         description: 'Output filename (without extension)'
         required: true
         type: string
+      ref_base:
+        description: 'Reference base path (without extension) relative to sec10v'
+        required: false
+        type: string
+        default: 'resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned'
 
 permissions:
   contents: read
@@ -75,15 +83,19 @@ jobs:
       - name: Verify ref files exist
         working-directory: sec10v
         run: |
-          if [ ! -f "resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned.mp3" ]; then
-            echo "❌ Error: Voice ref file not found!"
+          REF_BASE="${{ github.event.inputs.ref_base }}"
+          REF_BASE="${REF_BASE:-resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned}"
+          REF_AUDIO="$REF_BASE.mp3"
+          REF_TEXT_FILE="$REF_BASE.txt"
+          if [ ! -f "$REF_AUDIO" ]; then
+            echo "❌ Error: Voice ref file not found ($REF_AUDIO)!"
             exit 1
           fi
-          if [ ! -f "resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned.txt" ]; then
-            echo "❌ Error: Text ref file not found!"
+          if [ ! -f "$REF_TEXT_FILE" ]; then
+            echo "❌ Error: Text ref file not found ($REF_TEXT_FILE)!"
             exit 1
           fi
-          echo "✅ Ref files found"
+          echo "✅ Ref files found: $REF_AUDIO, $REF_TEXT_FILE"
 
       - name: Create output directory
         working-directory: sec10v
@@ -93,12 +105,27 @@ jobs:
         id: tts1
         working-directory: sec10v
         run: |
-          python scripts/audiobook_omnivoice.py \
-            --tts "${{ github.event.inputs.tts_text }}" \
-            --ref-audio "resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned.mp3" \
-            --ref-text-file "resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned.txt" \
-            --language "vi" \
-            --audio-format mp3
+          # Resolve ref audio/text from inputs or defaults
+          REF_BASE="${{ github.event.inputs.ref_base }}"
+          REF_BASE="${REF_BASE:-resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned}"
+          REF_AUDIO="$REF_BASE.mp3"
+          REF_TEXT_FILE="$REF_BASE.txt"
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            python scripts/audiobook_omnivoice.py \
+              --tts "${{ github.event.inputs.tts_text }}" \
+              --ref-audio "$REF_AUDIO" \
+              --ref-text-file "$REF_TEXT_FILE" \
+              --language "vi" \
+              --audio-format mp3
+          else
+            python scripts/audiobook_omnivoice.py \
+              --tts-file "$GITHUB_WORKSPACE/text/omnivoice.txt" \
+              --ref-audio "$REF_AUDIO" \
+              --ref-text-file "$REF_TEXT_FILE" \
+              --language "vi" \
+              --audio-format mp3
+          fi
 
           if [ -f "out/audiobook.mp3" ]; then
             echo "✅ TTS audio file generated successfully"
