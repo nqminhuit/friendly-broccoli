@@ -80,28 +80,11 @@ jobs:
       - name: Activate Python venv
         run: echo "${{ github.workspace }}/sec10v/.venv/bin" >> $GITHUB_PATH
 
-      - name: Verify ref files exist
-        working-directory: sec10v
-        run: |
-          REF_BASE="${{ github.event.inputs.ref_base }}"
-          REF_BASE="${REF_BASE:-resources/voices/_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned}"
-          REF_AUDIO="$REF_BASE.mp3"
-          REF_TEXT_FILE="$REF_BASE.txt"
-          if [ ! -f "$REF_AUDIO" ]; then
-            echo "❌ Error: Voice ref file not found ($REF_AUDIO)!"
-            exit 1
-          fi
-          if [ ! -f "$REF_TEXT_FILE" ]; then
-            echo "❌ Error: Text ref file not found ($REF_TEXT_FILE)!"
-            exit 1
-          fi
-          echo "✅ Ref files found: $REF_AUDIO, $REF_TEXT_FILE"
-
       - name: Create output directory
         working-directory: sec10v
         run: mkdir -p out
 
-      - name: Run TTS generation (attempt 1)
+      - name: Run TTS generation
         id: tts1
         working-directory: sec10v
         run: |
@@ -147,7 +130,6 @@ jobs:
       - name: Upload audio artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: tts-audio-${{ github.event.inputs.output_name }}
           path: sec10v/out/*.mp3
           if-no-files-found: error
           retention-days: 1
