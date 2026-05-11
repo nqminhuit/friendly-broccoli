@@ -117,16 +117,6 @@ jobs:
             exit 1
           fi
 
-      - name: Rename output to custom name
-        working-directory: sec10v
-        run: |
-          if [ -f "out/audiobook.mp3" ]; then
-            mv out/audiobook.mp3 "out/${{ github.event.inputs.output_name }}.mp3"
-            if [ -f "out/audiobook.srt" ]; then
-              mv out/audiobook.srt "out/${{ github.event.inputs.output_name }}.srt"
-            fi
-          fi
-
       - name: Upload audio artifacts
         uses: actions/upload-artifact@v7
         with:
