@@ -1,0 +1,47 @@
+name: Build Conversations
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Git tag/version to build"
+        required: true
+        default: "2.20.0"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Clone Conversations
+        run: |
+          git clone --depth 1 https://codeberg.org/iNPUTmice/Conversations.git
+          cd Conversations
+          git fetch --tags
+          echo "Checking out tag: ${{ github.event.inputs.version }}"
+          git checkout "${{ github.event.inputs.version }}"
+
+      - name: Build APK
+        run: |
+          cd Conversations
+          chmod +x gradlew
+          ./gradlew assembleConversationsFreeDebug
+
+      - name: List APKs
+        run: |
+          find Conversations -name "*.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          path: Conversations/build/outputs/apk/conversationsFree/debug/eu.siacs.conversations-${{ github.event.inputs.version }}-conversations-free-arm64-v8a-debug.apk
+          if-no-files-found: error
+          archive: false
