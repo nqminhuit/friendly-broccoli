@@ -1,0 +1,119 @@
+name: OCI Free-Tier ARM Instance Creator
+
+on:
+  schedule:
+    # Cron dày (*/5 phút) bị GitHub bỏ qua thường xuyên do ưu tiên thấp.
+    # Chiến thuật mới: cron thưa (mỗi 4 giờ) chỉ để "đánh thức" job,
+    # còn việc retry mỗi 5 phút diễn ra BÊN TRONG job (loop ~5 tiếng).
+    - cron: '0 */4 * * *'
+  workflow_dispatch:  # cho phép bấm chạy tay để test
+
+# Không cho 2 job chạy chồng nhau (tránh tạo trùng instance);
+# job mới sẽ xếp hàng chờ job cũ xong.
+concurrency:
+  group: oci-instance-creator
+  cancel-in-progress: false
+
+env:
+  # Các giá trị này không nhạy cảm (chỉ là ID định vị tài nguyên), lấy từ file Terraform stack đã export
+  # Lưu ý: compartment_id = tenancy OCID vì đang tạo ở root compartment, nên dùng lại secrets.OCI_TENANCY_OCID
+  OCI_AD_VALUE: "yCXz:AP-SINGAPORE-1-AD-1"
+  OCI_IMAGE_ID: "ocid1.image.oc1.ap-singapore-1.aaaaaaaa3piot2tghwfcbrc6ja7u6omi75m66xhcovpxyl43lfnbwtnehf6a"
+  OCI_SUBNET_ID: "ocid1.subnet.oc1.ap-singapore-1.aaaaaaaan35wpngko475heqimmmaynw23wdd6eumkwe6hvmyrglo3imeqicq"
+
+jobs:
+  create-instance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # ~5.8h, dưới giới hạn 6h của GitHub
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_API_PRIVATE_KEY }}
+      OCI_CLI_REGION: "ap-singapore-1"
+    steps:
+      # Step này dùng action chính thức: vừa kiểm tra, vừa tiện thể CÀI SẴN oci CLI
+      # vào runner (~/.local/bin/oci) để các step bash sau dùng trực tiếp
+      - name: Kiểm tra instance đã tồn tại chưa (và cài oci CLI)
+        id: check
+        uses: oracle-actions/run-oci-cli-command@v1.3.2
+        with:
+          command: >-
+            compute instance list
+            --compartment-id ${{ secrets.OCI_TENANCY_OCID }}
+            --lifecycle-state RUNNING
+            --display-name ejabberd-server
+          query: "length(data)"
+
+      - name: Ghi SSH public key ra file (tránh lỗi ký tự xuống dòng trong secret)
+        env:
+          SSH_PUB: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: printf '%s\n' "$SSH_PUB" > /tmp/ssh_key.pub
+
+      - name: Loop thử tạo instance mỗi 5 phút (tối đa ~5.5 tiếng)
+        id: launch
+        # OCI CLI quirk: lệnh list không có kết quả sẽ in ra RỖNG (không phải {"data":[]}),
+        # nên output rỗng cũng có nghĩa là "chưa có instance"
+        if: steps.check.outputs.output == '0' || steps.check.outputs.output == ''
+        run: |
+          END=$((SECONDS + 19800))  # 5.5 giờ
+          ATTEMPT=0
+          echo "created=false" >> "$GITHUB_OUTPUT"
+
+          while [ $SECONDS -lt $END ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "🔄 Lần thử #$ATTEMPT ($(date -u '+%H:%M:%S UTC'))..."
+
+            # Check lại trước mỗi lần launch, đề phòng lần trước đã tạo thành công
+            # nhưng bị lỗi mạng lúc nhận response (tránh tạo trùng instance)
+            EXISTING=$(oci compute instance list \
+              --compartment-id "$OCI_CLI_TENANCY" \
+              --lifecycle-state RUNNING \
+              --display-name ejabberd-server \
+              --query "length(data)" --raw-output 2>/dev/null || echo "")
+            if [ -n "$EXISTING" ] && [ "$EXISTING" != "0" ]; then
+              echo "✅ Instance đã tồn tại (có thể từ lần thử trước). Dừng loop."
+              echo "created=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if oci compute instance launch \
+              --compartment-id "$OCI_CLI_TENANCY" \
+              --availability-domain "$OCI_AD_VALUE" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config '{"ocpus":2,"memoryInGBs":12}' \
+              --display-name "ejabberd-server" \
+              --image-id "$OCI_IMAGE_ID" \
+              --subnet-id "$OCI_SUBNET_ID" \
+              --assign-public-ip true \
+              --ssh-authorized-keys-file /tmp/ssh_key.pub \
+              > /tmp/launch.json 2> /tmp/launch.err; then
+              echo "🎉 Tạo instance thành công ở lần thử #$ATTEMPT!"
+              echo "created=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if grep -qi "capacity" /tmp/launch.err; then
+              echo "❌ Hết capacity, đợi 5 phút rồi thử lại..."
+              sleep 300
+            else
+              echo "⚠️ Lỗi KHÔNG phải capacity — dừng lại để kiểm tra:"
+              cat /tmp/launch.err
+              exit 1
+            fi
+          done
+
+          echo "⏰ Hết 5.5 tiếng vẫn chưa có capacity. Cron sẽ khởi động job mới."
+
+      - name: Tự tắt workflow này vì đã tạo máy thành công
+        if: steps.launch.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh workflow disable "OCI Free-Tier ARM Instance Creator" \
+            --repo "${{ github.repository }}"
+          echo "✅ Đã tạo instance + tắt workflow. Vào OCI Console lấy Public IP để SSH."
+
+      - name: Thông báo nếu instance đã có sẵn từ trước
+        if: steps.check.outputs.output != '0' && steps.check.outputs.output != ''
+        run: echo "ℹ️ Instance ejabberd-server đã tồn tại và đang chạy, không cần tạo thêm."
