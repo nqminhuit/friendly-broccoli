@@ -18,27 +18,13 @@ on:
         required: true
         default: 13
 
-env:
-  REGISTRY: docker.io
-  NAME: tmux
-
 jobs:
   build:
-
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Prepare environment
-        run: sudo apt-get install -y libevent-core-2.1-7 > /dev/null
-        shell: bash
-
-      - name: Build ${{env.NAME}} image
-        run: podman build --build-arg DEBIAN_VERSION=${{inputs.debian_version}} --build-arg VERSION=${{inputs.version}} -f containers/Containerfile-${{env.NAME}} -t ${{env.NAME}}:${{inputs.version}}
-        shell: bash
-
-      - name: Push ${{env.NAME}} image to ${{env.REGISTRY}}
-        run: podman push --quiet --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} ${{env.NAME}}:${{inputs.version}} docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}
-        shell: bash
+    uses: ./.github/workflows/build-and-push-container.yml
+    with:
+      name: tmux
+      version: ${{ inputs.version }}
+      debian_version: ${{ inputs.debian_version }}
+    secrets:
+      DOCKER_IO_USERNAME: ${{ secrets.DOCKER_IO_USERNAME }}
+      DOCKER_IO_TOKEN: ${{ secrets.DOCKER_IO_TOKEN }}

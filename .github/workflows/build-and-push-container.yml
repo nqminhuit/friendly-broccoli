@@ -1,0 +1,55 @@
+name: Build and Push Container
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: 'Tool name (must match Containerfile-<name>)'
+        type: string
+        required: true
+      version:
+        description: 'Tool version (git tag)'
+        type: string
+        required: true
+      debian_version:
+        description: 'Debian base image version'
+        type: string
+        required: true
+      extra_build_args:
+        description: 'Additional --build-arg flags'
+        type: string
+        required: false
+        default: ''
+    secrets:
+      DOCKER_IO_USERNAME:
+        required: true
+      DOCKER_IO_TOKEN:
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Build ${{ inputs.name }} image
+        run: >-
+          podman build
+          --build-arg DEBIAN_VERSION=${{ inputs.debian_version }}
+          --build-arg VERSION=${{ inputs.version }}
+          ${{ inputs.extra_build_args }}
+          -f containers/Containerfile-${{ inputs.name }}
+          -t ${{ inputs.name }}:${{ inputs.version }}
+
+      - name: Scan image for vulnerabilities
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy image --image-src podman --severity CRITICAL,HIGH --exit-code 0 ${{ inputs.name }}:${{ inputs.version }}
+
+      - name: Push ${{ inputs.name }} image to docker.io
+        run: >-
+          podman push --quiet
+          --creds ${{ secrets.DOCKER_IO_USERNAME }}:${{ secrets.DOCKER_IO_TOKEN }}
+          ${{ inputs.name }}:${{ inputs.version }}
+          docker://docker.io/nqminhuit/${{ inputs.name }}:${{ inputs.version }}
