@@ -4,3 +4,6 @@ ARG VERSION
 RUN git clone --depth=1 -b $VERSION https://github.com/alacritty/alacritty.git
 WORKDIR /alacritty
 RUN cargo build --release --quiet
+
+FROM scratch
+COPY --from=0 /alacritty/target/release/alacritty /
