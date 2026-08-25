@@ -16,7 +16,7 @@ on:
       debian_version:
         description: 'Debian version'
         required: true
-        default: 12
+        default: 13
 
 env:
   REGISTRY: docker.io
@@ -25,11 +25,11 @@ env:
 jobs:
   build:
 
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Prepare environment
         run: sudo apt-get install -y libevent-core-2.1-7 > /dev/null

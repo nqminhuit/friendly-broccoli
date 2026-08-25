@@ -11,6 +11,7 @@ on:
         default: '13'
         type: choice
         options:
+            - '12'
             - '13'
   schedule:
     - cron: '0 0 * * 0'
@@ -22,10 +23,10 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build Debian ${{env.VERSION}} image base
         run: podman build --no-cache --build-arg VERSION=${{env.VERSION}} -f containers/Containerfile-${{env.IMAGE_NAME}} -t ${{env.IMAGE_NAME}}:${{env.VERSION}}

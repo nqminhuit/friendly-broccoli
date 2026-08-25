@@ -11,12 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout this repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
       - name: Checkout external repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: nqminhuit/sec10v
           path: sec10v

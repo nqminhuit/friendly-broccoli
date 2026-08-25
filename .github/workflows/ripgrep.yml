@@ -6,18 +6,18 @@ on:
       version:
         description: 'rg version'
         required: true
-        default: 15.1.0
+        default: 15.2.0
       ubuntu-version:
         description: 'ubuntu version'
         required: true
-        default: 24.04
+        default: 26.04
 
 jobs:
   build:
     runs-on: ubuntu-${{inputs.ubuntu-version}}
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: BurntSushi/ripgrep
           token: ${{ secrets.PUBLIC_PAT }}

@@ -8,27 +8,28 @@ on:
       version:
         description: Ubuntu version
         required: true
-        default: '25.10'
+        default: '26.04'
         type: choice
         options:
             - '24.04'
             - '25.10'
+            - '26.04'
   schedule:
     - cron: '0 0 * * 0'
 
 env:
   REGISTRY: docker.io
-  VERSION: ${{inputs.version || '24.04'}}
+  VERSION: ${{inputs.version || '26.04'}}
   IMAGE_NAME: ubuntu-base
 
 jobs:
   build:
 
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build Ubuntu ${{env.VERSION}} image base
         run: podman build --no-cache --build-arg VERSION=${{env.VERSION}} -f containers/Containerfile-${{env.IMAGE_NAME}} -t ${{env.IMAGE_NAME}}:${{env.VERSION}}

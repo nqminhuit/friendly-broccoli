@@ -18,14 +18,14 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        osbase_version: [ubuntu-base:25.10, ubuntu-base:24.04, debian-base:13]
+        osbase_version: [ubuntu-base:26.04, ubuntu-base:24.04, debian-base:13]
         window_system: [x11, wayland]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Prepare environemnt
         run: |
