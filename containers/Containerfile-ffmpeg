@@ -1,7 +1,9 @@
 ARG DEBIAN_VERSION
 FROM docker.io/nqminhuit/debian-base:$DEBIAN_VERSION
+ARG VERSION
 RUN git clone --depth 1 -b $VERSION https://github.com/FFmpeg/FFmpeg.git
-RUN nala update > /dev/null && nala install -y libsdl2-dev > /dev/null
+RUN apt-get update && apt-get install -y --no-install-recommends libsdl2-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 WORKDIR /FFmpeg
 RUN ./configure
 RUN make -j$(nproc)
