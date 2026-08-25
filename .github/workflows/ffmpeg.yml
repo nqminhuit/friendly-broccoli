@@ -23,7 +23,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Build ${{env.NAME}} image
         run: podman build --build-arg DEBIAN_VERSION=${{inputs.debian_version}} --build-arg VERSION=${{inputs.version}} --build-arg INSTALL_PATH=${{secrets.TOOLS_DIR}}/ffmpeg -f containers/Containerfile-${{env.NAME}} -t ${{env.NAME}}:${{inputs.version}}

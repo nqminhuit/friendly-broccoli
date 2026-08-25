@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout this repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -38,7 +38,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: Checkout external repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: nqminhuit/sec10v
           path: sec10v
@@ -47,7 +47,7 @@ jobs:
           fetch-depth: 1
 
       - name: Checkout ggml-org/whisper.cpp
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ggml-org/whisper.cpp
           path: whisper.cpp
@@ -60,7 +60,7 @@ jobs:
 
       - name: Cache whisper.cpp build
         id: cache-whisper
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             whisper.cpp/build
@@ -84,13 +84,13 @@ jobs:
           ls -la
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.13'
 
       - name: Cache Python venv
         id: cache-venv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: sec10v/.venv
           key: ${{ runner.os }}-venv-py3.13-${{ hashFiles('sec10v/requirements_no_cuda.txt') }}-torch-cpu
@@ -145,7 +145,7 @@ jobs:
             cat ${{ github.workspace }}/sec10v/audiobook.gen.txt
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
             go-version: '1.24'
             cache: true

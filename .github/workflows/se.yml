@@ -9,13 +9,13 @@ jobs:
 
     steps:
       - name: Checkout repository (optional if starting fresh)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Cache apt packages and pipx installations
         id: cache-deps
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             /var/cache/apt/archives
@@ -42,7 +42,7 @@ jobs:
         run: echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Checkout ebook from standardebooks
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: standardebooks/arthur-conan-doyle_the-adventures-of-sherlock-holmes
           path: arthur-conan-doyle_the-adventures-of-sherlock-holmes

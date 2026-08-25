@@ -25,7 +25,7 @@ jobs:
         window_system: [x11, wayland]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Prepare environemnt
         run: |
