@@ -21,7 +21,7 @@ jobs:
         with:
           repository: sharkdp/fd
           ref: ${{inputs.version}}
-      - name: compile ripgrep
+      - name: compile fd
         run: cargo build --release --quiet
       - run: ./target/release/fd --version > $GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@v7
