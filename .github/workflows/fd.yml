@@ -20,7 +20,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: sharkdp/fd
-          token: ${{ secrets.PUBLIC_PAT }}
           ref: ${{inputs.version}}
       - name: compile ripgrep
         run: cargo build --release --quiet
