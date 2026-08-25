@@ -29,11 +29,6 @@ jobs:
         run: podman build --build-arg DEBIAN_VERSION=${{inputs.debian_version}} --build-arg VERSION=${{inputs.version}} --build-arg INSTALL_PATH=${{secrets.TOOLS_DIR}}/ffmpeg -f containers/Containerfile-${{env.NAME}} -t ${{env.NAME}}:${{inputs.version}}
         shell: bash
 
-      - name: Scan image for vulnerabilities
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          trivy image --image-src podman --severity CRITICAL,HIGH --exit-code 0 ${{env.NAME}}:${{inputs.version}}
-
       - name: Push ${{env.NAME}} image to ${{env.REGISTRY}}
         run: podman push --quiet --creds ${{secrets.DOCKER_IO_USERNAME}}:${{secrets.DOCKER_IO_TOKEN}} ${{env.NAME}}:${{inputs.version}} docker://docker.io/nqminhuit/${{env.NAME}}:${{inputs.version}}
         shell: bash
