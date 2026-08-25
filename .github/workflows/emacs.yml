@@ -6,11 +6,11 @@ on:
       version:
         description: Emacs version
         required: true
-        default: 30.2
+        default: 31.1
       tree_sitter_version:
         description: Tree sitter version
         required: true
-        default: v0.25.10
+        default: v0.26.13
 
 env:
   NAME: emacs
