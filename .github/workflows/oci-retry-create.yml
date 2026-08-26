@@ -62,7 +62,17 @@ jobs:
 
           while [ $SECONDS -lt $END ]; do
             ATTEMPT=$((ATTEMPT + 1))
-            echo "🔄 Lần thử #$ATTEMPT ($(date -u '+%H:%M:%S UTC'))..."
+
+            # Xen kẽ shape: lần lẻ thử 2 OCPU/12GB (mong muốn), lần chẵn thử 1 OCPU/6GB (dễ chen hơn).
+            # Vớ được 1/6 vẫn dư sức chạy ejabberd; sau này resize lên khi có capacity.
+            if [ $((ATTEMPT % 2)) -eq 1 ]; then
+              SHAPE_CONFIG='{"ocpus":2,"memoryInGBs":12}'
+              SHAPE_LABEL="2 OCPU / 12GB"
+            else
+              SHAPE_CONFIG='{"ocpus":1,"memoryInGBs":6}'
+              SHAPE_LABEL="1 OCPU / 6GB"
+            fi
+            echo "🔄 Lần thử #$ATTEMPT — shape $SHAPE_LABEL ($(date -u '+%H:%M:%S UTC'))..."
 
             # Check lại trước mỗi lần launch, đề phòng lần trước đã tạo thành công
             # nhưng bị lỗi mạng lúc nhận response (tránh tạo trùng instance)
@@ -81,23 +91,28 @@ jobs:
               --compartment-id "$OCI_CLI_TENANCY" \
               --availability-domain "$OCI_AD_VALUE" \
               --shape "VM.Standard.A1.Flex" \
-              --shape-config '{"ocpus":2,"memoryInGBs":12}' \
+              --shape-config "$SHAPE_CONFIG" \
               --display-name "ejabberd-server" \
               --image-id "$OCI_IMAGE_ID" \
               --subnet-id "$OCI_SUBNET_ID" \
               --assign-public-ip true \
               --ssh-authorized-keys-file /tmp/ssh_key.pub \
               > /tmp/launch.json 2> /tmp/launch.err; then
-              echo "🎉 Tạo instance thành công ở lần thử #$ATTEMPT!"
+              echo "🎉 Tạo instance thành công ở lần thử #$ATTEMPT với shape $SHAPE_LABEL!"
               echo "created=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
-            if grep -qi "capacity" /tmp/launch.err; then
-              echo "❌ Hết capacity, đợi 5 phút rồi thử lại..."
+            if grep -qiE "capacity" /tmp/launch.err; then
+              echo "❌ Shape $SHAPE_LABEL hết capacity, đợi 5 phút rồi thử shape còn lại..."
               sleep 300
+            elif grep -qiE "toomanyrequests|limitexceeded|429|internalerror|500|502|503|504|timed?.?out|connection" /tmp/launch.err; then
+              # Lỗi tạm thời (rate-limit / trục trặc server / mạng) — nghỉ lâu hơn rồi thử tiếp,
+              # KHÔNG bỏ cuộc như lỗi cấu hình
+              echo "⏳ Lỗi tạm thời (rate-limit hoặc server), đợi 15 phút rồi thử lại..."
+              sleep 900
             else
-              echo "⚠️ Lỗi KHÔNG phải capacity — dừng lại để kiểm tra:"
+              echo "⚠️ Lỗi KHÔNG phải capacity/tạm thời — dừng lại để kiểm tra:"
               cat /tmp/launch.err
               exit 1
             fi
