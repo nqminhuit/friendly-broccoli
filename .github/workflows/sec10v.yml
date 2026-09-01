@@ -21,6 +21,9 @@ on:
 permissions:
   contents: read
 
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
 jobs:
   build-external:
     runs-on: ubuntu-latest
