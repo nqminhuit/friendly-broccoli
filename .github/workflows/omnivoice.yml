@@ -113,7 +113,7 @@ jobs:
               --audio-format mp3
           fi
 
-          if [ -f "out/audiobook.mp3" ]; then
+          if ls out/*.mp3 >/dev/null 2>&1; then
             echo "✅ TTS audio file generated successfully"
           else
             echo "❌ Error: TTS audio file not found!"
