@@ -130,6 +130,52 @@ jobs:
           python scripts/transcript.py
           echo "::endgroup::"
 
+      # A run that died after the audio (no image, a broken encode, a timeout) left its MP3s in
+      # an artifact named after the BaseName. Fetch them instead of spending another 40 minutes
+      # of runners recreating them. Opportunistic: no artifact, an expired one or a network
+      # failure all just mean "synthesize from scratch".
+      - name: Reuse audio from a previous run of this chapter
+        continue-on-error: true
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+        run: |
+          python scripts/reuse_audio.py \
+            --owner "${{ github.repository_owner }}" \
+            --repo "${{ github.event.repository.name }}" \
+            --token "${{ secrets.GITHUB_TOKEN }}"
+
+      # With whatever was reused now on disk, this rewrites the manifest down to the chunks that
+      # are genuinely missing, and reports what the rest of the run still has to do.
+      - name: Decide what still needs doing
+        id: tts
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+        run: |
+          set +e
+          python scripts/pending_chunks.py --rewrite
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              echo "needs_tts=false" >> "$GITHUB_OUTPUT"
+              echo "✅ every chunk's audio is already here — skipping the weights cache, the"
+              echo "   dispatch and the collection, straight to the image and the video"
+              ;;
+            10) echo "needs_tts=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+
+          # The prompt and the SEO come out of the chapter text, so a recovered pair is as good
+          # as a freshly generated one — and skipping opencode skips an LLM call entirely.
+          if [ -s "out/prompts/${BASE}.prompt.txt" ] && [ -s "out/seo/${BASE}.seo.md" ]; then
+            echo "creative=true" >> "$GITHUB_OUTPUT"
+            echo "✅ image prompt and SEO recovered from a previous run — no opencode call needed"
+          else
+            echo "creative=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # The only LLM step, via the official action (https://opencode.ai/docs/github/), and it runs
       # FIRST so the image prompt is on screen a few minutes into the run — the human then draws
       # while the TTS below is still going. workflow_dispatch requires an explicit `prompt`;
@@ -154,6 +200,7 @@ jobs:
 
       - name: Generate image prompt and SEO with opencode
         id: creative
+        if: steps.tts.outputs.creative != 'true'
         continue-on-error: true
         uses: anomalyco/opencode/github@latest
         env:
@@ -185,6 +232,7 @@ jobs:
 
       - name: Check opencode outputs
         id: creative_check
+        if: steps.tts.outputs.creative != 'true'
         continue-on-error: true
         working-directory: sec10v
         run: |
@@ -199,7 +247,8 @@ jobs:
       # Every conditional here is if/fi, never `[ … ] && …`: under `bash -e` a trailing false
       # test would fail the step, and a failed always()-step marks the whole job failed.
       - name: Publish the image prompt
-        if: always()
+        # Pointless when the caller already has an image — there is nothing left to draw.
+        if: always() && inputs.image_url == ''
         working-directory: sec10v
         env:
           IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
@@ -234,43 +283,6 @@ jobs:
             echo "::group::image prompt"; cat "$prompt"; echo; echo "::endgroup::"
           fi
           echo "upload the image as ${BASE}.jpg (prefix comes from the IMAGE_BASE_URL secret)"
-
-      # A run that died after the audio (no image, a broken encode, a timeout) left its MP3s in
-      # an artifact named after the BaseName. Fetch them instead of spending another 40 minutes
-      # of runners recreating them. Opportunistic: no artifact, an expired one or a network
-      # failure all just mean "synthesize from scratch".
-      - name: Reuse audio from a previous run of this chapter
-        continue-on-error: true
-        working-directory: sec10v
-        env:
-          PYTHONPATH: scripts
-        run: |
-          python scripts/reuse_audio.py \
-            --owner "${{ github.repository_owner }}" \
-            --repo "${{ github.event.repository.name }}" \
-            --token "${{ secrets.GITHUB_TOKEN }}"
-
-      # With whatever was reused now on disk, this rewrites the manifest down to the chunks that
-      # are genuinely missing — and tells the steps below whether there is any TTS left to do.
-      - name: Decide whether any TTS is needed
-        id: tts
-        working-directory: sec10v
-        env:
-          PYTHONPATH: scripts
-        run: |
-          set +e
-          python scripts/pending_chunks.py --rewrite
-          rc=$?
-          set -e
-          case "$rc" in
-            0)
-              echo "needs_tts=false" >> "$GITHUB_OUTPUT"
-              echo "✅ every chunk's audio is already here — skipping the weights cache, the"
-              echo "   dispatch and the collection, straight to the image and the video"
-              ;;
-            10) echo "needs_tts=true" >> "$GITHUB_OUTPUT" ;;
-            *) exit "$rc" ;;
-          esac
 
       # Needed by the video build at the end (and it is cheap here, while the human is drawing).
       - name: Install ffmpeg
