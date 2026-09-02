@@ -123,28 +123,57 @@ jobs:
           path: ~/.cache/huggingface
           key: ${{ runner.os }}-hf-chatterbox-${{ hashFiles('sec10v/requirements_no_cuda.txt') }}
 
-      - name: Dispatch one sec10v.yml run per chunk (+ intro)
+      # Dispatch → wait → re-dispatch only what is missing. A chunk run can die on its own
+      # (hub rate limit, flaky mirror, the QA retry giving up), and the runner has no
+      # persistent out/ to resume from, so pending_chunks.py rebuilds the manifest from the
+      # audio that actually landed: exit 0 = complete, 10 = it rewrote the manifest with the
+      # stragglers, anything else = broken. Three rounds at 60 min fit the job timeout.
+      - name: Dispatch chunk runs, collect MP3s, retry stragglers
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
         run: |
-          python scripts/trigger_workflow.py \
-            --owner "${{ github.repository_owner }}" \
-            --repo "${{ github.event.repository.name }}" \
-            --workflow sec10v.yml \
-            --ref master \
-            --inputs-file out/workflow-input.json \
-            --token "${{ secrets.GITHUB_TOKEN }}"
+          rounds=3
+          for round in $(seq 1 "$rounds"); do
+            echo "::group::round $round — dispatch"
+            # trigger_workflow.py rewrites out/run_ids.json, so each round polls only its own runs.
+            python scripts/trigger_workflow.py \
+              --owner "${{ github.repository_owner }}" \
+              --repo "${{ github.event.repository.name }}" \
+              --workflow sec10v.yml \
+              --ref master \
+              --inputs-file out/workflow-input.json \
+              --token "${{ secrets.GITHUB_TOKEN }}"
+            echo "::endgroup::"
 
-      - name: Wait for chunk runs and collect MP3s into out/
-        working-directory: sec10v
-        env:
-          PYTHONPATH: scripts
-        run: |
-          python scripts/import_artifacts_mp3s.py \
-            --download --move \
-            --poll-interval 60 --timeout 5400 \
-            --token "${{ secrets.GITHUB_TOKEN }}"
+            echo "::group::round $round — wait and collect"
+            python scripts/import_artifacts_mp3s.py \
+              --download --move \
+              --poll-interval 60 --timeout 3600 \
+              --token "${{ secrets.GITHUB_TOKEN }}"
+            echo "::endgroup::"
+
+            set +e
+            python scripts/pending_chunks.py --rewrite
+            rc=$?
+            set -e
+            case "$rc" in
+              0)
+                echo "✅ every chunk present after round $round"
+                break
+                ;;
+              10)
+                if [ "$round" -eq "$rounds" ]; then
+                  echo "❌ still missing chunk(s) after $rounds round(s)"
+                  exit 1
+                fi
+                echo "🔁 round $((round + 1)) will re-dispatch only the missing chunk(s)"
+                ;;
+              *)
+                exit "$rc"
+                ;;
+            esac
+          done
           echo "--- out/*.mp3 ---"; ls -la out/*.mp3
 
       # The only LLM step, via the official action (https://opencode.ai/docs/github/).
@@ -225,7 +254,7 @@ jobs:
           remaining=$(python -c "import json; d=json.load(open('out/run_ids.json')); print(len(d)); [print(' -', e['out_subdir'], e['run_id']) for e in d]")
           if [ "$(echo "$remaining" | head -n1)" != "0" ]; then
             echo "❌ chunk run(s) still pending/failed:"; echo "$remaining" | tail -n +2
-            echo "Retry: rebuild out/workflow-input.json with only these output_names and re-run trigger + import."
+            echo "These runs failed in the last retry round; rerun this workflow to try again."
             exit 1
           fi
           if [ "${{ steps.creative.outcome }}" != "success" ] || [ "${{ steps.creative_check.outcome }}" != "success" ]; then
