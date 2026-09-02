@@ -59,8 +59,11 @@ env:
   IMAGE_EARLY_WAIT_MINUTES: '20' # while the chunk runs are synthesizing — free, that time is
                                  # otherwise spent idle in the collector's poll
   IMAGE_WAIT_MINUTES: '60'      # second chance, after the audio is collected; 0 disables the video
-  INTRO_AUDIO: intro.7s.mp3     # in sec10v resources/music/, skipped if it isn't there
-  OUTRO_AUDIO: sad_allegro.mp3  # idem
+  # Empty on purpose: no music beds, just the TTS. An empty INTRO_AUDIO drops the music from
+  # the spoken intro (book title + chapter title) and an empty OUTRO_AUDIO skips the outro
+  # segment entirely. Name a file in sec10v resources/music/ to bring either back.
+  INTRO_AUDIO: ''
+  OUTRO_AUDIO: ''
 
 permissions:
   actions: write        # dispatch sec10v.yml runs in this repo and read their artifacts
@@ -284,6 +287,29 @@ jobs:
           fi
           echo "upload the image as ${BASE}.jpg (prefix comes from the IMAGE_BASE_URL secret)"
 
+      # Both fenced, so they can be copied straight out of the run page into YouTube. A
+      # transcript is ~33 KB against the 1 MiB per-step summary cap.
+      - name: Publish the transcript and SEO to the summary
+        if: always()
+        working-directory: sec10v
+        run: |
+          transcript="out/${BASE}.transcript.txt"
+          seo="out/seo/${BASE}.seo.md"
+          {
+            if [ -s "$seo" ]; then
+              echo "### YouTube description / SEO"
+              echo
+              printf '```markdown\n'; cat "$seo"; printf '\n```\n'
+            fi
+            if [ -s "$transcript" ]; then
+              echo
+              echo "### Transcript (upload as the subtitle track)"
+              echo
+              printf '```text\n'; cat "$transcript"; printf '\n```\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "transcript and SEO written to the run summary"
+
       # Needed by the video build at the end (and it is cheap here, while the human is drawing).
       - name: Install ffmpeg
         run: |
@@ -482,7 +508,9 @@ jobs:
             sec10v/out/chapter.json
             sec10v/out/run_ids.json
           if-no-files-found: error
-          retention-days: 7
+          # A day, not a week: this is not a deliverable, it is what reuse_audio.py reads so
+          # a re-run skips the TTS. After that the chapter is published or being redone.
+          retention-days: 1
 
       # Second chance, for when the image wasn't up yet during the synthesis window. fetch_image.py
       # short-circuits on an existing out/pics/{base}.jpg, but skipping the step is cheaper still.
@@ -541,15 +569,19 @@ jobs:
           args=("$BASE")
           # validate_inputs() hard-fails on a music file that isn't there, so check rather than
           # lose the whole video to a renamed asset — automate_audiobook simply omits the segment.
-          if [ -n "$INTRO_AUDIO" ] && [ -f "resources/music/$INTRO_AUDIO" ]; then
+          if [ -z "$INTRO_AUDIO" ]; then
+            echo "no intro music bed requested"
+          elif [ -f "resources/music/$INTRO_AUDIO" ]; then
             args+=(--intro-audio "$INTRO_AUDIO")
           else
-            echo "⚠️ resources/music/$INTRO_AUDIO missing — intro will have no music bed"
+            echo "⚠️ resources/music/$INTRO_AUDIO was asked for but is not there — no music bed"
           fi
-          if [ -n "$OUTRO_AUDIO" ] && [ -f "resources/music/$OUTRO_AUDIO" ]; then
+          if [ -z "$OUTRO_AUDIO" ]; then
+            echo "no outro requested"
+          elif [ -f "resources/music/$OUTRO_AUDIO" ]; then
             args+=(--outro-audio "$OUTRO_AUDIO")
           else
-            echo "⚠️ resources/music/$OUTRO_AUDIO missing — no outro segment"
+            echo "⚠️ resources/music/$OUTRO_AUDIO was asked for but is not there — no outro segment"
           fi
           python scripts/automate_audiobook.py "${args[@]}"
           ls -lh out/*.final.mp4
@@ -599,16 +631,18 @@ jobs:
             --model "${{ github.workspace }}/whisper.cpp/models/ggml-small.en.bin" \
             --summary "$GITHUB_STEP_SUMMARY"
 
-      # Only the final: the numbered out/{base}.{i}.mp4 segments are ~90 MB of rebuildable
-      # intermediates.
+      # The deliverable. archive: false hands back the .mp4 itself instead of a zip, so it
+      # downloads ready to upload. Only the final file: the numbered out/{base}.{i}.mp4
+      # segments are ~90 MB of rebuildable intermediates.
       - name: Upload the final video
         if: success() || failure()   # never from a cancelled run — see the audio upload above
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.BASE || github.run_id }}.video
+          name: ${{ env.BASE || github.run_id }}.final.mp4
           path: sec10v/out/*.final.mp4
           if-no-files-found: warn
           retention-days: 7
+          archive: false
 
       # Fail loudly *after* both uploads so partial output is always available.
       - name: Report chunk, prompt and video status
