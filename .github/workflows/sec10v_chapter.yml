@@ -475,6 +475,7 @@ jobs:
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
+          PYTHONUNBUFFERED: '1'   # so the per-segment progress lines stream instead of arriving at the end
         run: |
           # Preflight: every mp3 must exist, or automate_audiobook would shell out to audiobook.py
           # and fail on the torch this runner deliberately doesn't have.
