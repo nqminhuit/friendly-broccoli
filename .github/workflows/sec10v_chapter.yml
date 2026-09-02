@@ -40,21 +40,6 @@ on:
         required: false
         type: string
         default: ''
-      image_wait_minutes:
-        description: 'How long to wait for the image after the audio is done; 0 = skip the video'
-        required: false
-        type: number
-        default: 60
-      intro_audio:
-        description: 'Intro music filename in sec10v resources/music/ (empty = no music bed)'
-        required: false
-        type: string
-        default: 'intro.7s.mp3'
-      outro_audio:
-        description: 'Outro music filename in sec10v resources/music/ (empty = no outro segment)'
-        required: false
-        type: string
-        default: 'sad_allegro.mp3'
       model:
         description: 'opencode model id (provider/model); OpenCode Zen ids look like opencode/<slug>'
         required: false
@@ -65,6 +50,13 @@ on:
         required: false
         type: string
         default: 'master'
+
+# Not dispatch inputs — every chapter so far has used the same values, and a field you always
+# leave alone is a field you can get wrong. Change them here if that stops being true.
+env:
+  IMAGE_WAIT_MINUTES: '60'      # after the audio is collected; 0 disables the video build
+  INTRO_AUDIO: intro.7s.mp3     # in sec10v resources/music/, skipped if it isn't there
+  OUTRO_AUDIO: sad_allegro.mp3  # idem
 
 permissions:
   actions: write        # dispatch sec10v.yml runs in this repo and read their artifacts
@@ -192,7 +184,6 @@ jobs:
         working-directory: sec10v
         env:
           IMAGE_BASE_URL: ${{ vars.IMAGE_BASE_URL }}
-          WAIT_MINUTES: ${{ inputs.image_wait_minutes }}
         run: |
           prompt="out/prompts/${BASE}.prompt.txt"
           target="${IMAGE_BASE_URL:-<set the IMAGE_BASE_URL repo variable>}/${BASE}.jpg"
@@ -212,7 +203,7 @@ jobs:
             printf '```\n%s\n```\n' "$target"
             echo
             echo "\`.png\`, \`.jpeg\` and \`.webp\` work too (same base name). Polling starts once"
-            echo "the audio is collected and runs for up to ${WAIT_MINUTES} minute(s)."
+            echo "the audio is collected and runs for up to ${IMAGE_WAIT_MINUTES} minute(s)."
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -s "$prompt" ]; then
             echo "::group::image prompt"; cat "$prompt"; echo; echo "::endgroup::"
@@ -352,12 +343,11 @@ jobs:
           PYTHONPATH: scripts
           IMAGE_BASE_URL: ${{ vars.IMAGE_BASE_URL }}
           IMAGE_URL: ${{ inputs.image_url }}   # via env: a dispatch input must never be spliced into the script
-          WAIT_MINUTES: ${{ inputs.image_wait_minutes }}
         run: |
-          wait_minutes=${WAIT_MINUTES%%.*}
+          wait_minutes=${IMAGE_WAIT_MINUTES%%.*}
           if [ "${wait_minutes:-0}" -eq 0 ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️ image wait disabled (image_wait_minutes=0)"
+            echo "⏭️ image wait disabled (IMAGE_WAIT_MINUTES=0)"
             exit 0
           fi
           if [ -z "$IMAGE_URL" ] && [ -z "$IMAGE_BASE_URL" ]; then
@@ -389,15 +379,23 @@ jobs:
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
-          INTRO_AUDIO: ${{ inputs.intro_audio }}
-          OUTRO_AUDIO: ${{ inputs.outro_audio }}
         run: |
           # Preflight: every mp3 must exist, or automate_audiobook would shell out to audiobook.py
           # and fail on the torch this runner deliberately doesn't have.
           python scripts/pending_chunks.py
           args=("$BASE")
-          if [ -n "$INTRO_AUDIO" ]; then args+=(--intro-audio "$INTRO_AUDIO"); fi
-          if [ -n "$OUTRO_AUDIO" ]; then args+=(--outro-audio "$OUTRO_AUDIO"); fi
+          # validate_inputs() hard-fails on a music file that isn't there, so check rather than
+          # lose the whole video to a renamed asset — automate_audiobook simply omits the segment.
+          if [ -n "$INTRO_AUDIO" ] && [ -f "resources/music/$INTRO_AUDIO" ]; then
+            args+=(--intro-audio "$INTRO_AUDIO")
+          else
+            echo "⚠️ resources/music/$INTRO_AUDIO missing — intro will have no music bed"
+          fi
+          if [ -n "$OUTRO_AUDIO" ] && [ -f "resources/music/$OUTRO_AUDIO" ]; then
+            args+=(--outro-audio "$OUTRO_AUDIO")
+          else
+            echo "⚠️ resources/music/$OUTRO_AUDIO missing — no outro segment"
+          fi
           python scripts/automate_audiobook.py "${args[@]}"
           ls -lh out/*.final.mp4
 
