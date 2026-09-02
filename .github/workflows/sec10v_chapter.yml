@@ -1,0 +1,205 @@
+# Main-runner workflow for nqminhuit/friendly-broccoli — copy to .github/workflows/sec10v_chapter.yml there.
+#
+# One manual dispatch prepares a Standard Ebooks chapter end-to-end except for the image:
+#   prepare_chapter.py → trigger_workflow.py (fans out N chunk runs + 1 intro run of sec10v.yml)
+#   → import_artifacts_mp3s.py (waits, collects) → anomalyco/opencode/github action writes
+#   prompt + SEO → one artifact.
+# Locally you then unzip the artifact into out/, add out/pics/{base}.jpg, and run
+# automate_audiobook.py — ffmpeg only, no torch, because every .mp3 (incl. .intro.mp3) exists.
+#
+# Secrets needed in friendly-broccoli: SEC10V_ACCESS_TOKEN (already used by sec10v.yml) and
+# OPENCODE_API_KEY (from https://opencode.ai/zen — required even for the free models).
+name: sec10v chapter
+run-name: ${{ inputs.base_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      se_repo:
+        description: 'Standard Ebooks repo slug (e.g. g-k-chesterton_the-wisdom-of-father-brown)'
+        required: true
+        type: string
+      chapter:
+        description: 'Chapter xhtml stem under src/epub/text/ (e.g. the-man-in-the-passage)'
+        required: true
+        type: string
+      base_name:
+        description: 'Pipeline BaseName, Book.Chapter, no spaces/underscores (e.g. TheWisdomOfFatherBrown.TheManInThePassage)'
+        required: true
+        type: string
+      book_title:
+        description: 'Spoken book title for the intro (e.g. The wisdom of father Brown)'
+        required: true
+        type: string
+      chapter_title:
+        description: 'Spoken chapter title for the intro (e.g. The man in the passage)'
+        required: true
+        type: string
+      model:
+        description: 'opencode model id, provider/model — an OpenCode Zen id looks like opencode/<slug>; list them locally with `opencode models` after setting OPENCODE_API_KEY'
+        required: true
+        type: string
+      sec10v_ref:
+        description: 'nqminhuit/sec10v ref to check out'
+        required: false
+        type: string
+        default: 'master'
+
+permissions:
+  actions: write        # dispatch sec10v.yml runs in this repo and read their artifacts
+  contents: write       # required by anomalyco/opencode/github with use_github_token: true
+  issues: write         # (idem — the action's documented minimum; nothing here opens issues/PRs)
+  pull-requests: write  # (idem)
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false   # as in the opencode action's reference workflow
+
+      - name: Checkout nqminhuit/sec10v
+        uses: actions/checkout@v7
+        with:
+          repository: nqminhuit/sec10v
+          path: sec10v
+          ref: ${{ inputs.sec10v_ref }}
+          token: ${{ secrets.SEC10V_ACCESS_TOKEN }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      # The main runner never runs TTS itself; requests is all the sec10v scripts here import.
+      - name: Install Python dependencies
+        run: pip install requests
+
+      - name: Prepare chapter text, chunks, intro and dispatch manifest
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+        run: |
+          python scripts/prepare_chapter.py \
+            --repo "${{ inputs.se_repo }}" \
+            --chapter "${{ inputs.chapter }}" \
+            --base-name "${{ inputs.base_name }}" \
+            --book-title "${{ inputs.book_title }}" \
+            --chapter-title "${{ inputs.chapter_title }}"
+          echo "--- out/text ---"; ls -la out/text
+          echo "--- dispatch manifest ---"; python -c "import json; print(len(json.load(open('out/workflow-input.json'))), 'item(s)')"
+
+      - name: Dispatch one sec10v.yml run per chunk (+ intro)
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+        run: |
+          python scripts/trigger_workflow.py \
+            --owner "${{ github.repository_owner }}" \
+            --repo "${{ github.event.repository.name }}" \
+            --workflow sec10v.yml \
+            --ref master \
+            --inputs-file out/workflow-input.json \
+            --token "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Wait for chunk runs and collect MP3s into out/
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+        run: |
+          python scripts/import_artifacts_mp3s.py \
+            --download --move \
+            --poll-interval 60 --timeout 5400 \
+            --token "${{ secrets.GITHUB_TOKEN }}"
+          echo "--- out/*.mp3 ---"; ls -la out/*.mp3
+
+      # The only LLM step, via the official action (https://opencode.ai/docs/github/).
+      # workflow_dispatch requires an explicit `prompt`; `use_github_token: true` skips the
+      # OpenCode GitHub App / OIDC setup. The action runs in the workspace root, so every path
+      # in the prompt is prefixed with sec10v/. opencode.json limits it to file edits (no shell).
+      # Its failure never blocks the artifact — the MP3s are the expensive part.
+      - name: Restrict opencode to file edits
+        run: |
+          mkdir -p sec10v/out/prompts sec10v/out/seo
+          cat > opencode.json <<'EOF'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "permission": { "edit": "allow", "bash": "deny" }
+          }
+          EOF
+
+      - name: Generate image prompt and SEO with opencode
+        id: creative
+        continue-on-error: true
+        uses: anomalyco/opencode/github@latest
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: ${{ inputs.model }}
+          use_github_token: true
+          share: false
+          prompt: |
+            You are working in a checkout of the sec10v repository located at ./sec10v.
+            Do exactly two tasks and nothing else.
+
+            Chapter text: sec10v/out/text/${{ inputs.base_name }}.txt
+            Book title: ${{ inputs.book_title }}
+            Chapter title: ${{ inputs.chapter_title }}
+            Author: G. K. Chesterton
+            BaseName: ${{ inputs.base_name }}
+
+            Task 1 — follow sec10v/.github/skills/image-prompt-generator/SKILL.md exactly
+            (single-file mode) and write the prompt to
+            sec10v/out/prompts/${{ inputs.base_name }}.prompt.txt.
+
+            Task 2 — follow sec10v/.github/skills/audiobook-youtube-seo/SKILL.md exactly and
+            write the result to sec10v/out/seo/${{ inputs.base_name }}.seo.md. Match the
+            structure of any existing files in sec10v/out/seo/.
+
+            Do not modify any other file. Do not run shell commands. Do not commit or push.
+
+      - name: Check opencode outputs
+        id: creative_check
+        continue-on-error: true
+        working-directory: sec10v
+        env:
+          BASE: ${{ inputs.base_name }}
+        run: |
+          for f in "out/prompts/${BASE}.prompt.txt" "out/seo/${BASE}.seo.md"; do
+            if [ ! -s "$f" ]; then echo "❌ opencode did not produce $f"; exit 1; fi
+            echo "=== $f ==="; cat "$f"; echo
+          done
+
+      - name: Upload chapter artifact (text, mp3s, prompt, seo)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.base_name }}
+          path: |
+            sec10v/out/text/
+            sec10v/out/*.mp3
+            sec10v/out/prompts/
+            sec10v/out/seo/
+            sec10v/out/run_ids.json
+          if-no-files-found: error
+          retention-days: 7
+
+      # Fail loudly *after* the upload so partial output is still available for a manual retry.
+      - name: Fail if any chunk run did not succeed
+        working-directory: sec10v
+        run: |
+          remaining=$(python -c "import json; d=json.load(open('out/run_ids.json')); print(len(d)); [print(' -', e['out_subdir'], e['run_id']) for e in d]")
+          if [ "$(echo "$remaining" | head -n1)" != "0" ]; then
+            echo "❌ chunk run(s) still pending/failed:"; echo "$remaining" | tail -n +2
+            echo "Retry: rebuild out/workflow-input.json with only these output_names and re-run trigger + import."
+            exit 1
+          fi
+          if [ "${{ steps.creative.outcome }}" != "success" ] || [ "${{ steps.creative_check.outcome }}" != "success" ]; then
+            echo "⚠️ opencode did not produce the prompt/SEO — write them manually from the skills; MP3s are complete."
+          fi
