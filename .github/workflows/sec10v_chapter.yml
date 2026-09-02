@@ -336,6 +336,7 @@ jobs:
 
       - name: Collect MP3s, retry stragglers
         working-directory: sec10v
+        timeout-minutes: 200   # bounds the polling loop below; the job cap is 330
         env:
           PYTHONPATH: scripts
         run: |
@@ -354,33 +355,45 @@ jobs:
               echo "::endgroup::"
             fi
 
-            echo "::group::round $round — wait and collect"
-            python scripts/import_artifacts_mp3s.py \
-              --download --move \
-              --poll-interval 60 --timeout 2400 \
-              --token "${{ secrets.GITHUB_TOKEN }}"
-            echo "::endgroup::"
+            # Round 1 dispatches 30+ runs, which queue behind GitHub's concurrency limit, so a
+            # chunk can legitimately take ~45 min end to end. Later rounds have the runners to
+            # themselves.
+            if [ "$round" -eq 1 ]; then collect_timeout=5400; else collect_timeout=2700; fi
 
-            set +e
-            python scripts/pending_chunks.py --rewrite
-            rc=$?
-            set -e
-            case "$rc" in
-              0)
+            while :; do
+              echo "::group::round $round — wait and collect"
+              python scripts/import_artifacts_mp3s.py \
+                --download --move \
+                --poll-interval 60 --timeout "$collect_timeout" \
+                --token "${{ secrets.GITHUB_TOKEN }}"
+              echo "::endgroup::"
+
+              set +e
+              python scripts/pending_chunks.py --rewrite
+              rc=$?
+              set -e
+              if [ "$rc" -eq 0 ]; then
                 echo "✅ every chunk present after round $round"
-                break
-                ;;
-              10)
-                if [ "$round" -eq "$rounds" ]; then
-                  echo "❌ still missing chunk(s) after $rounds round(s)"
-                  exit 1
-                fi
-                echo "🔁 round $((round + 1)) will re-dispatch only the missing chunk(s)"
-                ;;
-              *)
-                exit "$rc"
-                ;;
-            esac
+                break 2
+              fi
+              if [ "$rc" -ne 10 ]; then exit "$rc"; fi
+
+              # Audio is missing — but only re-dispatch runs that have actually finished.
+              # Re-dispatching one that is merely slow duplicates ~40 minutes of TTS and makes
+              # the wait *longer*: chunk 27 once ran 04:26-05:12 while the loop gave up at
+              # 05:06 and started a copy at 05:08.
+              if python scripts/runs_alive.py --token "${{ secrets.GITHUB_TOKEN }}"; then
+                echo "⏳ chunk run(s) still in flight — polling again instead of re-dispatching"
+                continue
+              fi
+              break
+            done
+
+            if [ "$round" -eq "$rounds" ]; then
+              echo "❌ still missing chunk(s) after $rounds round(s)"
+              exit 1
+            fi
+            echo "🔁 round $((round + 1)) will re-dispatch only the missing chunk(s)"
           done
           echo "--- out/*.mp3 ---"; ls -la out/*.mp3
 
