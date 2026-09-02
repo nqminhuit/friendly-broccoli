@@ -10,23 +10,20 @@
 # Secrets needed in friendly-broccoli: SEC10V_ACCESS_TOKEN (already used by sec10v.yml) and
 # OPENCODE_API_KEY (from https://opencode.ai/zen — required even for the free models).
 name: sec10v chapter
-run-name: ${{ inputs.chapter }}
+run-name: ${{ inputs.se_url }}
 
 on:
   workflow_dispatch:
     inputs:
-      se_repo:
-        description: 'Standard Ebooks repo slug (e.g. g-k-chesterton_the-wisdom-of-father-brown)'
+      se_url:
+        description: 'Standard Ebooks chapter URL, copied from GitHub (…/standardebooks/<repo>/blob/master/src/epub/text/<chapter>.xhtml)'
         required: true
         type: string
-      chapter:
-        description: 'Chapter xhtml stem under src/epub/text/ (e.g. the-man-in-the-passage)'
-        required: true
-        type: string
-      # Everything else is inferred by prepare_chapter.py from the two inputs above:
-      #   BaseName      ← se_repo + chapter slugs   (TheWisdomOfFatherBrown.TheManInThePassage)
-      #   book title    ← <dc:title> in the book's content.opf
-      #   chapter title ← the chapter's <h2 epub:type="title"> heading
+      # Everything else is inferred by prepare_chapter.py from that one URL:
+      #   repo + chapter ← parsed out of the URL
+      #   BaseName       ← repo + chapter slugs      (TheWisdomOfFatherBrown.TheManInThePassage)
+      #   book title     ← <dc:title> in the book's content.opf
+      #   chapter title  ← the chapter's <h2 epub:type="title"> heading
       model:
         description: 'opencode model id (provider/model); OpenCode Zen ids look like opencode/<slug>'
         required: false
@@ -78,14 +75,14 @@ jobs:
         env:
           PYTHONPATH: scripts
         run: |
-          python scripts/prepare_chapter.py \
-            --repo "${{ inputs.se_repo }}" \
-            --chapter "${{ inputs.chapter }}"
-          # Export the inferred BaseName and titles for the later steps.
+          python scripts/prepare_chapter.py --url "${{ inputs.se_url }}"
+          # Export the parsed/inferred values for the later steps.
           python - <<'EOF' >> "$GITHUB_ENV"
           import json
           d = json.load(open("out/chapter.json"))
-          for env, key in (("BASE", "base_name"), ("BOOK_TITLE", "book_title"), ("CHAPTER_TITLE", "chapter_title")):
+          for env, key in (("BASE", "base_name"), ("BOOK_TITLE", "book_title"),
+                           ("CHAPTER_TITLE", "chapter_title"),
+                           ("SE_REPO", "repo")):
               assert "\n" not in d[key]
               print(f"{env}={d[key]}")
           EOF
@@ -149,7 +146,7 @@ jobs:
             Chapter text: sec10v/out/text/${{ env.BASE }}.txt
             Book title: ${{ env.BOOK_TITLE }}
             Chapter title: ${{ env.CHAPTER_TITLE }}
-            Author: see the <dc:creator> of the book (Standard Ebooks repo ${{ inputs.se_repo }})
+            Author: see the <dc:creator> of the book (Standard Ebooks repo ${{ env.SE_REPO }})
             BaseName: ${{ env.BASE }}
 
             Task 1 — follow sec10v/.github/skills/image-prompt-generator/SKILL.md exactly
@@ -176,7 +173,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.BASE || inputs.chapter }}
+          name: ${{ env.BASE || github.run_id }}
           path: |
             sec10v/out/text/
             sec10v/out/*.mp3
