@@ -179,14 +179,19 @@ jobs:
             exit 1
           fi
 
-      - name: Text-to-Speech with Whisper (attempt 1)
+      # Sliced, not one long pass: whisper silently drops whole sentences from a 2-minute
+      # quote-dense chunk, which the Levenshtein gate then reads as a bad take. Measured on
+      # TheDuelOfDrHirsch.09 with this same model: 67.63% FAIL in one pass, 94.96% PASS sliced.
+      - name: Transcribe with Whisper in slices (attempt 1)
         id: whisper1
-        working-directory: whisper.cpp
+        working-directory: sec10v
         run: |
-            ./build/bin/whisper-cli -m models/ggml-small.en.bin \
-                -f ${{ github.workspace }}/sec10v/out/audiobook.mp3 \
-                -np -nt > ${{ github.workspace }}/sec10v/audiobook.gen.txt
-            cat ${{ github.workspace }}/sec10v/audiobook.gen.txt
+            python scripts/transcribe_sliced.py \
+                --audio out/audiobook.mp3 \
+                --whisper-cli ${{ github.workspace }}/whisper.cpp/build/bin/whisper-cli \
+                --model ${{ github.workspace }}/whisper.cpp/models/ggml-small.en.bin \
+                --out audiobook.gen.txt
+            cat audiobook.gen.txt
 
       - name: Setup Go
         uses: actions/setup-go@v7
@@ -222,14 +227,16 @@ jobs:
                 exit 1
             fi
 
-      - name: Whisper transcription (retry)
+      - name: Whisper transcription in slices (retry)
         if: steps.tts2.outcome == 'success'
-        working-directory: whisper.cpp
+        working-directory: sec10v
         run: |
-            ./build/bin/whisper-cli -m models/ggml-small.en.bin \
-                -f ${{ github.workspace }}/sec10v/out/audiobook.mp3 \
-                -np -nt > ${{ github.workspace }}/sec10v/audiobook.gen.txt
-            cat ${{ github.workspace }}/sec10v/audiobook.gen.txt
+            python scripts/transcribe_sliced.py \
+                --audio out/audiobook.mp3 \
+                --whisper-cli ${{ github.workspace }}/whisper.cpp/build/bin/whisper-cli \
+                --model ${{ github.workspace }}/whisper.cpp/models/ggml-small.en.bin \
+                --out audiobook.gen.txt
+            cat audiobook.gen.txt
 
       - name: Verify TTS output (retry)
         if: steps.tts2.outcome == 'success'
