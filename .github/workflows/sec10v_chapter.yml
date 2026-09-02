@@ -10,7 +10,7 @@
 # Secrets needed in friendly-broccoli: SEC10V_ACCESS_TOKEN (already used by sec10v.yml) and
 # OPENCODE_API_KEY (from https://opencode.ai/zen — required even for the free models).
 name: sec10v chapter
-run-name: ${{ inputs.base_name }}
+run-name: ${{ inputs.base_name || inputs.chapter }}
 
 on:
   workflow_dispatch:
@@ -23,22 +23,30 @@ on:
         description: 'Chapter xhtml stem under src/epub/text/ (e.g. the-man-in-the-passage)'
         required: true
         type: string
+      # The three below are derived by prepare_chapter.py when left empty:
+      #   base_name     ← se_repo + chapter slugs   (TheWisdomOfFatherBrown.TheManInThePassage)
+      #   book_title    ← <dc:title> in the book's content.opf
+      #   chapter_title ← the chapter's <h2 epub:type="title"> heading
       base_name:
-        description: 'Pipeline BaseName, Book.Chapter, no spaces/underscores (e.g. TheWisdomOfFatherBrown.TheManInThePassage)'
-        required: true
+        description: 'Override BaseName (Book.Chapter, no spaces/underscores); default derived from se_repo + chapter'
+        required: false
         type: string
+        default: ''
       book_title:
-        description: 'Spoken book title for the intro (e.g. The wisdom of father Brown)'
-        required: true
+        description: 'Override spoken book title for the intro; default from content.opf'
+        required: false
         type: string
+        default: ''
       chapter_title:
-        description: 'Spoken chapter title for the intro (e.g. The man in the passage)'
-        required: true
+        description: 'Override spoken chapter title for the intro; default from the chapter heading'
+        required: false
         type: string
+        default: ''
       model:
-        description: 'opencode model id, provider/model — an OpenCode Zen id looks like opencode/<slug>; list them locally with `opencode models` after setting OPENCODE_API_KEY'
-        required: true
+        description: 'opencode model id (provider/model); OpenCode Zen ids look like opencode/<slug>'
+        required: false
         type: string
+        default: 'opencode/mimo-v2.5-free'
       sec10v_ref:
         description: 'nqminhuit/sec10v ref to check out'
         required: false
@@ -84,13 +92,24 @@ jobs:
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
+        env:
+          IN_BASE_NAME: ${{ inputs.base_name }}
+          IN_BOOK_TITLE: ${{ inputs.book_title }}
+          IN_CHAPTER_TITLE: ${{ inputs.chapter_title }}
         run: |
-          python scripts/prepare_chapter.py \
-            --repo "${{ inputs.se_repo }}" \
-            --chapter "${{ inputs.chapter }}" \
-            --base-name "${{ inputs.base_name }}" \
-            --book-title "${{ inputs.book_title }}" \
-            --chapter-title "${{ inputs.chapter_title }}"
+          args=(--repo "${{ inputs.se_repo }}" --chapter "${{ inputs.chapter }}")
+          [ -n "$IN_BASE_NAME" ]     && args+=(--base-name "$IN_BASE_NAME")
+          [ -n "$IN_BOOK_TITLE" ]    && args+=(--book-title "$IN_BOOK_TITLE")
+          [ -n "$IN_CHAPTER_TITLE" ] && args+=(--chapter-title "$IN_CHAPTER_TITLE")
+          python scripts/prepare_chapter.py "${args[@]}"
+          # Export the (possibly derived) values for the later steps.
+          python - <<'EOF' >> "$GITHUB_ENV"
+          import json
+          d = json.load(open("out/chapter.json"))
+          for env, key in (("BASE", "base_name"), ("BOOK_TITLE", "book_title"), ("CHAPTER_TITLE", "chapter_title")):
+              assert "\n" not in d[key]
+              print(f"{env}={d[key]}")
+          EOF
           echo "--- out/text ---"; ls -la out/text
           echo "--- dispatch manifest ---"; python -c "import json; print(len(json.load(open('out/workflow-input.json'))), 'item(s)')"
 
@@ -148,18 +167,18 @@ jobs:
             You are working in a checkout of the sec10v repository located at ./sec10v.
             Do exactly two tasks and nothing else.
 
-            Chapter text: sec10v/out/text/${{ inputs.base_name }}.txt
-            Book title: ${{ inputs.book_title }}
-            Chapter title: ${{ inputs.chapter_title }}
-            Author: G. K. Chesterton
-            BaseName: ${{ inputs.base_name }}
+            Chapter text: sec10v/out/text/${{ env.BASE }}.txt
+            Book title: ${{ env.BOOK_TITLE }}
+            Chapter title: ${{ env.CHAPTER_TITLE }}
+            Author: see the <dc:creator> of the book (Standard Ebooks repo ${{ inputs.se_repo }})
+            BaseName: ${{ env.BASE }}
 
             Task 1 — follow sec10v/.github/skills/image-prompt-generator/SKILL.md exactly
             (single-file mode) and write the prompt to
-            sec10v/out/prompts/${{ inputs.base_name }}.prompt.txt.
+            sec10v/out/prompts/${{ env.BASE }}.prompt.txt.
 
             Task 2 — follow sec10v/.github/skills/audiobook-youtube-seo/SKILL.md exactly and
-            write the result to sec10v/out/seo/${{ inputs.base_name }}.seo.md. Match the
+            write the result to sec10v/out/seo/${{ env.BASE }}.seo.md. Match the
             structure of any existing files in sec10v/out/seo/.
 
             Do not modify any other file. Do not run shell commands. Do not commit or push.
@@ -168,8 +187,6 @@ jobs:
         id: creative_check
         continue-on-error: true
         working-directory: sec10v
-        env:
-          BASE: ${{ inputs.base_name }}
         run: |
           for f in "out/prompts/${BASE}.prompt.txt" "out/seo/${BASE}.seo.md"; do
             if [ ! -s "$f" ]; then echo "❌ opencode did not produce $f"; exit 1; fi
@@ -180,12 +197,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ inputs.base_name }}
+          name: ${{ env.BASE || inputs.chapter }}
           path: |
             sec10v/out/text/
             sec10v/out/*.mp3
             sec10v/out/prompts/
             sec10v/out/seo/
+            sec10v/out/chapter.json
             sec10v/out/run_ids.json
           if-no-files-found: error
           retention-days: 7
