@@ -125,6 +125,11 @@ jobs:
       # on the URL convention, not on the prompt.
       - name: Restrict opencode to file edits
         run: |
+          # The action commits whatever it wrote. persist-credentials: false means that commit
+          # goes nowhere and dies with the runner, but without an identity it fails outright and
+          # reports the whole step as failed even when both files were written correctly.
+          git config user.email "actions@github.com"
+          git config user.name "sec10v chapter runner"
           mkdir -p sec10v/out/prompts sec10v/out/seo
           cat > opencode.json <<'EOF'
           {
@@ -245,10 +250,14 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # chatterbox-tts is installed without its dependencies purely so hf_weights.py can
-          # read the weight list out of the version this chapter will actually run with.
+          # Two separate installs on purpose: --no-deps applies to every package in a pip
+          # command, so installing both together left huggingface_hub without httpx and the
+          # fetch died with ModuleNotFoundError. huggingface_hub needs its dependencies;
+          # chatterbox-tts is code-only here, just so hf_weights.py can read the weight list
+          # out of the version this chapter will actually run with.
+          pip install --quiet huggingface_hub
           pin=$(grep -m1 '^chatterbox-tts==' requirements_no_cuda.txt)
-          pip install --quiet huggingface_hub "${pin:-chatterbox-tts}" --no-deps
+          pip install --quiet --no-deps "${pin:-chatterbox-tts}"
           python scripts/hf_weights.py --no-stagger
           du -sh ~/.cache/huggingface
 
@@ -420,7 +429,10 @@ jobs:
             echo "These runs failed in the last retry round; rerun this workflow to try again."
             exit 1
           fi
-          if [ "${{ steps.creative.outcome }}" != "success" ] || [ "${{ steps.creative_check.outcome }}" != "success" ]; then
+          # creative_check is the honest signal: it tests the two files. The action itself can
+          # report failure for reasons that don't matter here (a failed internal git commit, or
+          # its title side-model being rejected by the billing check).
+          if [ "${{ steps.creative_check.outcome }}" != "success" ]; then
             echo "⚠️ opencode did not produce the prompt/SEO — write them manually from the skills; MP3s are complete."
           fi
           if [ "${{ steps.image.outputs.found }}" != "true" ]; then
