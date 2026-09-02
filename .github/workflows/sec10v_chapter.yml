@@ -10,7 +10,7 @@
 # Secrets needed in friendly-broccoli: SEC10V_ACCESS_TOKEN (already used by sec10v.yml) and
 # OPENCODE_API_KEY (from https://opencode.ai/zen — required even for the free models).
 name: sec10v chapter
-run-name: ${{ inputs.base_name || inputs.chapter }}
+run-name: ${{ inputs.chapter }}
 
 on:
   workflow_dispatch:
@@ -23,25 +23,10 @@ on:
         description: 'Chapter xhtml stem under src/epub/text/ (e.g. the-man-in-the-passage)'
         required: true
         type: string
-      # The three below are derived by prepare_chapter.py when left empty:
-      #   base_name     ← se_repo + chapter slugs   (TheWisdomOfFatherBrown.TheManInThePassage)
-      #   book_title    ← <dc:title> in the book's content.opf
-      #   chapter_title ← the chapter's <h2 epub:type="title"> heading
-      base_name:
-        description: 'Override BaseName (Book.Chapter, no spaces/underscores); default derived from se_repo + chapter'
-        required: false
-        type: string
-        default: ''
-      book_title:
-        description: 'Override spoken book title for the intro; default from content.opf'
-        required: false
-        type: string
-        default: ''
-      chapter_title:
-        description: 'Override spoken chapter title for the intro; default from the chapter heading'
-        required: false
-        type: string
-        default: ''
+      # Everything else is inferred by prepare_chapter.py from the two inputs above:
+      #   BaseName      ← se_repo + chapter slugs   (TheWisdomOfFatherBrown.TheManInThePassage)
+      #   book title    ← <dc:title> in the book's content.opf
+      #   chapter title ← the chapter's <h2 epub:type="title"> heading
       model:
         description: 'opencode model id (provider/model); OpenCode Zen ids look like opencode/<slug>'
         required: false
@@ -92,16 +77,11 @@ jobs:
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
-          IN_BASE_NAME: ${{ inputs.base_name }}
-          IN_BOOK_TITLE: ${{ inputs.book_title }}
-          IN_CHAPTER_TITLE: ${{ inputs.chapter_title }}
         run: |
-          args=(--repo "${{ inputs.se_repo }}" --chapter "${{ inputs.chapter }}")
-          [ -n "$IN_BASE_NAME" ]     && args+=(--base-name "$IN_BASE_NAME")
-          [ -n "$IN_BOOK_TITLE" ]    && args+=(--book-title "$IN_BOOK_TITLE")
-          [ -n "$IN_CHAPTER_TITLE" ] && args+=(--chapter-title "$IN_CHAPTER_TITLE")
-          python scripts/prepare_chapter.py "${args[@]}"
-          # Export the (possibly derived) values for the later steps.
+          python scripts/prepare_chapter.py \
+            --repo "${{ inputs.se_repo }}" \
+            --chapter "${{ inputs.chapter }}"
+          # Export the inferred BaseName and titles for the later steps.
           python - <<'EOF' >> "$GITHUB_ENV"
           import json
           d = json.load(open("out/chapter.json"))
