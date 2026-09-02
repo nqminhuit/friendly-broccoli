@@ -42,6 +42,11 @@ on:
         required: false
         type: string
         default: ''
+      fresh:
+        description: 'Start fresh: ignore this chapter''s artifacts from earlier runs and re-synthesize every chunk (and the prompt/SEO)'
+        required: false
+        type: boolean
+        default: false
       model:
         description: 'opencode model id (provider/model); OpenCode Zen ids look like opencode/<slug>'
         required: false
@@ -137,7 +142,13 @@ jobs:
       # an artifact named after the BaseName. Fetch them instead of spending another 40 minutes
       # of runners recreating them. Opportunistic: no artifact, an expired one or a network
       # failure all just mean "synthesize from scratch".
+      #
+      # `fresh` skips it outright: nothing on disk means pending_chunks.py finds every chunk
+      # missing, so all the audio is re-synthesized and opencode rewrites the prompt and the SEO.
+      # That is the escape hatch for a previous run whose MP3s are bad rather than absent — a
+      # truncated chunk that still passed its own QA, a voice change, an edited chapter text.
       - name: Reuse audio from a previous run of this chapter
+        if: ${{ !inputs.fresh }}
         continue-on-error: true
         working-directory: sec10v
         env:
