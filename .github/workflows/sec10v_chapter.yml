@@ -92,7 +92,6 @@ jobs:
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
-        env:
           IN_BASE_NAME: ${{ inputs.base_name }}
           IN_BOOK_TITLE: ${{ inputs.book_title }}
           IN_CHAPTER_TITLE: ${{ inputs.chapter_title }}
