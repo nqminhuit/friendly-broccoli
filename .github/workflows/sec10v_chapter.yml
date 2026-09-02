@@ -463,8 +463,13 @@ jobs:
 
       # Uploaded BEFORE the image wait on purpose: a job cancelled by timeout-minutes skips even
       # `if: always()` steps, and the audio is the expensive half of the run.
+      #
+      # success() || failure() rather than always(): on a *cancelled* run this step would upload
+      # whatever happened to be in out/ under the chapter's name, and a near-empty artifact then
+      # sits in front of the complete one that reuse_audio.py wants. Cancelling early left
+      # exactly that — 0.1 MB of text and prompt masking a 91 MB artifact.
       - name: Upload chapter artifact (text, mp3s, prompt, seo)
-        if: always()
+        if: success() || failure()
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BASE || github.run_id }}
@@ -551,7 +556,7 @@ jobs:
       # Only the final: the numbered out/{base}.{i}.mp4 segments are ~90 MB of rebuildable
       # intermediates.
       - name: Upload the final video
-        if: always()
+        if: success() || failure()   # never from a cancelled run — see the audio upload above
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BASE || github.run_id }}.video
