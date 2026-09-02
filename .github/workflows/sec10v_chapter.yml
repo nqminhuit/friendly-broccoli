@@ -120,6 +120,16 @@ jobs:
           echo "--- out/text ---"; ls -la out/text
           echo "--- dispatch manifest ---"; python -c "import json; print(len(json.load(open('out/workflow-input.json'))), 'item(s)')"
 
+      # YouTube takes an untimed transcript and aligns it to the audio itself, so this is just
+      # the intro plus the chapter text — the exact words the TTS read. Written here, right after
+      # the text exists, so it survives a failure anywhere later in the run.
+      - name: Write the YouTube transcript
+        working-directory: sec10v
+        run: |
+          echo "::group::transcript"
+          python scripts/transcript.py
+          echo "::endgroup::"
+
       # The only LLM step, via the official action (https://opencode.ai/docs/github/), and it runs
       # FIRST so the image prompt is on screen a few minutes into the run — the human then draws
       # while the TTS below is still going. workflow_dispatch requires an explicit `prompt`;
@@ -208,6 +218,8 @@ jobs:
               echo "> \`.github/skills/image-prompt-generator/SKILL.md\`. Chapter opening:"
               printf '```text\n'; head -c 1200 "out/text/${BASE}.txt"; printf '\n```\n'
             fi
+            echo
+            echo "The YouTube transcript is in the artifact as \`${BASE}.transcript.txt\`."
             echo
             echo "### Upload the generated image to ${target} as"
             echo
@@ -406,6 +418,7 @@ jobs:
           name: ${{ env.BASE || github.run_id }}
           path: |
             sec10v/out/text/
+            sec10v/out/*.transcript.txt
             sec10v/out/*.mp3
             sec10v/out/prompts/
             sec10v/out/seo/
