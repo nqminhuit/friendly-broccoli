@@ -235,6 +235,43 @@ jobs:
           fi
           echo "upload the image as ${BASE}.jpg (prefix comes from the IMAGE_BASE_URL secret)"
 
+      # A run that died after the audio (no image, a broken encode, a timeout) left its MP3s in
+      # an artifact named after the BaseName. Fetch them instead of spending another 40 minutes
+      # of runners recreating them. Opportunistic: no artifact, an expired one or a network
+      # failure all just mean "synthesize from scratch".
+      - name: Reuse audio from a previous run of this chapter
+        continue-on-error: true
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+        run: |
+          python scripts/reuse_audio.py \
+            --owner "${{ github.repository_owner }}" \
+            --repo "${{ github.event.repository.name }}" \
+            --token "${{ secrets.GITHUB_TOKEN }}"
+
+      # With whatever was reused now on disk, this rewrites the manifest down to the chunks that
+      # are genuinely missing — and tells the steps below whether there is any TTS left to do.
+      - name: Decide whether any TTS is needed
+        id: tts
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+        run: |
+          set +e
+          python scripts/pending_chunks.py --rewrite
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              echo "needs_tts=false" >> "$GITHUB_OUTPUT"
+              echo "✅ every chunk's audio is already here — skipping the weights cache, the"
+              echo "   dispatch and the collection, straight to the image and the video"
+              ;;
+            10) echo "needs_tts=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+
       # Needed by the video build at the end (and it is cheap here, while the human is drawing).
       - name: Install ffmpeg
         run: |
@@ -257,6 +294,7 @@ jobs:
       # sec10v.yml — both hash the requirements file that pins chatterbox-tts.
       - name: Restore the Chatterbox weights cache
         id: hf_cache
+        if: steps.tts.outputs.needs_tts == 'true'
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/huggingface
@@ -265,7 +303,7 @@ jobs:
             ${{ runner.os }}-hf-chatterbox-
 
       - name: Warm the Chatterbox weights cache
-        if: steps.hf_cache.outputs.cache-hit != 'true'
+        if: steps.tts.outputs.needs_tts == 'true' && steps.hf_cache.outputs.cache-hit != 'true'
         working-directory: sec10v
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -282,7 +320,7 @@ jobs:
           du -sh ~/.cache/huggingface
 
       - name: Save the Chatterbox weights cache
-        if: steps.hf_cache.outputs.cache-hit != 'true'
+        if: steps.tts.outputs.needs_tts == 'true' && steps.hf_cache.outputs.cache-hit != 'true'
         continue-on-error: true   # a concurrent run may have reserved the same key already
         uses: actions/cache/save@v6
         with:
@@ -300,6 +338,7 @@ jobs:
       # on their own runners from here on. Round 1 is dispatched in its own step purely so the
       # image wait below can slot in between dispatch and collection.
       - name: Dispatch one sec10v.yml run per chunk (+ intro)
+        if: steps.tts.outputs.needs_tts == 'true'
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
@@ -347,6 +386,7 @@ jobs:
           fi
 
       - name: Collect MP3s, retry stragglers
+        if: steps.tts.outputs.needs_tts == 'true'
         working-directory: sec10v
         timeout-minutes: 200   # bounds the polling loop below; the job cap is 330
         env:
@@ -511,7 +551,11 @@ jobs:
       - name: Report chunk, prompt and video status
         working-directory: sec10v
         run: |
-          remaining=$(python -c "import json; d=json.load(open('out/run_ids.json')); print(len(d)); [print(' -', e['out_subdir'], e['run_id']) for e in d]")
+          if [ -f out/run_ids.json ]; then
+            remaining=$(python -c "import json; d=json.load(open('out/run_ids.json')); print(len(d)); [print(' -', e['out_subdir'], e['run_id']) for e in d]")
+          else
+            remaining=0   # no chunk run was dispatched at all (audio came from a previous run)
+          fi
           if [ "$(echo "$remaining" | head -n1)" != "0" ]; then
             echo "❌ chunk run(s) still pending/failed:"; echo "$remaining" | tail -n +2
             echo "These runs failed in the last retry round; rerun this workflow to try again."
