@@ -1,14 +1,25 @@
 # Main-runner workflow for nqminhuit/friendly-broccoli — copy to .github/workflows/sec10v_chapter.yml there.
 #
-# One manual dispatch prepares a Standard Ebooks chapter end-to-end except for the image:
-#   prepare_chapter.py → trigger_workflow.py (fans out N chunk runs + 1 intro run of sec10v.yml)
-#   → import_artifacts_mp3s.py (waits, collects) → anomalyco/opencode/github action writes
-#   prompt + SEO → one artifact.
-# Locally you then unzip the artifact into out/, add out/pics/{base}.jpg, and run
-# automate_audiobook.py — ffmpeg only, no torch, because every .mp3 (incl. .intro.mp3) exists.
+# One manual dispatch turns a Standard Ebooks chapter URL into a finished MP4. The only human
+# step is drawing the background image, and it is deliberately moved to the front:
 #
-# Secrets needed in friendly-broccoli: SEC10V_ACCESS_TOKEN (already used by sec10v.yml) and
-# OPENCODE_API_KEY (from https://opencode.ai/zen — required even for the free models).
+#   prepare_chapter.py → opencode writes the image prompt + SEO → THE PROMPT IS PRINTED IN THE
+#   RUN SUMMARY → trigger_workflow.py fans out N chunk runs + 1 intro run of sec10v.yml →
+#   import_artifacts_mp3s.py collects them (retrying stragglers) → audio artifact uploaded →
+#   fetch_image.py waits for <IMAGE_BASE_URL>/<BaseName>.jpg → automate_audiobook.py builds
+#   the video → second artifact with the MP4.
+#
+# So: dispatch, open the run page, copy the prompt from the summary, generate the image, upload
+# it to the bucket under the BaseName. That happens while the TTS runs, so it costs no wall clock.
+#
+# Configure once — Settings → Secrets and variables → Actions → Variables:
+#   IMAGE_BASE_URL   public prefix you upload images to, no trailing slash
+#                    (GET <IMAGE_BASE_URL>/<BaseName>.jpg must work with plain unauthenticated curl)
+# It is a *variable*, not a secret, on purpose: secrets are masked to *** in the job summary,
+# which would hide the very URL you need to upload to.
+#
+# Secrets needed: SEC10V_ACCESS_TOKEN (also used by sec10v.yml), OPENCODE_API_KEY
+# (https://opencode.ai/zen — required even for the free models), HF_TOKEN.
 name: sec10v chapter
 run-name: ${{ inputs.se_url }}
 
@@ -24,6 +35,26 @@ on:
       #   BaseName       ← repo + chapter slugs      (TheWisdomOfFatherBrown.TheManInThePassage)
       #   book title     ← <dc:title> in the book's content.opf
       #   chapter title  ← the chapter's <h2 epub:type="title"> heading
+      image_url:
+        description: 'Direct URL of an already-generated image (skips the wait — for a re-run)'
+        required: false
+        type: string
+        default: ''
+      image_wait_minutes:
+        description: 'How long to wait for the image after the audio is done; 0 = skip the video'
+        required: false
+        type: number
+        default: 60
+      intro_audio:
+        description: 'Intro music filename in sec10v resources/music/ (empty = no music bed)'
+        required: false
+        type: string
+        default: 'intro.7s.mp3'
+      outro_audio:
+        description: 'Outro music filename in sec10v resources/music/ (empty = no outro segment)'
+        required: false
+        type: string
+        default: 'sad_allegro.mp3'
       model:
         description: 'opencode model id (provider/model); OpenCode Zen ids look like opencode/<slug>'
         required: false
@@ -44,7 +75,9 @@ permissions:
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    # 3 TTS rounds (40 min each) + the image wait (60) + prepare/opencode/HF warm/encode/upload.
+    # GitHub's ceiling for a hosted job is 360.
+    timeout-minutes: 330
     steps:
       - name: Checkout this repo
         uses: actions/checkout@v7
@@ -67,6 +100,7 @@ jobs:
           python-version: '3.13'
 
       # The main runner never runs TTS itself; requests is all the sec10v scripts here import.
+      # (automate_audiobook.py is stdlib-only and skips TTS entirely when the MP3s exist.)
       - name: Install Python dependencies
         run: pip install requests
 
@@ -74,8 +108,9 @@ jobs:
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
+          SE_URL: ${{ inputs.se_url }}   # via env, never spliced into the script body
         run: |
-          python scripts/prepare_chapter.py --url "${{ inputs.se_url }}"
+          python scripts/prepare_chapter.py --url "$SE_URL"
           # Export the parsed/inferred values for the later steps.
           python - <<'EOF' >> "$GITHUB_ENV"
           import json
@@ -89,98 +124,13 @@ jobs:
           echo "--- out/text ---"; ls -la out/text
           echo "--- dispatch manifest ---"; python -c "import json; print(len(json.load(open('out/workflow-input.json'))), 'item(s)')"
 
-      # One hub download per chapter instead of one per chunk: the chunk runs restore this
-      # same cache key and then run with HF_HUB_OFFLINE=1. Without it they all hit Hugging
-      # Face at the same moment and got HTTP 429. The key must stay identical to the one in
-      # sec10v.yml — both hash the requirements file that pins chatterbox-tts.
-      - name: Restore the Chatterbox weights cache
-        id: hf_cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/huggingface
-          key: ${{ runner.os }}-hf-chatterbox-${{ hashFiles('sec10v/requirements_no_cuda.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-hf-chatterbox-
-
-      - name: Warm the Chatterbox weights cache
-        if: steps.hf_cache.outputs.cache-hit != 'true'
-        working-directory: sec10v
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          # chatterbox-tts is installed without its dependencies purely so hf_weights.py can
-          # read the weight list out of the version this chapter will actually run with.
-          pin=$(grep -m1 '^chatterbox-tts==' requirements_no_cuda.txt)
-          pip install --quiet huggingface_hub "${pin:-chatterbox-tts}" --no-deps
-          python scripts/hf_weights.py --no-stagger
-          du -sh ~/.cache/huggingface
-
-      - name: Save the Chatterbox weights cache
-        if: steps.hf_cache.outputs.cache-hit != 'true'
-        continue-on-error: true   # a concurrent run may have reserved the same key already
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cache/huggingface
-          key: ${{ runner.os }}-hf-chatterbox-${{ hashFiles('sec10v/requirements_no_cuda.txt') }}
-
-      # Dispatch → wait → re-dispatch only what is missing. A chunk run can die on its own
-      # (hub rate limit, flaky mirror, the QA retry giving up), and the runner has no
-      # persistent out/ to resume from, so pending_chunks.py rebuilds the manifest from the
-      # audio that actually landed: exit 0 = complete, 10 = it rewrote the manifest with the
-      # stragglers, anything else = broken. Three rounds at 60 min fit the job timeout.
-      - name: Dispatch chunk runs, collect MP3s, retry stragglers
-        working-directory: sec10v
-        env:
-          PYTHONPATH: scripts
-        run: |
-          rounds=3
-          for round in $(seq 1 "$rounds"); do
-            echo "::group::round $round — dispatch"
-            # trigger_workflow.py rewrites out/run_ids.json, so each round polls only its own runs.
-            python scripts/trigger_workflow.py \
-              --owner "${{ github.repository_owner }}" \
-              --repo "${{ github.event.repository.name }}" \
-              --workflow sec10v.yml \
-              --ref master \
-              --inputs-file out/workflow-input.json \
-              --token "${{ secrets.GITHUB_TOKEN }}"
-            echo "::endgroup::"
-
-            echo "::group::round $round — wait and collect"
-            python scripts/import_artifacts_mp3s.py \
-              --download --move \
-              --poll-interval 60 --timeout 3600 \
-              --token "${{ secrets.GITHUB_TOKEN }}"
-            echo "::endgroup::"
-
-            set +e
-            python scripts/pending_chunks.py --rewrite
-            rc=$?
-            set -e
-            case "$rc" in
-              0)
-                echo "✅ every chunk present after round $round"
-                break
-                ;;
-              10)
-                if [ "$round" -eq "$rounds" ]; then
-                  echo "❌ still missing chunk(s) after $rounds round(s)"
-                  exit 1
-                fi
-                echo "🔁 round $((round + 1)) will re-dispatch only the missing chunk(s)"
-                ;;
-              *)
-                exit "$rc"
-                ;;
-            esac
-          done
-          echo "--- out/*.mp3 ---"; ls -la out/*.mp3
-
-      # The only LLM step, via the official action (https://opencode.ai/docs/github/).
-      # workflow_dispatch requires an explicit `prompt`; `use_github_token: true` skips the
-      # OpenCode GitHub App / OIDC setup. The action runs in the workspace root, so every path
-      # in the prompt is prefixed with sec10v/. opencode.json limits it to file edits (no shell).
-      # Its failure never blocks the artifact — the MP3s are the expensive part.
+      # The only LLM step, via the official action (https://opencode.ai/docs/github/), and it runs
+      # FIRST so the image prompt is on screen a few minutes into the run — the human then draws
+      # while the TTS below is still going. workflow_dispatch requires an explicit `prompt`;
+      # `use_github_token: true` skips the OpenCode GitHub App / OIDC setup. The action runs in the
+      # workspace root, so every path in the prompt is prefixed with sec10v/. opencode.json limits
+      # it to file edits (no shell). Its failure never blocks the run — the image flow depends only
+      # on the URL convention, not on the prompt.
       - name: Restrict opencode to file edits
         run: |
           mkdir -p sec10v/out/prompts sec10v/out/seo
@@ -232,6 +182,150 @@ jobs:
             echo "=== $f ==="; cat "$f"; echo
           done
 
+      # $GITHUB_STEP_SUMMARY renders at the top of the run page, so the prompt and the upload
+      # target are readable without expanding a single step. `if: always()` because a failed
+      # opencode is exactly when you most need the fallback instructions.
+      # Every conditional here is if/fi, never `[ … ] && …`: under `bash -e` a trailing false
+      # test would fail the step, and a failed always()-step marks the whole job failed.
+      - name: Publish the image prompt
+        if: always()
+        working-directory: sec10v
+        env:
+          IMAGE_BASE_URL: ${{ vars.IMAGE_BASE_URL }}
+          WAIT_MINUTES: ${{ inputs.image_wait_minutes }}
+        run: |
+          prompt="out/prompts/${BASE}.prompt.txt"
+          target="${IMAGE_BASE_URL:-<set the IMAGE_BASE_URL repo variable>}/${BASE}.jpg"
+          {
+            echo "## Image prompt — ${BOOK_TITLE} / ${CHAPTER_TITLE}"
+            echo
+            if [ -s "$prompt" ]; then
+              printf '```text\n'; cat "$prompt"; printf '\n```\n'
+            else
+              echo "> opencode produced no prompt — write one from"
+              echo "> \`.github/skills/image-prompt-generator/SKILL.md\`. Chapter opening:"
+              printf '```text\n'; head -c 1200 "out/text/${BASE}.txt"; printf '\n```\n'
+            fi
+            echo
+            echo "### Upload the generated image to"
+            echo
+            printf '```\n%s\n```\n' "$target"
+            echo
+            echo "\`.png\`, \`.jpeg\` and \`.webp\` work too (same base name). Polling starts once"
+            echo "the audio is collected and runs for up to ${WAIT_MINUTES} minute(s)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$prompt" ]; then
+            echo "::group::image prompt"; cat "$prompt"; echo; echo "::endgroup::"
+          fi
+          echo "upload the image to: $target"
+
+      # Needed by the video build at the end (and it is cheap here, while the human is drawing).
+      - name: Install ffmpeg
+        run: |
+          if command -v ffmpeg >/dev/null 2>&1; then
+            ffmpeg -version | head -n1
+            exit 0
+          fi
+          # Must be a full apt-get update: Ubuntu 24.04 keeps its repositories in
+          # /etc/apt/sources.list.d/ubuntu.sources (deb822), so a narrowed update refreshes no
+          # index at all and apt resolves package versions from the image's stale one — those 404
+          # once the mirror moves on (e.g. libssh-gcrypt-4 0.10.6-2ubuntu0.4).
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends ffmpeg \
+            || sudo apt-get install -y --no-install-recommends --fix-missing ffmpeg
+          ffmpeg -version | head -n1
+
+      # One hub download per chapter instead of one per chunk: the chunk runs restore this
+      # same cache key and then run with HF_HUB_OFFLINE=1. Without it they all hit Hugging
+      # Face at the same moment and got HTTP 429. The key must stay identical to the one in
+      # sec10v.yml — both hash the requirements file that pins chatterbox-tts.
+      - name: Restore the Chatterbox weights cache
+        id: hf_cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-hf-chatterbox-${{ hashFiles('sec10v/requirements_no_cuda.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-hf-chatterbox-
+
+      - name: Warm the Chatterbox weights cache
+        if: steps.hf_cache.outputs.cache-hit != 'true'
+        working-directory: sec10v
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # chatterbox-tts is installed without its dependencies purely so hf_weights.py can
+          # read the weight list out of the version this chapter will actually run with.
+          pin=$(grep -m1 '^chatterbox-tts==' requirements_no_cuda.txt)
+          pip install --quiet huggingface_hub "${pin:-chatterbox-tts}" --no-deps
+          python scripts/hf_weights.py --no-stagger
+          du -sh ~/.cache/huggingface
+
+      - name: Save the Chatterbox weights cache
+        if: steps.hf_cache.outputs.cache-hit != 'true'
+        continue-on-error: true   # a concurrent run may have reserved the same key already
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-hf-chatterbox-${{ hashFiles('sec10v/requirements_no_cuda.txt') }}
+
+      # Dispatch → wait → re-dispatch only what is missing. A chunk run can die on its own
+      # (hub rate limit, flaky mirror, the QA retry giving up), and the runner has no
+      # persistent out/ to resume from, so pending_chunks.py rebuilds the manifest from the
+      # audio that actually landed: exit 0 = complete, 10 = it rewrote the manifest with the
+      # stragglers, anything else = broken. A chunk that hasn't finished in 40 minutes never
+      # will — re-dispatching it next round is faster than waiting, and 3 x 40 leaves room in
+      # the job budget for the image wait and the encode.
+      - name: Dispatch chunk runs, collect MP3s, retry stragglers
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+        run: |
+          rounds=3
+          for round in $(seq 1 "$rounds"); do
+            echo "::group::round $round — dispatch"
+            # trigger_workflow.py rewrites out/run_ids.json, so each round polls only its own runs.
+            python scripts/trigger_workflow.py \
+              --owner "${{ github.repository_owner }}" \
+              --repo "${{ github.event.repository.name }}" \
+              --workflow sec10v.yml \
+              --ref master \
+              --inputs-file out/workflow-input.json \
+              --token "${{ secrets.GITHUB_TOKEN }}"
+            echo "::endgroup::"
+
+            echo "::group::round $round — wait and collect"
+            python scripts/import_artifacts_mp3s.py \
+              --download --move \
+              --poll-interval 60 --timeout 2400 \
+              --token "${{ secrets.GITHUB_TOKEN }}"
+            echo "::endgroup::"
+
+            set +e
+            python scripts/pending_chunks.py --rewrite
+            rc=$?
+            set -e
+            case "$rc" in
+              0)
+                echo "✅ every chunk present after round $round"
+                break
+                ;;
+              10)
+                if [ "$round" -eq "$rounds" ]; then
+                  echo "❌ still missing chunk(s) after $rounds round(s)"
+                  exit 1
+                fi
+                echo "🔁 round $((round + 1)) will re-dispatch only the missing chunk(s)"
+                ;;
+              *)
+                exit "$rc"
+                ;;
+            esac
+          done
+          echo "--- out/*.mp3 ---"; ls -la out/*.mp3
+
+      # Uploaded BEFORE the image wait on purpose: a job cancelled by timeout-minutes skips even
+      # `if: always()` steps, and the audio is the expensive half of the run.
       - name: Upload chapter artifact (text, mp3s, prompt, seo)
         if: always()
         uses: actions/upload-artifact@v7
@@ -247,8 +341,79 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # Fail loudly *after* the upload so partial output is still available for a manual retry.
-      - name: Fail if any chunk run did not succeed
+      # No `if:` needed beyond the implicit success(): a failed TTS loop skips this, so a run
+      # with no audio never burns an hour waiting for an image.
+      - name: Wait for the background image
+        id: image
+        continue-on-error: true
+        timeout-minutes: 180   # safety net only: fetch_image.py enforces --timeout itself
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+          IMAGE_BASE_URL: ${{ vars.IMAGE_BASE_URL }}
+          IMAGE_URL: ${{ inputs.image_url }}   # via env: a dispatch input must never be spliced into the script
+          WAIT_MINUTES: ${{ inputs.image_wait_minutes }}
+        run: |
+          wait_minutes=${WAIT_MINUTES%%.*}
+          if [ "${wait_minutes:-0}" -eq 0 ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "⏭️ image wait disabled (image_wait_minutes=0)"
+            exit 0
+          fi
+          if [ -z "$IMAGE_URL" ] && [ -z "$IMAGE_BASE_URL" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "⏭️ no IMAGE_BASE_URL variable and no image_url input — skipping the video"
+            exit 0
+          fi
+          args=(--base-name "$BASE" --timeout "$((wait_minutes * 60))" --poll-interval 20)
+          if [ -n "$IMAGE_URL" ]; then
+            args+=(--url "$IMAGE_URL")
+          else
+            args+=(--base-url "$IMAGE_BASE_URL")
+          fi
+          set +e
+          python scripts/fetch_image.py "${args[@]}"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            ls -la out/pics
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ no usable image (exit $rc) — the audio artifact is already uploaded;"
+            echo "   re-run with image_url set to build the video without redoing the TTS."
+          fi
+
+      - name: Build the final video
+        if: steps.image.outputs.found == 'true'
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+          INTRO_AUDIO: ${{ inputs.intro_audio }}
+          OUTRO_AUDIO: ${{ inputs.outro_audio }}
+        run: |
+          # Preflight: every mp3 must exist, or automate_audiobook would shell out to audiobook.py
+          # and fail on the torch this runner deliberately doesn't have.
+          python scripts/pending_chunks.py
+          args=("$BASE")
+          if [ -n "$INTRO_AUDIO" ]; then args+=(--intro-audio "$INTRO_AUDIO"); fi
+          if [ -n "$OUTRO_AUDIO" ]; then args+=(--outro-audio "$OUTRO_AUDIO"); fi
+          python scripts/automate_audiobook.py "${args[@]}"
+          ls -lh out/*.final.mp4
+
+      # Only the final: the numbered out/{base}.{i}.mp4 segments are ~90 MB of rebuildable
+      # intermediates.
+      - name: Upload the final video
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.BASE || github.run_id }}.video
+          path: sec10v/out/*.final.mp4
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Fail loudly *after* both uploads so partial output is always available.
+      - name: Report chunk, prompt and video status
         working-directory: sec10v
         run: |
           remaining=$(python -c "import json; d=json.load(open('out/run_ids.json')); print(len(d)); [print(' -', e['out_subdir'], e['run_id']) for e in d]")
@@ -259,4 +424,8 @@ jobs:
           fi
           if [ "${{ steps.creative.outcome }}" != "success" ] || [ "${{ steps.creative_check.outcome }}" != "success" ]; then
             echo "⚠️ opencode did not produce the prompt/SEO — write them manually from the skills; MP3s are complete."
+          fi
+          if [ "${{ steps.image.outputs.found }}" != "true" ]; then
+            echo "⚠️ no background image arrived — audio artifact only."
+            echo "   Re-run with image_url set (or upload to the conventional path) to get the MP4."
           fi
