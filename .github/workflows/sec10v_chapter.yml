@@ -528,6 +528,7 @@ jobs:
           fi
 
       - name: Build the final video
+        id: video
         if: steps.image.outputs.found == 'true' || steps.image_retry.outputs.found == 'true'
         working-directory: sec10v
         env:
@@ -552,6 +553,51 @@ jobs:
           fi
           python scripts/automate_audiobook.py "${args[@]}"
           ls -lh out/*.final.mp4
+
+      # whisper-cli for the spot-check below. Restore only, never build: the chunk runs populate
+      # this exact cache key, and a QA nicety is not worth a 10-minute compile on a miss —
+      # verify_final.py just reports the spot-check as skipped when the binary isn't there.
+      - name: Check out whisper.cpp for the final QA
+        if: steps.video.outcome == 'success'
+        uses: actions/checkout@v7
+        with:
+          repository: ggml-org/whisper.cpp
+          path: whisper.cpp
+          ref: master
+          fetch-depth: 1
+
+      - name: Get whisper.cpp HEAD SHA
+        id: whisper-sha
+        if: steps.video.outcome == 'success'
+        run: echo "sha=$(git -C whisper.cpp rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Restore the whisper.cpp build
+        if: steps.video.outcome == 'success'
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            whisper.cpp/build
+            whisper.cpp/models/ggml-small.en.bin
+          key: ${{ runner.os }}-whisper-cpp-${{ steps.whisper-sha.outputs.sha }}-cpu-compat
+
+      # What the per-chunk QA structurally cannot see: a missing, duplicated, misordered or
+      # truncated segment. Duration arithmetic catches the first three for the price of an
+      # ffprobe; three sampled 30s windows located in the transcript catch the rest. A full
+      # transcription would cost 20-30 min of runner time to re-check text the chunk runs
+      # already verified.
+      - name: Verify the final video
+        id: qa
+        if: steps.video.outcome == 'success'
+        continue-on-error: true
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+          PYTHONUNBUFFERED: '1'
+        run: |
+          python scripts/verify_final.py \
+            --whisper-cli "${{ github.workspace }}/whisper.cpp/build/bin/whisper-cli" \
+            --model "${{ github.workspace }}/whisper.cpp/models/ggml-small.en.bin" \
+            --summary "$GITHUB_STEP_SUMMARY"
 
       # Only the final: the numbered out/{base}.{i}.mp4 segments are ~90 MB of rebuildable
       # intermediates.
@@ -583,6 +629,9 @@ jobs:
           # its title side-model being rejected by the billing check).
           if [ "${{ steps.creative_check.outcome }}" != "success" ]; then
             echo "⚠️ opencode did not produce the prompt/SEO — write them manually from the skills; MP3s are complete."
+          fi
+          if [ "${{ steps.qa.outcome }}" = "failure" ]; then
+            echo "⚠️ the final QA flagged something — see the Final QA table in the run summary"
           fi
           if [ "${{ steps.image.outputs.found }}" != "true" ] && [ "${{ steps.image_retry.outputs.found }}" != "true" ]; then
             echo "⚠️ no background image arrived — audio artifact only."
