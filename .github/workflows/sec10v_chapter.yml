@@ -658,11 +658,12 @@ jobs:
             echo "These runs failed in the last retry round; rerun this workflow to try again."
             exit 1
           fi
-          # creative_check is the honest signal: it tests the two files. The action itself can
-          # report failure for reasons that don't matter here (a failed internal git commit, or
-          # its title side-model being rejected by the billing check).
-          if [ "${{ steps.creative_check.outcome }}" != "success" ]; then
-            echo "⚠️ opencode did not produce the prompt/SEO — write them manually from the skills; MP3s are complete."
+          # Test the two files, not a step outcome: the opencode action can report failure for
+          # reasons that don't matter here (a failed internal git commit, its title side-model
+          # rejected by the billing check), and when the pair was recovered from a previous run
+          # the step never ran at all — its outcome is "skipped", which is not a failure.
+          if [ ! -s "out/prompts/${BASE}.prompt.txt" ] || [ ! -s "out/seo/${BASE}.seo.md" ]; then
+            echo "⚠️ no image prompt/SEO on disk — write them manually from the skills; MP3s are complete."
           fi
           if [ "${{ steps.qa.outcome }}" = "failure" ]; then
             echo "⚠️ the final QA flagged something — see the Final QA table in the run summary"
