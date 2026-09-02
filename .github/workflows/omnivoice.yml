@@ -43,10 +43,19 @@ jobs:
 
       - name: Install ffmpeg
         run: |
-          sudo apt-get update -y -o Dir::Etc::sourcelist="sources.list" \
-              -o Dir::Etc::sourceparts="-" \
-              -o APT::Get::List-Cleanup="0"
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          if command -v ffmpeg >/dev/null 2>&1; then
+            ffmpeg -version | head -n1
+            exit 0
+          fi
+          # Must be a full apt-get update: Ubuntu 24.04 keeps its repositories in
+          # /etc/apt/sources.list.d/ubuntu.sources (deb822), so the old
+          # -o Dir::Etc::sourceparts="-" form refreshed no index at all and apt resolved
+          # package versions from the image's stale one — those 404 once the mirror moves on
+          # (e.g. libssh-gcrypt-4 0.10.6-2ubuntu0.4).
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends ffmpeg \
+            || sudo apt-get install -y --no-install-recommends --fix-missing ffmpeg
+          ffmpeg -version | head -n1
 
       - name: Checkout external repository
         uses: actions/checkout@v7
