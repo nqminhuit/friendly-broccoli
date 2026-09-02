@@ -56,7 +56,9 @@ on:
 # Not dispatch inputs — every chapter so far has used the same values, and a field you always
 # leave alone is a field you can get wrong. Change them here if that stops being true.
 env:
-  IMAGE_WAIT_MINUTES: '60'      # after the audio is collected; 0 disables the video build
+  IMAGE_EARLY_WAIT_MINUTES: '20' # while the chunk runs are synthesizing — free, that time is
+                                 # otherwise spent idle in the collector's poll
+  IMAGE_WAIT_MINUTES: '60'      # second chance, after the audio is collected; 0 disables the video
   INTRO_AUDIO: intro.7s.mp3     # in sec10v resources/music/, skipped if it isn't there
   OUTRO_AUDIO: sad_allegro.mp3  # idem
 
@@ -211,8 +213,10 @@ jobs:
             echo
             printf '```\n%s.jpg\n```\n' "$BASE"
             echo
-            echo "\`.png\`, \`.jpeg\` and \`.webp\` work too (same base name). Polling starts once"
-            echo "the audio is collected and runs for up to ${IMAGE_WAIT_MINUTES} minute(s)."
+            echo "\`.png\`, \`.jpeg\` and \`.webp\` work too (same base name). Polling starts as soon"
+            echo "as the chunk runs are dispatched and lasts ${IMAGE_EARLY_WAIT_MINUTES} minute(s) — upload during that"
+            echo "window and this run confirms it within seconds. A second window of"
+            echo "${IMAGE_WAIT_MINUTES} minute(s) follows once the audio is collected."
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -s "$prompt" ]; then
             echo "::group::image prompt"; cat "$prompt"; echo; echo "::endgroup::"
@@ -280,23 +284,75 @@ jobs:
       # stragglers, anything else = broken. A chunk that hasn't finished in 40 minutes never
       # will — re-dispatching it next round is faster than waiting, and 3 x 40 leaves room in
       # the job budget for the image wait and the encode.
-      - name: Dispatch chunk runs, collect MP3s, retry stragglers
+      # trigger_workflow.py returns as soon as the runs are dispatched, so the chunks synthesize
+      # on their own runners from here on. Round 1 is dispatched in its own step purely so the
+      # image wait below can slot in between dispatch and collection.
+      - name: Dispatch one sec10v.yml run per chunk (+ intro)
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+        run: |
+          python scripts/trigger_workflow.py \
+            --owner "${{ github.repository_owner }}" \
+            --repo "${{ github.event.repository.name }}" \
+            --workflow sec10v.yml \
+            --ref master \
+            --inputs-file out/workflow-input.json \
+            --token "${{ secrets.GITHUB_TOKEN }}"
+
+      # Costs nothing: without it the job would spend these minutes idle inside the collector's
+      # poll. The payoff is feedback while you can still act on it — the log streams live, so a
+      # wrong filename or a corrupt upload shows up now instead of an hour from now.
+      - name: Wait for the background image (while the chunks synthesize)
+        id: image
+        continue-on-error: true
+        timeout-minutes: 60   # safety net only; fetch_image.py enforces its own deadline
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+          IMAGE_URL: ${{ inputs.image_url }}
+        run: |
+          wait_minutes=${IMAGE_EARLY_WAIT_MINUTES%%.*}
+          if [ "${wait_minutes:-0}" -eq 0 ] || { [ -z "$IMAGE_URL" ] && [ -z "$IMAGE_BASE_URL" ]; }; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "⏭️ skipping the early image wait"
+            exit 0
+          fi
+          args=(--base-name "$BASE" --timeout "$((wait_minutes * 60))" --poll-interval 20)
+          if [ -n "$IMAGE_URL" ]; then args+=(--url "$IMAGE_URL"); else args+=(--base-url "$IMAGE_BASE_URL"); fi
+          set +e
+          python scripts/fetch_image.py "${args[@]}"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "✅ image received and converted — the video will build as soon as the audio lands"
+            echo "### ✅ Image received" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "⏳ no image yet — there is a second window after the audio is collected"
+          fi
+
+      - name: Collect MP3s, retry stragglers
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
         run: |
           rounds=3
           for round in $(seq 1 "$rounds"); do
-            echo "::group::round $round — dispatch"
-            # trigger_workflow.py rewrites out/run_ids.json, so each round polls only its own runs.
-            python scripts/trigger_workflow.py \
-              --owner "${{ github.repository_owner }}" \
-              --repo "${{ github.event.repository.name }}" \
-              --workflow sec10v.yml \
-              --ref master \
-              --inputs-file out/workflow-input.json \
-              --token "${{ secrets.GITHUB_TOKEN }}"
-            echo "::endgroup::"
+            if [ "$round" -gt 1 ]; then
+              echo "::group::round $round — re-dispatch the missing chunk(s)"
+              # trigger_workflow.py rewrites out/run_ids.json, so each round polls only its own runs.
+              python scripts/trigger_workflow.py \
+                --owner "${{ github.repository_owner }}" \
+                --repo "${{ github.event.repository.name }}" \
+                --workflow sec10v.yml \
+                --ref master \
+                --inputs-file out/workflow-input.json \
+                --token "${{ secrets.GITHUB_TOKEN }}"
+              echo "::endgroup::"
+            fi
 
             echo "::group::round $round — wait and collect"
             python scripts/import_artifacts_mp3s.py \
@@ -345,10 +401,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # No `if:` needed beyond the implicit success(): a failed TTS loop skips this, so a run
-      # with no audio never burns an hour waiting for an image.
-      - name: Wait for the background image
-        id: image
+      # Second chance, for when the image wasn't up yet during the synthesis window. fetch_image.py
+      # short-circuits on an existing out/pics/{base}.jpg, but skipping the step is cheaper still.
+      - name: Wait for the background image (second chance)
+        id: image_retry
+        if: steps.image.outputs.found != 'true'
         continue-on-error: true
         timeout-minutes: 180   # safety net only: fetch_image.py enforces --timeout itself
         working-directory: sec10v
@@ -388,7 +445,7 @@ jobs:
           fi
 
       - name: Build the final video
-        if: steps.image.outputs.found == 'true'
+        if: steps.image.outputs.found == 'true' || steps.image_retry.outputs.found == 'true'
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
@@ -439,7 +496,7 @@ jobs:
           if [ "${{ steps.creative_check.outcome }}" != "success" ]; then
             echo "⚠️ opencode did not produce the prompt/SEO — write them manually from the skills; MP3s are complete."
           fi
-          if [ "${{ steps.image.outputs.found }}" != "true" ]; then
+          if [ "${{ steps.image.outputs.found }}" != "true" ] && [ "${{ steps.image_retry.outputs.found }}" != "true" ]; then
             echo "⚠️ no background image arrived — audio artifact only."
             echo "   Re-run with image_url set (or upload to the conventional path) to get the MP4."
           fi
