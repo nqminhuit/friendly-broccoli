@@ -2,3 +2,14 @@
 *.swo
 *~
 .DS_Store
+
+# Scratch left in the workspace by sec10v_chapter.yml: the sec10v and whisper.cpp checkouts,
+# and the opencode.json written to restrict opencode to file edits. Ignored rather than merely
+# untracked because the opencode action ends a workflow_dispatch run with
+# `git status --porcelain` and, if anything answers, commits and pushes a branch — which fails
+# outright under `persist-credentials: false`, reporting the step as failed after it had already
+# written the prompt and the SEO correctly.
+opencode.json
+.opencode/
+sec10v/
+whisper.cpp/

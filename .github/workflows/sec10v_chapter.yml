@@ -199,9 +199,13 @@ jobs:
       # on the URL convention, not on the prompt.
       - name: Restrict opencode to file edits
         run: |
-          # The action commits whatever it wrote. persist-credentials: false means that commit
-          # goes nowhere and dies with the runner, but without an identity it fails outright and
-          # reports the whole step as failed even when both files were written correctly.
+          # A dispatch run ends inside the action with `git status --porcelain`, and if anything
+          # answers it commits and pushes a branch — which cannot work under
+          # persist-credentials: false and reported the whole step as failed even though both
+          # files had been written correctly. .gitignore covers everything this workflow leaves
+          # in the workspace (opencode.json, sec10v/, whisper.cpp/), so the tree reads clean and
+          # the action skips that push entirely. The identity below is the fallback for a tree
+          # that goes dirty anyway — a stray file written outside sec10v/.
           git config user.email "actions@github.com"
           git config user.name "sec10v chapter runner"
           mkdir -p sec10v/out/prompts sec10v/out/seo
