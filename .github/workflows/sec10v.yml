@@ -119,6 +119,38 @@ jobs:
       - name: Activate Python venv
         run: echo "${{ github.workspace }}/sec10v/.venv/bin" >> $GITHUB_PATH
 
+      # Chatterbox pulls its weights from the Hugging Face hub. One run per chunk meant a
+      # 30-chunk chapter sent 30 cold clients after the same files at once, and the hub
+      # answered HTTP 429. The main runner (sec10v_chapter.yml) warms this exact cache key
+      # before it dispatches, so the chunk runs normally never call the hub at all.
+      #
+      # Keyed on requirements_no_cuda.txt, where the chatterbox-tts pin lives: bumping the
+      # version invalidates the weights cache the same way it invalidates the venv cache.
+      # restore-keys then seeds the new key from the previous weights, so an upgrade
+      # downloads only what actually changed instead of the whole ~3 GB.
+      - name: Cache Chatterbox weights (Hugging Face hub)
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-hf-chatterbox-${{ hashFiles('sec10v/requirements_no_cuda.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-hf-chatterbox-
+
+      - name: Ensure Chatterbox weights are local
+        working-directory: sec10v
+        run: |
+          # hf_weights.py reads the file list out of the *installed* chatterbox, so a version
+          # that renames or adds a weight file is handled here instead of failing offline.
+          set +e
+          .venv/bin/python scripts/hf_weights.py
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "HF_HUB_OFFLINE=1" >> "$GITHUB_ENV" ;;  # nothing left to ask the hub
+            3) echo "⚠️ weight list not derived from the installed chatterbox — staying online" ;;
+            *) exit "$rc" ;;
+          esac
+
       - name: Verify voice prompt exists
         working-directory: sec10v
         run: |
