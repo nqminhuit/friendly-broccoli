@@ -12,14 +12,16 @@
 # So: dispatch, open the run page, copy the prompt from the summary, generate the image, upload
 # it to the bucket under the BaseName. That happens while the TTS runs, so it costs no wall clock.
 #
-# Configure once — Settings → Secrets and variables → Actions → Variables:
-#   IMAGE_BASE_URL   public prefix you upload images to, no trailing slash
-#                    (GET <IMAGE_BASE_URL>/<BaseName>.jpg must work with plain unauthenticated curl)
-# It is a *variable*, not a secret, on purpose: secrets are masked to *** in the job summary,
-# which would hide the very URL you need to upload to.
-#
-# Secrets needed: SEC10V_ACCESS_TOKEN (also used by sec10v.yml), OPENCODE_API_KEY
-# (https://opencode.ai/zen — required even for the free models), HF_TOKEN.
+# Secrets needed — Settings → Secrets and variables → Actions → Secrets:
+#   IMAGE_BASE_URL       prefix you upload images to, no trailing slash. GET
+#                        <IMAGE_BASE_URL>/<BaseName>.jpg must work with plain unauthenticated
+#                        curl, but the prefix itself stays out of this public repo's logs:
+#                        GitHub masks secrets, so it prints as *** in the log and the summary.
+#                        That is why the summary tells you the FILENAME to upload rather than
+#                        the whole URL — the prefix is yours to remember.
+#   SEC10V_ACCESS_TOKEN  also used by sec10v.yml
+#   OPENCODE_API_KEY     https://opencode.ai/zen — required even for the free models
+#   HF_TOKEN
 name: sec10v chapter
 run-name: ${{ inputs.se_url }}
 
@@ -188,10 +190,12 @@ jobs:
         if: always()
         working-directory: sec10v
         env:
-          IMAGE_BASE_URL: ${{ vars.IMAGE_BASE_URL }}
+          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
         run: |
           prompt="out/prompts/${BASE}.prompt.txt"
-          target="${IMAGE_BASE_URL:-<set the IMAGE_BASE_URL repo variable>}/${BASE}.jpg"
+          # IMAGE_BASE_URL is a secret, so anything echoing it shows as ***; the filename is
+          # the part you actually need, and it is not sensitive.
+          if [ -n "$IMAGE_BASE_URL" ]; then target="your image bucket"; else target="your image bucket (set the IMAGE_BASE_URL secret)"; fi
           {
             echo "## Image prompt — ${BOOK_TITLE} / ${CHAPTER_TITLE}"
             echo
@@ -203,9 +207,9 @@ jobs:
               printf '```text\n'; head -c 1200 "out/text/${BASE}.txt"; printf '\n```\n'
             fi
             echo
-            echo "### Upload the generated image to"
+            echo "### Upload the generated image to ${target} as"
             echo
-            printf '```\n%s\n```\n' "$target"
+            printf '```\n%s.jpg\n```\n' "$BASE"
             echo
             echo "\`.png\`, \`.jpeg\` and \`.webp\` work too (same base name). Polling starts once"
             echo "the audio is collected and runs for up to ${IMAGE_WAIT_MINUTES} minute(s)."
@@ -213,7 +217,7 @@ jobs:
           if [ -s "$prompt" ]; then
             echo "::group::image prompt"; cat "$prompt"; echo; echo "::endgroup::"
           fi
-          echo "upload the image to: $target"
+          echo "upload the image as ${BASE}.jpg (prefix comes from the IMAGE_BASE_URL secret)"
 
       # Needed by the video build at the end (and it is cheap here, while the human is drawing).
       - name: Install ffmpeg
@@ -350,7 +354,7 @@ jobs:
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
-          IMAGE_BASE_URL: ${{ vars.IMAGE_BASE_URL }}
+          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
           IMAGE_URL: ${{ inputs.image_url }}   # via env: a dispatch input must never be spliced into the script
         run: |
           wait_minutes=${IMAGE_WAIT_MINUTES%%.*}
@@ -361,7 +365,7 @@ jobs:
           fi
           if [ -z "$IMAGE_URL" ] && [ -z "$IMAGE_BASE_URL" ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️ no IMAGE_BASE_URL variable and no image_url input — skipping the video"
+            echo "⏭️ no IMAGE_BASE_URL secret and no image_url input — skipping the video"
             exit 0
           fi
           args=(--base-name "$BASE" --timeout "$((wait_minutes * 60))" --poll-interval 20)
