@@ -4,13 +4,19 @@
 # The only human step is drawing the background image, and it is deliberately moved to the front:
 #
 #   prepare_chapter.py → opencode writes the image prompt + SEO → THE PROMPT IS PRINTED IN THE
-#   RUN SUMMARY → trigger_workflow.py fans out N chunk runs + 1 intro run of sec10v.yml →
-#   import_artifacts_mp3s.py collects them (retrying stragglers) → audio artifact uploaded →
+#   LOG of the "Print the image prompt" step → trigger_workflow.py fans out N chunk runs + 1 intro
+#   run of sec10v.yml → import_artifacts_mp3s.py collects them (retrying stragglers) →
 #   fetch_image.py waits for <IMAGE_BASE_URL>/<BaseName>.jpg → automate_audiobook.py builds
 #   the video → youtube_upload.py publishes it to the channel as a private video.
 #
-# So: dispatch, open the run page, copy the prompt from the summary, generate the image, upload
-# it to the bucket under the BaseName. That happens while the TTS runs, so it costs no wall clock.
+# So: dispatch, open the run page, copy the prompt out of that step's log, generate the image,
+# upload it to the bucket under the BaseName. That happens while the TTS runs, so it costs no
+# wall clock.
+#
+# The run uploads no artifacts. The summary page holds exactly two things, in this order: the
+# Final QA table, and the transcript to paste into YouTube as the subtitle track. Audio for a
+# re-run comes from the per-chunk .mp3 artifacts sec10v.yml uploads (1 day) — see the disabled
+# "Upload chapter artifact" step below for what that costs.
 #
 # Secrets needed — Settings → Secrets and variables → Actions → Secrets:
 #   IMAGE_BASE_URL       prefix you upload images to, no trailing slash. GET
@@ -264,12 +270,13 @@ jobs:
             echo "=== $f ==="; cat "$f"; echo
           done
 
-      # $GITHUB_STEP_SUMMARY renders at the top of the run page, so the prompt and the upload
-      # target are readable without expanding a single step. `if: always()` because a failed
-      # opencode is exactly when you most need the fallback instructions.
+      # The log, not $GITHUB_STEP_SUMMARY: the summary page is kept to the two things a finished
+      # run still needs a human for — the QA table and the transcript — so the prompt is printed
+      # here instead, uncollapsed (no ::group::) because it is the one time-critical thing on the
+      # page. `if: always()` because a failed opencode is exactly when you most need the fallback.
       # Every conditional here is if/fi, never `[ … ] && …`: under `bash -e` a trailing false
       # test would fail the step, and a failed always()-step marks the whole job failed.
-      - name: Publish the image prompt
+      - name: Print the image prompt
         # Pointless when the caller already has an image — there is nothing left to draw.
         if: always() && inputs.image_url == ''
         working-directory: sec10v
@@ -280,55 +287,22 @@ jobs:
           # IMAGE_BASE_URL is a secret, so anything echoing it shows as ***; the filename is
           # the part you actually need, and it is not sensitive.
           if [ -n "$IMAGE_BASE_URL" ]; then target="your image bucket"; else target="your image bucket (set the IMAGE_BASE_URL secret)"; fi
-          {
-            echo "## Image prompt — ${BOOK_TITLE} / ${CHAPTER_TITLE}"
-            echo
-            if [ -s "$prompt" ]; then
-              printf '```text\n'; cat "$prompt"; printf '\n```\n'
-            else
-              echo "> opencode produced no prompt — write one from"
-              echo "> \`.github/skills/image-prompt-generator/SKILL.md\`. Chapter opening:"
-              printf '```text\n'; head -c 1200 "out/text/${BASE}.txt"; printf '\n```\n'
-            fi
-            echo
-            echo "The YouTube transcript is in the artifact as \`${BASE}.transcript.txt\`."
-            echo
-            echo "### Upload the generated image to ${target} as"
-            echo
-            printf '```\n%s.jpg\n```\n' "$BASE"
-            echo
-            echo "\`.png\`, \`.jpeg\` and \`.webp\` work too (same base name). Polling starts as soon"
-            echo "as the chunk runs are dispatched and lasts ${IMAGE_EARLY_WAIT_MINUTES} minute(s) — upload during that"
-            echo "window and this run confirms it within seconds. A second window of"
-            echo "${IMAGE_WAIT_MINUTES} minute(s) follows once the audio is collected."
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "=== image prompt — ${BOOK_TITLE} / ${CHAPTER_TITLE} ==="
           if [ -s "$prompt" ]; then
-            echo "::group::image prompt"; cat "$prompt"; echo; echo "::endgroup::"
+            cat "$prompt"; echo
+          else
+            echo "opencode produced no prompt — write one from"
+            echo ".github/skills/image-prompt-generator/SKILL.md. Chapter opening:"
+            head -c 1200 "out/text/${BASE}.txt"; echo
           fi
-          echo "upload the image as ${BASE}.jpg (prefix comes from the IMAGE_BASE_URL secret)"
-
-      # Both fenced, so they can be copied straight out of the run page into YouTube. A
-      # transcript is ~33 KB against the 1 MiB per-step summary cap.
-      - name: Publish the transcript and SEO to the summary
-        if: always()
-        working-directory: sec10v
-        run: |
-          transcript="out/${BASE}.transcript.txt"
-          seo="out/seo/${BASE}.seo.md"
-          {
-            if [ -s "$seo" ]; then
-              echo "### YouTube description / SEO"
-              echo
-              printf '```markdown\n'; cat "$seo"; printf '\n```\n'
-            fi
-            if [ -s "$transcript" ]; then
-              echo
-              echo "### Transcript (upload as the subtitle track)"
-              echo
-              printf '```text\n'; cat "$transcript"; printf '\n```\n'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "transcript and SEO written to the run summary"
+          echo
+          echo "=== upload the generated image to ${target} as ==="
+          echo "${BASE}.jpg"
+          echo
+          echo ".png, .jpeg and .webp work too (same base name). Polling starts as soon as the"
+          echo "chunk runs are dispatched and lasts ${IMAGE_EARLY_WAIT_MINUTES} minute(s) — upload during that window and"
+          echo "this run confirms it within seconds. A second window of ${IMAGE_WAIT_MINUTES} minute(s) follows"
+          echo "once the audio is collected."
 
       # Needed by the video build at the end (and it is cheap here, while the human is drawing).
       - name: Install ffmpeg
@@ -436,8 +410,9 @@ jobs:
           set -e
           if [ "$rc" -eq 0 ]; then
             echo "found=true" >> "$GITHUB_OUTPUT"
+            # Log only: the summary page is the QA table and the transcript, nothing else, and a
+            # built video is itself proof the image arrived.
             echo "✅ image received and converted — the video will build as soon as the audio lands"
-            echo "### ✅ Image received" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
             echo "⏳ no image yet — there is a second window after the audio is collected"
@@ -507,6 +482,16 @@ jobs:
           done
           echo "--- out/*.mp3 ---"; ls -la out/*.mp3
 
+      # Disabled, kept for the day it is wanted again. Now that the video publishes itself, this
+      # run leaves nothing behind: the artifact was never a deliverable, only the input
+      # reuse_audio.py reads on a *re-run* of the same chapter. Uncommenting restores two things
+      # the per-chunk .mp3 artifacts cannot give:
+      #   - audio matched by byte-identical chunk *text* rather than by filename, which is what
+      #     makes partial reuse after an upstream edit safe (without it, `fresh: true` is the
+      #     escape hatch for audio that is wrong rather than absent);
+      #   - the prompt and the SEO, whose recovery lets a re-run skip the opencode call.
+      # Keep the two comments below if it comes back — both record a real failure.
+      #
       # Uploaded BEFORE the image wait on purpose: a job cancelled by timeout-minutes skips even
       # `if: always()` steps, and the audio is the expensive half of the run.
       #
@@ -514,23 +499,24 @@ jobs:
       # whatever happened to be in out/ under the chapter's name, and a near-empty artifact then
       # sits in front of the complete one that reuse_audio.py wants. Cancelling early left
       # exactly that — 0.1 MB of text and prompt masking a 91 MB artifact.
-      - name: Upload chapter artifact (text, mp3s, prompt, seo)
-        if: success() || failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.BASE || github.run_id }}
-          path: |
-            sec10v/out/text/
-            sec10v/out/*.transcript.txt
-            sec10v/out/*.mp3
-            sec10v/out/prompts/
-            sec10v/out/seo/
-            sec10v/out/chapter.json
-            sec10v/out/run_ids.json
-          if-no-files-found: error
-          # A day, not a week: this is not a deliverable, it is what reuse_audio.py reads so
-          # a re-run skips the TTS. After that the chapter is published or being redone.
-          retention-days: 1
+      #
+      # - name: Upload chapter artifact (text, mp3s, prompt, seo)
+      #   if: success() || failure()
+      #   uses: actions/upload-artifact@v7
+      #   with:
+      #     name: ${{ env.BASE || github.run_id }}
+      #     path: |
+      #       sec10v/out/text/
+      #       sec10v/out/*.transcript.txt
+      #       sec10v/out/*.mp3
+      #       sec10v/out/prompts/
+      #       sec10v/out/seo/
+      #       sec10v/out/chapter.json
+      #       sec10v/out/run_ids.json
+      #     if-no-files-found: error
+      #     # A day, not a week: this is not a deliverable, it is what reuse_audio.py reads so
+      #     # a re-run skips the TTS. After that the chapter is published or being redone.
+      #     retention-days: 1
 
       # Second chance, for when the image wasn't up yet during the synthesis window. fetch_image.py
       # short-circuits on an existing out/pics/{base}.jpg, but skipping the step is cheaper still.
@@ -668,13 +654,14 @@ jobs:
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         run: |
+          # No --summary: the run page carries the QA table and the transcript and nothing else,
+          # so the link is printed here instead (and named again by the report step below).
           python scripts/youtube_upload.py \
             --video "out/${BASE}.final.mp4" \
             --seo "out/seo/${BASE}.seo.md" \
-            --fallback-title "${BOOK_TITLE} — ${CHAPTER_TITLE}" \
-            --summary "$GITHUB_STEP_SUMMARY"
+            --fallback-title "${BOOK_TITLE} — ${CHAPTER_TITLE}"
 
-      # Fail loudly *after* the audio artifact and the upload, so partial output is always there.
+      # Fail loudly *after* the upload, so a finished video is never lost to a late failure.
       - name: Report chunk, prompt and video status
         working-directory: sec10v
         run: |
@@ -698,11 +685,35 @@ jobs:
           if [ "${{ steps.qa.outcome }}" = "failure" ]; then
             echo "⚠️ the final QA flagged something — see the Final QA table in the run summary"
           fi
-          # There is no MP4 artifact any more; the run summary's link is where the output went.
+          # This run uploads no artifacts at all; the channel is where the output went.
           if [ "${{ steps.youtube.outcome }}" = "success" ]; then
-            echo "📺 uploaded to YouTube as private — the link is at the end of the run summary"
+            echo "📺 uploaded to YouTube as private — the link is in the upload step's log"
           fi
           if [ "${{ steps.image.outputs.found }}" != "true" ] && [ "${{ steps.image_retry.outputs.found }}" != "true" ]; then
-            echo "⚠️ no background image arrived — audio artifact only, nothing was uploaded to YouTube."
+            echo "⚠️ no background image arrived — no video was built, nothing was uploaded to YouTube."
             echo "   Re-run with image_url set (or upload to the conventional path) to get the video."
+          fi
+
+      # Last on purpose. $GITHUB_STEP_SUMMARY renders blocks in the order steps append them, so
+      # the page reads: the Final QA table (from verify_final.py), then this — the one thing a
+      # finished run still needs a human for, fenced for copy-paste into YouTube's subtitle box.
+      # ~33 KB against the 1 MiB per-step cap. The transcript *file* is written much earlier, by
+      # transcript.py, so it survives a failure in between; `if: always()` publishes it even when
+      # the video or the upload failed (a job cancelled by timeout skips this, but such a run has
+      # no video to subtitle either).
+      - name: Publish the transcript to the summary
+        if: always()
+        working-directory: sec10v
+        run: |
+          transcript="out/${BASE}.transcript.txt"
+          if [ -s "$transcript" ]; then
+            {
+              echo
+              echo "### Transcript (upload as the subtitle track)"
+              echo
+              printf '```text\n'; cat "$transcript"; printf '\n```\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "transcript written to the run summary ($(wc -c < "$transcript") bytes)"
+          else
+            echo "⚠️ no $transcript to publish"
           fi
