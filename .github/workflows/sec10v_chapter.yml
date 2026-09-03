@@ -40,11 +40,12 @@ on:
   workflow_dispatch:
     inputs:
       se_url:
-        description: 'Standard Ebooks chapter URL, copied from GitHub (…/standardebooks/<repo>/blob/master/src/epub/text/<chapter>.xhtml)'
+        description: 'Chapter URL copied from GitHub (…/<owner>/<repo>/blob/<ref>/src/epub/text/<chapter>.xhtml). Any owner and ref: a fork with edited text works, and the branch you name is the branch that is read.'
         required: true
         type: string
       # Everything else is inferred by prepare_chapter.py from that one URL:
-      #   repo + chapter ← parsed out of the URL
+      #   owner + repo + ref + chapter ← parsed out of the URL (the log line "Fetched …" shows
+      #                    exactly what was read, which is how a fork run identifies itself)
       #   BaseName       ← repo + chapter slugs      (TheWisdomOfFatherBrown.TheManInThePassage)
       #   book title     ← <dc:title> in the book's content.opf
       #   chapter title  ← the chapter's <h2 epub:type="title"> heading
