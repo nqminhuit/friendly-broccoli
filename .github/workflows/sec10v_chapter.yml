@@ -94,9 +94,6 @@ permissions:
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    # 3 TTS rounds (40 min each) + the image wait (60) + prepare/opencode/HF warm/encode/upload.
-    # GitHub's ceiling for a hosted job is 360.
-    timeout-minutes: 330
     steps:
       - name: Checkout this repo
         uses: actions/checkout@v7
