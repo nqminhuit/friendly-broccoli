@@ -61,9 +61,12 @@ on:
         default: false
       model:
         description: 'opencode model id (provider/model); OpenCode Zen ids look like opencode/<slug>'
-        required: false
-        type: string
-        default: 'opencode/mimo-v2.5-free'
+        required: true
+        type: choice
+        options:
+          - 'opencode/mimo-v2.5-free'
+          - 'opencode/muse-spark-1.3-contributor-free'
+        default: 'opencode/muse-spark-1.3-contributor-free'
       sec10v_ref:
         description: 'nqminhuit/sec10v ref to check out'
         required: false
@@ -240,6 +243,7 @@ jobs:
           model: ${{ inputs.model }}
           use_github_token: true
           share: false
+          variant: high
           prompt: |
             You are working in a checkout of the sec10v repository located at ./sec10v.
             Do exactly two tasks and nothing else.
