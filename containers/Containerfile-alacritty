@@ -10,3 +10,4 @@ RUN ls -lah extra
 FROM scratch
 COPY --from=0 /alacritty/target/release/alacritty /
 COPY --from=0 /alacritty/extra /
+COPY ./alacritty/Alacritty.desktop /Alacritty.desktop
