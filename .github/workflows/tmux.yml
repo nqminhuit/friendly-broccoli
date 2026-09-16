@@ -16,7 +16,7 @@ on:
       debian_version:
         description: 'Debian version'
         required: true
-        default: 13
+        default: 12 # prefer older stable version for better compatibility with older systems
 
 jobs:
   build:
