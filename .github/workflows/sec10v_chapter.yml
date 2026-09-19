@@ -34,7 +34,7 @@
 #   GEMINI_API_KEY       Google Gemini API key used to generate the image prompt and SEO
 #   HF_TOKEN
 name: sec10v chapter
-run-name: ${{ inputs.se_url }}
+run-name: ${{ inputs.se_url }} — ${{ inputs.model }}
 
 on:
   workflow_dispatch:
@@ -98,6 +98,31 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Show workflow inputs
+        if: always()
+        env:
+          SE_URL: ${{ inputs.se_url }}
+          MODEL: ${{ inputs.model }}
+          IMAGE_URL: ${{ inputs.image_url }}
+          FRESH: ${{ inputs.fresh }}
+          SEC10V_REF: ${{ inputs.sec10v_ref }}
+        run: |
+          image_url_supplied=false
+          if [ -n "$IMAGE_URL" ]; then image_url_supplied=true; fi
+          {
+            echo "### Workflow Inputs"
+            echo "- Model: \`$MODEL\`"
+            echo "- Chapter URL: \`$SE_URL\`"
+            echo "- Image URL supplied: \`$image_url_supplied\`"
+            echo "- Fresh: \`$FRESH\`"
+            echo "- sec10v ref: \`$SEC10V_REF\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Model: $MODEL"
+          echo "Chapter URL: $SE_URL"
+          echo "Image URL supplied: $image_url_supplied"
+          echo "Fresh: $FRESH"
+          echo "sec10v ref: $SEC10V_REF"
 
       - name: Checkout nqminhuit/sec10v
         uses: actions/checkout@v7
