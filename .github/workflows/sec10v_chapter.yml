@@ -3,7 +3,7 @@
 # One manual dispatch turns a Standard Ebooks chapter URL into a video waiting on the channel.
 # The only human step is drawing the background image, and it is deliberately moved to the front:
 #
-#   prepare_chapter.py → opencode writes the image prompt + SEO → THE PROMPT IS PRINTED IN THE
+#   prepare_chapter.py → Gemini writes the image prompt + SEO → THE PROMPT IS PRINTED IN THE
 #   LOG of the "Print the image prompt" step → trigger_workflow.py fans out N chunk runs + 1 intro
 #   run of sec10v.yml → import_artifacts_mp3s.py collects them (retrying stragglers) →
 #   fetch_image.py waits for <IMAGE_BASE_URL>/<BaseName>.jpg → automate_audiobook.py builds
@@ -31,7 +31,7 @@
 #   YOUTUBE_REFRESH_TOKEN  https://www.googleapis.com/auth/youtube.upload. videos.insert costs
 #                        1600 of the project's default 10,000 daily quota units (~6 chapters/day),
 #                        and an unaudited client has its uploads force-locked to private anyway.
-#   OPENCODE_API_KEY     https://opencode.ai/zen — required even for the free models
+#   GEMINI_API_KEY       Google Gemini API key used to generate the image prompt and SEO
 #   HF_TOKEN
 name: sec10v chapter
 run-name: ${{ inputs.se_url }}
@@ -50,7 +50,7 @@ on:
       #   book title     ← <dc:title> in the book's content.opf
       #   chapter title  ← the chapter's <h2 epub:type="title"> heading
       image_url:
-        description: 'Direct URL of an already-generated image (skips the wait — for a re-run)'
+        description: 'Direct URL of an already-generated image (skips image-prompt generation and the wait — for a re-run)'
         required: false
         type: string
         default: ''
@@ -60,13 +60,13 @@ on:
         type: boolean
         default: false
       model:
-        description: 'opencode model id (provider/model); OpenCode Zen ids look like opencode/<slug>'
+        description: 'Google AI model used for the image prompt and SEO'
         required: true
         type: choice
         options:
-          - 'opencode/mimo-v2.5-free'
-          - 'opencode/muse-spark-1.3-contributor-free'
-        default: 'opencode/muse-spark-1.3-contributor-free'
+          - 'gemma-4-26b-a4b-it'
+          - 'gemini-3.5-flash-lite'
+        default: 'gemma-4-26b-a4b-it'
       sec10v_ref:
         description: 'nqminhuit/sec10v ref to check out'
         required: false
@@ -87,9 +87,7 @@ env:
 
 permissions:
   actions: write        # dispatch sec10v.yml runs in this repo and read their artifacts
-  contents: write       # required by anomalyco/opencode/github with use_github_token: true
-  issues: write         # (idem — the action's documented minimum; nothing here opens issues/PRs)
-  pull-requests: write  # (idem)
+  contents: read
 
 jobs:
   prepare:
@@ -99,7 +97,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
-          persist-credentials: false   # as in the opencode action's reference workflow
+          persist-credentials: false
 
       - name: Checkout nqminhuit/sec10v
         uses: actions/checkout@v7
@@ -156,7 +154,7 @@ jobs:
       # failure all just mean "synthesize from scratch".
       #
       # `fresh` skips it outright: nothing on disk means pending_chunks.py finds every chunk
-      # missing, so all the audio is re-synthesized and opencode rewrites the prompt and the SEO.
+      # missing, so all the audio is re-synthesized and Gemini rewrites the prompt and the SEO.
       # That is the escape hatch for a previous run whose MP3s are bad rather than absent — a
       # truncated chunk that still passed its own QA, a voice change, an edited chapter text.
       - name: Reuse audio from a previous run of this chapter
@@ -194,93 +192,235 @@ jobs:
           esac
 
           # The prompt and the SEO come out of the chapter text, so a recovered pair is as good
-          # as a freshly generated one — and skipping opencode skips an LLM call entirely.
+          # as a freshly generated one — and skipping Gemini skips an LLM call entirely.
           if [ -s "out/prompts/${BASE}.prompt.txt" ] && [ -s "out/seo/${BASE}.seo.md" ]; then
             echo "creative=true" >> "$GITHUB_OUTPUT"
-            echo "✅ image prompt and SEO recovered from a previous run — no opencode call needed"
+            echo "✅ image prompt and SEO recovered from a previous run — no Gemini call needed"
           else
             echo "creative=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # The only LLM step, via the official action (https://opencode.ai/docs/github/), and it runs
-      # FIRST so the image prompt is on screen a few minutes into the run — the human then draws
-      # while the TTS below is still going. workflow_dispatch requires an explicit `prompt`;
-      # `use_github_token: true` skips the OpenCode GitHub App / OIDC setup. The action runs in the
-      # workspace root, so every path in the prompt is prefixed with sec10v/. opencode.json limits
-      # it to file edits (no shell). Its failure never blocks the run — the image flow depends only
-      # on the URL convention, not on the prompt.
-      - name: Restrict opencode to file edits
+      # Detect an existing image before the LLM step. A direct image_url is already known to exist;
+      # otherwise probe the conventional image names in IMAGE_BASE_URL. This lets a re-run with an
+      # image already uploaded to the bucket generate SEO only, even when image_url is left blank.
+      - name: Detect existing background image
+        id: image_available
+        working-directory: sec10v
+        env:
+          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+          IMAGE_URL: ${{ inputs.image_url }}
         run: |
-          # A dispatch run ends inside the action with `git status --porcelain`, and if anything
-          # answers it commits and pushes a branch — which cannot work under
-          # persist-credentials: false and reported the whole step as failed even though both
-          # files had been written correctly. .gitignore covers everything this workflow leaves
-          # in the workspace (opencode.json, sec10v/, whisper.cpp/), so the tree reads clean and
-          # the action skips that push entirely. The identity below is the fallback for a tree
-          # that goes dirty anyway — a stray file written outside sec10v/.
-          git config user.email "actions@github.com"
-          git config user.name "sec10v chapter runner"
-          mkdir -p sec10v/out/prompts sec10v/out/seo
-          cat > opencode.json <<'EOF'
-          {
-            "$schema": "https://opencode.ai/config.json",
-            "permission": { "edit": "allow", "bash": "deny" }
-          }
-          EOF
+          found=false
+          if [ -n "$IMAGE_URL" ]; then
+            found=true
+            echo "✅ direct image_url supplied — skipping image-prompt generation"
+          elif [ -n "$IMAGE_BASE_URL" ]; then
+            for extension in jpg jpeg png webp; do
+              if curl --fail --silent --location --max-time 10 \
+                -o /dev/null "$IMAGE_BASE_URL/${BASE}.${extension}"; then
+                found=true
+                echo "✅ existing .$extension background image found — skipping image-prompt generation"
+                break
+              fi
+            done
+          fi
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+          if [ "$found" != "true" ]; then
+            echo "ℹ️ no existing background image found — Gemini will generate an image prompt"
+          fi
 
-      - name: Generate image prompt and SEO with opencode
+      # The only LLM step. It runs FIRST so the image prompt is on screen a few minutes into the
+      # run — the human then draws while the TTS below is still going. With an existing image,
+      # Gemini generates SEO only; otherwise it generates both files. Transport, HTTP,
+      # malformed-response and empty-output failures block the workflow rather than silently
+      # falling back. Rate-limit and transient server responses (429, 5xx) are logged and retried
+      # ten times with a fixed two-minute delay.
+      - name: Generate image prompt and SEO with Gemini
         id: creative
         if: steps.tts.outputs.creative != 'true'
-        continue-on-error: true
-        uses: anomalyco/opencode/github@latest
+        working-directory: sec10v
         env:
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          model: ${{ inputs.model }}
-          use_github_token: true
-          share: false
-          variant: high
-          prompt: |
-            You are working in a checkout of the sec10v repository located at ./sec10v.
-            Do exactly two tasks and nothing else.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          IMAGE_AVAILABLE: ${{ steps.image_available.outputs.found }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/prompts out/seo
 
-            Chapter text: sec10v/out/text/${{ env.BASE }}.txt
-            Book title: ${{ env.BOOK_TITLE }}
-            Chapter title: ${{ env.CHAPTER_TITLE }}
-            Author: see the <dc:creator> of the book (Standard Ebooks repo ${{ env.SE_REPO }})
-            BaseName: ${{ env.BASE }}
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
 
-            Task 1 — follow sec10v/.github/skills/image-prompt-generator/SKILL.md exactly
-            (single-file mode) and write the prompt to
-            sec10v/out/prompts/${{ env.BASE }}.prompt.txt.
+          base = os.environ["BASE"]
+          book_title = os.environ["BOOK_TITLE"]
+          chapter_title = os.environ["CHAPTER_TITLE"]
+          se_repo = os.environ["SE_REPO"]
+          chapter_text = Path(f"out/text/{base}.txt").read_text()
+          seo_skill = Path(".github/skills/audiobook-youtube-seo/SKILL.md").read_text()
 
-            Task 2 — follow sec10v/.github/skills/audiobook-youtube-seo/SKILL.md exactly and
-            write the result to sec10v/out/seo/${{ env.BASE }}.seo.md. Match the
-            structure of any existing files in sec10v/out/seo/.
+          if os.environ["IMAGE_AVAILABLE"] == "true":
+              prompt = f"""You are generating production files for a narrated Standard Ebooks chapter.
+              An image has already been supplied, so do not generate an image prompt.
+              Return ONLY a JSON object with exactly this string field:
+              {{"seo_markdown": "..."}}
 
-            Do not modify any other file. Do not run shell commands. Do not commit or push.
+              Follow the audiobook YouTube SEO skill exactly for seo_markdown, matching the structure
+              of any existing SEO files described by that skill:
+              --- SEO skill ---
+              {seo_skill}
+              --- end SEO skill ---
 
-      - name: Check opencode outputs
+              Chapter text:
+              --- chapter text ---
+              {chapter_text}
+              --- end chapter text ---
+
+              Book title: {book_title}
+              Chapter title: {chapter_title}
+              Author: see the <dc:creator> of the Standard Ebooks repository {se_repo}
+              BaseName: {base}
+              """
+          else:
+              image_skill = Path(".github/skills/image-prompt-generator/SKILL.md").read_text()
+              prompt = f"""You are generating production files for a narrated Standard Ebooks chapter.
+              Return ONLY a JSON object with exactly these two string fields:
+              {{"image_prompt": "...", "seo_markdown": "..."}}
+
+              Follow the image-prompt skill exactly for image_prompt:
+              --- image-prompt skill ---
+              {image_skill}
+              --- end image-prompt skill ---
+
+              Follow the audiobook YouTube SEO skill exactly for seo_markdown, matching the structure
+              of any existing SEO files described by that skill:
+              --- SEO skill ---
+              {seo_skill}
+              --- end SEO skill ---
+
+              Chapter text:
+              --- chapter text ---
+              {chapter_text}
+              --- end chapter text ---
+
+              Book title: {book_title}
+              Chapter title: {chapter_title}
+              Author: see the <dc:creator> of the Standard Ebooks repository {se_repo}
+              BaseName: {base}
+              """
+
+          generation_config = {"responseMimeType": "application/json"}
+          if os.environ["MODEL"] == "gemma-4-26b-a4b-it":
+              properties = {"seo_markdown": {"type": "STRING"}}
+              required = ["seo_markdown"]
+              if os.environ["IMAGE_AVAILABLE"] != "true":
+                  properties["image_prompt"] = {"type": "STRING"}
+                  required.append("image_prompt")
+              generation_config["responseSchema"] = {
+                  "type": "OBJECT",
+                  "properties": properties,
+                  "required": required,
+              }
+
+          Path("gemini-request.json").write_text(json.dumps({
+              "contents": [{"parts": [{"text": prompt}]}],
+              "generationConfig": generation_config,
+          }))
+          PY
+
+          max_retries=10
+          attempt=1
+          while :; do
+            if ! http_status=$(curl --show-error --silent \
+              --connect-timeout 30 --max-time 600 \
+              -H "x-goog-api-key: $GEMINI_API_KEY" \
+              -H "Content-Type: application/json" \
+              "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent" \
+              --data-binary @gemini-request.json \
+              --output gemini-response.json \
+              --write-out '%{http_code}'); then
+              echo "❌ Gemini request failed before receiving an HTTP response"
+              exit 1
+            fi
+
+            case "$http_status" in
+              429|500|502|503|504)
+              echo "⚠️ Gemini transient HTTP $http_status on attempt $attempt"
+              echo "--- Gemini transient-error response ---"
+              cat gemini-response.json
+              echo
+              if [ "$attempt" -gt "$max_retries" ]; then
+                echo "❌ Gemini HTTP $http_status persisted after $max_retries retries"
+                exit 1
+              fi
+              echo "⏳ waiting 2 minute(s) before retry $((attempt + 1))"
+              sleep 120
+              attempt=$((attempt + 1))
+              continue
+              ;;
+            esac
+
+            if [ "$http_status" -lt 200 ] || [ "$http_status" -ge 300 ]; then
+              echo "❌ Gemini request failed with HTTP $http_status"
+              cat gemini-response.json
+              echo
+              exit 1
+            fi
+            break
+          done
+
+          if ! generated_json=$(jq -er \
+            '.candidates[0].content.parts[0].text
+             | sub("^```[[:alnum:]_-]*[[:space:]]*"; "")
+             | sub("[[:space:]]*```$"; "")
+             | fromjson' \
+            gemini-response.json); then
+            echo "❌ Gemini returned invalid JSON"
+            exit 1
+          fi
+
+          if ! seo_markdown=$(printf '%s' "$generated_json" | jq -er \
+            '.seo_markdown | select(type == "string" and test("\\S"))'); then
+            echo "❌ Gemini returned an empty or invalid seo_markdown"
+            exit 1
+          fi
+
+          printf '%s\n' "$seo_markdown" > "out/seo/${BASE}.seo.md"
+
+          if [ "$IMAGE_AVAILABLE" != "true" ]; then
+            if ! image_prompt=$(printf '%s' "$generated_json" | jq -er \
+              '.image_prompt | select(type == "string" and test("\\S"))'); then
+              echo "❌ Gemini returned an empty or invalid image_prompt"
+              exit 1
+            fi
+            printf '%s\n' "$image_prompt" > "out/prompts/${BASE}.prompt.txt"
+          fi
+
+          rm -f gemini-request.json gemini-response.json
+
+      - name: Check Gemini outputs
         id: creative_check
         if: steps.tts.outputs.creative != 'true'
-        continue-on-error: true
         working-directory: sec10v
+        env:
+          IMAGE_AVAILABLE: ${{ steps.image_available.outputs.found }}
         run: |
-          for f in "out/prompts/${BASE}.prompt.txt" "out/seo/${BASE}.seo.md"; do
-            if [ ! -s "$f" ]; then echo "❌ opencode did not produce $f"; exit 1; fi
+          files=("out/seo/${BASE}.seo.md")
+          if [ "$IMAGE_AVAILABLE" != "true" ]; then files+=("out/prompts/${BASE}.prompt.txt"); fi
+          for f in "${files[@]}"; do
+            if [ ! -s "$f" ]; then echo "❌ Gemini did not produce $f"; exit 1; fi
             echo "=== $f ==="; cat "$f"; echo
           done
 
       # The log, not $GITHUB_STEP_SUMMARY: the summary page is kept to the two things a finished
       # run still needs a human for — the QA table and the transcript — so the prompt is printed
       # here instead, uncollapsed (no ::group::) because it is the one time-critical thing on the
-      # page. `if: always()` because a failed opencode is exactly when you most need the fallback.
+      # page. `if: always()` because a failed Gemini request is exactly when you most need the fallback.
       # Every conditional here is if/fi, never `[ … ] && …`: under `bash -e` a trailing false
       # test would fail the step, and a failed always()-step marks the whole job failed.
-      - name: Print the image prompt
+      - name: "🚨 IMAGE PROMPT READY — copy from this step"
         # Pointless when the caller already has an image — there is nothing left to draw.
-        if: always() && inputs.image_url == ''
+        if: always() && steps.image_available.outputs.found != 'true'
         working-directory: sec10v
         env:
           IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
@@ -293,7 +433,7 @@ jobs:
           if [ -s "$prompt" ]; then
             cat "$prompt"; echo
           else
-            echo "opencode produced no prompt — write one from"
+            echo "Gemini produced no prompt — write one from"
             echo ".github/skills/image-prompt-generator/SKILL.md. Chapter opening:"
             head -c 1200 "out/text/${BASE}.txt"; echo
           fi
@@ -491,7 +631,7 @@ jobs:
       #   - audio matched by byte-identical chunk *text* rather than by filename, which is what
       #     makes partial reuse after an upstream edit safe (without it, `fresh: true` is the
       #     escape hatch for audio that is wrong rather than absent);
-      #   - the prompt and the SEO, whose recovery lets a re-run skip the opencode call.
+      #   - the prompt and the SEO, whose recovery lets a re-run skip the Gemini call.
       # Keep the two comments below if it comes back — both record a real failure.
       #
       # Uploaded BEFORE the image wait on purpose: a job cancelled by timeout-minutes skips even
@@ -666,6 +806,8 @@ jobs:
       # Fail loudly *after* the upload, so a finished video is never lost to a late failure.
       - name: Report chunk, prompt and video status
         working-directory: sec10v
+        env:
+          IMAGE_AVAILABLE: ${{ steps.image_available.outputs.found }}
         run: |
           if [ -f out/run_ids.json ]; then
             remaining=$(python -c "import json; d=json.load(open('out/run_ids.json')); print(len(d)); [print(' -', e['out_subdir'], e['run_id']) for e in d]")
@@ -677,12 +819,13 @@ jobs:
             echo "These runs failed in the last retry round; rerun this workflow to try again."
             exit 1
           fi
-          # Test the two files, not a step outcome: the opencode action can report failure for
-          # reasons that don't matter here (a failed internal git commit, its title side-model
-          # rejected by the billing check), and when the pair was recovered from a previous run
-          # the step never ran at all — its outcome is "skipped", which is not a failure.
-          if [ ! -s "out/prompts/${BASE}.prompt.txt" ] || [ ! -s "out/seo/${BASE}.seo.md" ]; then
-            echo "⚠️ no image prompt/SEO on disk — write them manually from the skills; MP3s are complete."
+          # Test the two files, not a step outcome: when the pair was recovered from a previous run
+          # the Gemini step never ran at all — its outcome is "skipped", which is not a failure.
+          if [ ! -s "out/seo/${BASE}.seo.md" ]; then
+            echo "⚠️ no SEO on disk — write it manually from the SEO skill; MP3s are complete."
+          fi
+          if [ "$IMAGE_AVAILABLE" != "true" ] && [ ! -s "out/prompts/${BASE}.prompt.txt" ]; then
+            echo "⚠️ no image prompt on disk — write one manually from the image-prompt skill; MP3s are complete."
           fi
           if [ "${{ steps.qa.outcome }}" = "failure" ]; then
             echo "⚠️ the final QA flagged something — see the Final QA table in the run summary"
