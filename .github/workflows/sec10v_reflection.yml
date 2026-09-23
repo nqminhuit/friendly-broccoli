@@ -15,11 +15,17 @@
 # Human steps: copy each image prompt out of the 🚨 step's log, draw the images, and upload them
 # to the bucket as <BaseName>.1.jpg … <BaseName>.<n>.jpg while the TTS runs. A missing image
 # falls back to the previous section's; without image 1 no video is built. To change the
-# script, edit the printed text, upload it to the bucket as <BaseName>.script.md and re-dispatch
-# with edited_script — images already uploaded are picked up again automatically.
+# script, edit <BaseName>.script.md in the bucket and re-dispatch with edited_script — images
+# already uploaded are picked up again automatically.
 #
-# Secrets — the same as sec10v_chapter.yml, no new one (see there for details):
+# Every run saves Gemini's script, image prompts and SEO to the bucket; edited_script reuses them.
+#
+# Secrets — those of sec10v_chapter.yml (see there for details), plus the four BUCKET_* ones:
 #   IMAGE_BASE_URL        image bucket prefix, no trailing slash; also where an edited script goes
+#   BUCKET_S3_ENDPOINT    S3 API endpoint of the bucket (MinIO or other S3-compatible), e.g. https://minio.example.com
+#   BUCKET_S3_URI         s3://<bucket>/<prefix>, the same folder IMAGE_BASE_URL serves
+#   BUCKET_ACCESS_KEY_ID  S3 access key with write access to that folder
+#   BUCKET_SECRET_ACCESS_KEY  its secret key
 #   SEC10V_ACCESS_TOKEN   also used by sec10v.yml
 #   YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REFRESH_TOKEN
 #   GEMINI_API_KEY        writes the script, the image prompts and the SEO
@@ -35,7 +41,7 @@ on:
         required: true
         type: string
       edited_script:
-        description: 'Use your edited script from the image bucket (<BaseName>.script.md) instead of writing a new one'
+        description: 'Reuse the script, image prompts and SEO saved in the image bucket (<BaseName>.script.md, .seo.md, .<k>.prompt.txt) instead of calling Gemini — e.g. to compare voices'
         required: false
         type: boolean
         default: false
@@ -171,6 +177,58 @@ jobs:
           echo "--- out/text ---"; ls -la out/text
           echo "--- dispatch manifest ---"; python -c "import json; print(len(json.load(open('out/workflow-input.json'))), 'item(s)')"
 
+      # Only what Gemini wrote this run, so bucket edits survive; the SEO goes up before the
+      # chapters block is added. aws's stderr is swallowed: it would show the bucket and prefix.
+      - name: Save Gemini's outputs to the bucket
+        continue-on-error: true
+        working-directory: sec10v
+        env:
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1   # MinIO accepts any region unless one is configured
+        run: |
+          if [ -z "$BUCKET_S3_ENDPOINT" ] || [ -z "$BUCKET_S3_URI" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "⏭️ bucket upload secrets not set (BUCKET_S3_ENDPOINT, BUCKET_S3_URI, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY) — Gemini's outputs are not saved"
+            exit 0
+          fi
+          aws --version
+          aws configure set default.s3.addressing_style path   # MinIO needs path-style
+          # One "<local file>\t<bucket name>" line per file Gemini wrote this run.
+          uploads=$(python - <<'EOF'
+          import json
+
+          d = json.load(open("out/chapter.json"))
+          base = d["base_name"]
+          models = d.get("models", {})
+          if models.get("script") != "edited":
+              print(f"out/{base}.script.md\t{base}.script.md")
+          if models.get("prompts") != "bucket":
+              print(f"out/seo/{base}.seo.md\t{base}.seo.md")
+              for k in range(1, len(d["sections"]) + 1):
+                  print(f"out/prompts/{base}.{k}.prompt.txt\t{base}.{k}.prompt.txt")
+          EOF
+          )
+          if [ -z "$uploads" ]; then
+            echo "nothing new to save — everything came from the bucket"
+            exit 0
+          fi
+          failed=0
+          while IFS=$'\t' read -r file name; do
+            if [ "${name##*.}" = "md" ]; then type="text/markdown; charset=utf-8"; else type="text/plain; charset=utf-8"; fi
+            # </dev/null so aws can never swallow the rest of the list from stdin.
+            if [ -f "$file" ] && err=$(aws s3 cp --endpoint-url "$BUCKET_S3_ENDPOINT" --only-show-errors \
+                --content-type "$type" "$file" "${BUCKET_S3_URI%/}/${name}" 2>&1 </dev/null); then
+              echo "✅ saved ${name}"
+            else
+              code=$(printf '%s' "${err:-}" | grep -o 'An error occurred ([A-Za-z]*)' | head -n1 || true)
+              echo "❌ could not save ${name}${code:+ — $code}"
+              failed=1
+            fi
+          done <<< "$uploads"
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+
       # YouTube takes an untimed transcript and aligns it to the audio itself, so this is just
       # the intro plus the chapter text — the exact words the TTS read. Written here, right after
       # the text exists, so it survives a failure anywhere later in the run.
@@ -251,8 +309,6 @@ jobs:
       - name: "📝 Reflection script — review it here"
         if: always()
         working-directory: sec10v
-        env:
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
         run: |
           # A script that failed validation is still written, but without chapter.json or BASE.
           if [ -z "$BASE" ] || [ ! -f out/chapter.json ]; then
@@ -269,7 +325,6 @@ jobs:
             echo "this workflow with edited_script checked."
             exit 0
           fi
-          if [ -n "$IMAGE_BASE_URL" ]; then target="your image bucket"; else target="your image bucket (set the IMAGE_BASE_URL secret)"; fi
           echo "=== script — ${BOOK_TITLE} / ${CHAPTER_TITLE} ==="
           if [ -s "out/${BASE}.script.md" ]; then
             cat "out/${BASE}.script.md"; echo
@@ -277,10 +332,13 @@ jobs:
             echo "(no out/${BASE}.script.md)"
           fi
           echo
-          echo "=== to change the script ==="
-          echo "Edit the script above, upload it to ${target} as ${BASE}.script.md, and re-dispatch"
-          echo "this workflow with edited_script checked. Uploaded images are picked up again only with"
-          echo "edited_script: a re-run without it writes a new script and ignores images uploaded before it."
+          echo "=== to change the script or the voice ==="
+          echo "This script, its image prompts and its SEO are saved to the bucket automatically"
+          echo "(when the BUCKET_* secrets are set)."
+          echo "To change the script, edit ${BASE}.script.md in the bucket."
+          echo "To re-narrate with another voice, re-dispatch this workflow with edited_script checked"
+          echo "and pick the voice. Uploaded images are reused only with edited_script: a re-run without"
+          echo "it writes a new script and ignores images uploaded before it."
 
       # Needed by the video build at the end (and it is cheap here, while the human is drawing).
       - name: Install ffmpeg
