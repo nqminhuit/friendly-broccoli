@@ -6,8 +6,11 @@
 #   script in the "📝 Reflection script" step → trigger_workflow.py fans out one sec10v.yml run
 #   per chunk + 1 intro run → reflection_images.py waits for <IMAGE_BASE_URL>/<BaseName>.<k>.jpg
 #   → import_artifacts_mp3s.py collects the audio → automate_audiobook.py builds the video,
-#   cutting to each section's image → reflection_chapters.py adds YouTube chapters →
+#   crossfading into each section's image → reflection_chapters.py adds YouTube chapters →
 #   youtube_upload.py publishes it as private.
+#
+# The voice input picks the narrator; every chunk run is dispatched with it. Its default is
+# deliberately not the audiobook's voice.
 #
 # Human steps: copy each image prompt out of the 🚨 step's log, draw the images, and upload them
 # to the bucket as <BaseName>.1.jpg … <BaseName>.<n>.jpg while the TTS runs. A missing image
@@ -41,6 +44,25 @@ on:
         required: false
         type: string
         default: 'master'
+      voice:
+        description: 'Narrator voice (sec10v resources/voices/); the audiobook uses a different default'
+        required: false
+        type: choice
+        default: '_live/maddpren_enhanced_cut_magician_12_maugham_128kb.wav'
+        options:
+          - '_live/maddpren_enhanced_cut_magician_12_maugham_128kb.wav'
+          - '_live/maddpren_enhance_cut_magician_12_maugham_128kb.mp3'
+          - '_live/DianeAlailima_bedtimestories_36_anonymous_128kb.cleaned.mp3'
+          - '_live/DianeAlailima_cut_wondergarden_122_olcott_128kb.mp3'
+          - '_live/DianeAlailima_wondergarden_121_olcott_128kb.cleaned.mp3'
+          - '_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned.mp3'
+          - '_live/HannahC_cut_girlsofstcyprians_09_brazil_128kb.mp3'
+          - '_live/LesWilLang_cut_ladyofthearoostook_02_howells_128kb.mp3'
+          - '_live/Rapunzelina_cut_essaysonart_34_goethe_128kb.mp3'
+          - '_live/TriciaG_cut_bobbyswolf_31_pansy_128kb.mp3'
+          - '_live/TriciaG_cut_ssc115_02_various_128kb.mp3'
+          - '_live/thestorygirl_clean9s.mp3'
+          - '_live/thestorygirl_cut_cm2_02_mason_128kb.mp3'
 
 env:
   TARGET_WORDS: '1450'          # ~10 minutes at the voice's measured ~147 wpm
@@ -55,6 +77,8 @@ env:
   # The human drawing up to 5 images is the critical path, hence the long second window.
   IMAGE_EARLY_WAIT_MINUTES: '20'  # while the chunk runs are synthesizing
   IMAGE_WAIT_MINUTES: '120'       # second chance, after the audio is collected
+  VIDEO_FRAMERATE: '25'           # a smooth crossfade needs more than the audiobook's 5 fps
+  CROSSFADE_SECONDS: '1'          # fade into each new section's image
 
 permissions:
   actions: write        # dispatch sec10v.yml runs in this repo and read their artifacts
@@ -77,16 +101,19 @@ jobs:
           SE_URL: ${{ inputs.se_url }}
           EDITED_SCRIPT: ${{ inputs.edited_script }}
           SEC10V_REF: ${{ inputs.sec10v_ref }}
+          VOICE: ${{ inputs.voice }}
         run: |
           {
             echo "### Workflow Inputs"
             echo "- Chapter URL: \`$SE_URL\`"
             echo "- Edited script: \`$EDITED_SCRIPT\`"
             echo "- sec10v ref: \`$SEC10V_REF\`"
+            echo "- Voice: \`$VOICE\`"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Chapter URL: $SE_URL"
           echo "Edited script: $EDITED_SCRIPT"
           echo "sec10v ref: $SEC10V_REF"
+          echo "Voice: $VOICE"
 
       - name: Checkout nqminhuit/sec10v
         uses: actions/checkout@v7
@@ -114,6 +141,7 @@ jobs:
           PYTHONPATH: scripts
           SE_URL: ${{ inputs.se_url }}   # via env, never spliced into the script body
           EDITED_SCRIPT: ${{ inputs.edited_script }}
+          VOICE: ${{ inputs.voice }}
           IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -128,6 +156,7 @@ jobs:
             fi
             args+=(--script-base-url "$IMAGE_BASE_URL")
           fi
+          if [ -n "$VOICE" ]; then args+=(--voice "$VOICE"); fi
           python scripts/prepare_reflection.py "${args[@]}"
           # Export the parsed/inferred values for the later steps.
           python - <<'EOF' >> "$GITHUB_ENV"
@@ -471,7 +500,8 @@ jobs:
           # Preflight: every mp3 must exist, or automate_audiobook would shell out to audiobook.py
           # and fail on the torch this runner deliberately doesn't have.
           python scripts/pending_chunks.py
-          python scripts/automate_audiobook.py "$BASE" --segment-images out/segment-images.json
+          python scripts/automate_audiobook.py "$BASE" --segment-images out/segment-images.json \
+            --framerate "$VIDEO_FRAMERATE" --crossfade "$CROSSFADE_SECONDS"
           ls -lh out/*.final.mp4
 
       # whisper-cli for the spot-check below. Restore only, never build: the chunk runs populate

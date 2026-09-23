@@ -17,6 +17,11 @@ on:
         description: 'Output filename (without extension)'
         required: true
         type: string
+      voice:
+        description: "Voice prompt path relative to sec10v resources/voices/ (default: audiobook.py's DEFAULT_VOICE)"
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -153,12 +158,22 @@ jobs:
 
       - name: Verify voice prompt exists
         working-directory: sec10v
+        env:
+          VOICE: ${{ github.event.inputs.voice }}
         run: |
-          if [ ! -f "resources/voices/_live/maddpren_enhanced_cut_magician_12_maugham_128kb.wav" ]; then
-            echo "❌ Error: Voice prompt file not found!"
+          if [ -z "$VOICE" ]; then
+            echo "✅ No voice given — audiobook.py's default voice is used"
+            exit 0
+          fi
+          if [[ "$VOICE" == /* || "$VOICE" == *..* ]]; then
+            echo "❌ Error: voice must be a path relative to resources/voices/ without '..': $VOICE"
             exit 1
           fi
-          echo "✅ Voice prompt file found"
+          if [ ! -f "resources/voices/$VOICE" ]; then
+            echo "❌ Error: Voice prompt file not found: resources/voices/$VOICE"
+            exit 1
+          fi
+          echo "✅ Voice prompt file found: resources/voices/$VOICE"
 
       - name: Create output directory
         working-directory: sec10v
@@ -170,10 +185,11 @@ jobs:
         env:
           TTS_TEXT: ${{ github.event.inputs.tts_text }}
           AUDIO_RATE: ${{ github.event.inputs.audio_rate }}
+          VOICE: ${{ github.event.inputs.voice }}
         run: |
-          python scripts/audiobook.py \
-            --tts "$TTS_TEXT" \
-            --audio-rate "$AUDIO_RATE"
+          args=(--tts "$TTS_TEXT" --audio-rate "$AUDIO_RATE")
+          if [ -n "$VOICE" ]; then args+=(--voice "$VOICE"); fi
+          python scripts/audiobook.py "${args[@]}"
           if [ -f "out/audiobook.mp3" ]; then
             echo "✅ TTS audio file generated successfully"
             ffprobe -v error -show_entries format=duration,bit_rate -of default=noprint_wrappers=1 out/audiobook.mp3
@@ -224,11 +240,12 @@ jobs:
         env:
           TTS_TEXT: ${{ github.event.inputs.tts_text }}
           AUDIO_RATE: ${{ github.event.inputs.audio_rate }}
+          VOICE: ${{ github.event.inputs.voice }}
         run: |
             echo "🔁 Retry triggered due to verification failure"
-            python scripts/audiobook.py \
-                --tts "$TTS_TEXT" \
-                --audio-rate "$AUDIO_RATE"
+            args=(--tts "$TTS_TEXT" --audio-rate "$AUDIO_RATE")
+            if [ -n "$VOICE" ]; then args+=(--voice "$VOICE"); fi
+            python scripts/audiobook.py "${args[@]}"
 
             if [ ! -f "out/audiobook.mp3" ]; then
                 echo "❌ Retry failed to generate audio"
