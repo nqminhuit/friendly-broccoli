@@ -2,13 +2,14 @@
 # (not a word-for-word reading), waiting on the channel as a private upload:
 #
 #   prepare_reflection.py → Gemini writes a 3–5 section script, one image prompt per section and
-#   the SEO → THE SCRIPT AND PROMPTS ARE PRINTED IN THE LOG of the "🚨 SCRIPT AND IMAGE PROMPTS
-#   READY" step → trigger_workflow.py fans out one sec10v.yml run per chunk + 1 intro run →
-#   reflection_images.py waits for <IMAGE_BASE_URL>/<BaseName>.<k>.jpg → import_artifacts_mp3s.py
-#   collects the audio → automate_audiobook.py builds the video, cutting to each section's image →
-#   reflection_chapters.py adds YouTube chapters → youtube_upload.py publishes it as private.
+#   the SEO → THE PROMPTS ARE PRINTED IN THE LOG of the "🚨 IMAGE PROMPTS READY" step and the
+#   script in the "📝 Reflection script" step → trigger_workflow.py fans out one sec10v.yml run
+#   per chunk + 1 intro run → reflection_images.py waits for <IMAGE_BASE_URL>/<BaseName>.<k>.jpg
+#   → import_artifacts_mp3s.py collects the audio → automate_audiobook.py builds the video,
+#   cutting to each section's image → reflection_chapters.py adds YouTube chapters →
+#   youtube_upload.py publishes it as private.
 #
-# Human steps: copy each image prompt out of that step's log, draw the images, and upload them
+# Human steps: copy each image prompt out of the 🚨 step's log, draw the images, and upload them
 # to the bucket as <BaseName>.1.jpg … <BaseName>.<n>.jpg while the TTS runs. A missing image
 # falls back to the previous section's; without image 1 no video is built. To change the
 # script, edit the printed text, upload it to the bucket as <BaseName>.script.md and re-dispatch
@@ -175,42 +176,24 @@ jobs:
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 10 ]; then exit "$rc"; fi
 
       # The log, not $GITHUB_STEP_SUMMARY: the summary page is kept to the QA table and the
-      # transcript, so the script and prompts are printed here instead, uncollapsed (no ::group::)
-      # because they are the one time-critical thing on the page. `if: always()` so a late
-      # failure still shows whatever was written. Every conditional here is if/fi, never
-      # `[ … ] && …`: under `bash -e` a trailing false test would fail the step, and a failed
-      # always()-step marks the whole job failed.
-      - name: "🚨 SCRIPT AND IMAGE PROMPTS READY — copy from this step"
+      # transcript, so the prompts are printed here, first and uncollapsed (no ::group::), because
+      # they are the one time-critical thing on the page; the script gets its own step below.
+      # `if: always()` so a late failure still shows whatever was written. Every conditional here
+      # is if/fi, never `[ … ] && …`: under `bash -e` a trailing false test would fail the step,
+      # and a failed always()-step marks the whole job failed.
+      - name: "🚨 IMAGE PROMPTS READY — copy from this step"
         if: always()
         working-directory: sec10v
         env:
           IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
         run: |
-          # A script that failed validation is still written, but without chapter.json or BASE.
           if [ -z "$BASE" ] || [ ! -f out/chapter.json ]; then
-            shopt -s nullglob
-            scripts=(out/*.script.md)
-            if [ "${#scripts[@]}" -eq 0 ]; then
-              echo "no script was written — see the previous steps' log"
-              exit 0
-            fi
-            for f in "${scripts[@]}"; do
-              echo "=== $(basename "$f") ==="; cat "$f"; echo
-            done
-            echo "Fix the script, upload it to your image bucket under that filename, and re-dispatch"
-            echo "this workflow with edited_script checked."
+            echo 'no image prompts — the script step failed; see "📝 Reflection script — review it here"'
             exit 0
           fi
           # IMAGE_BASE_URL is a secret, so anything echoing it shows as ***; the filename is
           # the part you actually need, and it is not sensitive.
           if [ -n "$IMAGE_BASE_URL" ]; then target="your image bucket"; else target="your image bucket (set the IMAGE_BASE_URL secret)"; fi
-          echo "=== script — ${BOOK_TITLE} / ${CHAPTER_TITLE} ==="
-          if [ -s "out/${BASE}.script.md" ]; then
-            cat "out/${BASE}.script.md"; echo
-          else
-            echo "(no out/${BASE}.script.md)"
-          fi
-          echo
           TARGET="$target" python - <<'EOF'
           import json
           import os
@@ -231,13 +214,44 @@ jobs:
                   print(f"upload to {os.environ['TARGET']} as {image}.jpg (.png, .jpeg and .webp work too)")
               print()
           EOF
+          echo "Polling starts as soon as the chunk runs are dispatched and lasts ${IMAGE_EARLY_WAIT_MINUTES} minute(s)."
+          echo "A second window of ${IMAGE_WAIT_MINUTES} minute(s) follows once the audio is collected."
+          echo "Only images uploaded after this run's script was written count, unless edited_script is set."
+
+      # Separate from the prompts so they are not buried under ~1,500 words of script.
+      - name: "📝 Reflection script — review it here"
+        if: always()
+        working-directory: sec10v
+        env:
+          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+        run: |
+          # A script that failed validation is still written, but without chapter.json or BASE.
+          if [ -z "$BASE" ] || [ ! -f out/chapter.json ]; then
+            shopt -s nullglob
+            scripts=(out/*.script.md)
+            if [ "${#scripts[@]}" -eq 0 ]; then
+              echo "no script was written — see the previous steps' log"
+              exit 0
+            fi
+            for f in "${scripts[@]}"; do
+              echo "=== $(basename "$f") ==="; cat "$f"; echo
+            done
+            echo "Fix the script, upload it to your image bucket under that filename, and re-dispatch"
+            echo "this workflow with edited_script checked."
+            exit 0
+          fi
+          if [ -n "$IMAGE_BASE_URL" ]; then target="your image bucket"; else target="your image bucket (set the IMAGE_BASE_URL secret)"; fi
+          echo "=== script — ${BOOK_TITLE} / ${CHAPTER_TITLE} ==="
+          if [ -s "out/${BASE}.script.md" ]; then
+            cat "out/${BASE}.script.md"; echo
+          else
+            echo "(no out/${BASE}.script.md)"
+          fi
+          echo
           echo "=== to change the script ==="
           echo "Edit the script above, upload it to ${target} as ${BASE}.script.md, and re-dispatch"
           echo "this workflow with edited_script checked. Uploaded images are picked up again only with"
           echo "edited_script: a re-run without it writes a new script and ignores images uploaded before it."
-          echo
-          echo "Polling starts as soon as the chunk runs are dispatched and lasts ${IMAGE_EARLY_WAIT_MINUTES} minute(s)."
-          echo "A second window of ${IMAGE_WAIT_MINUTES} minute(s) follows once the audio is collected."
 
       # Needed by the video build at the end (and it is cheap here, while the human is drawing).
       - name: Install ffmpeg
@@ -571,8 +585,8 @@ jobs:
           fi
           if [ "${{ steps.image.outputs.found }}" != "true" ] && [ "${{ steps.image_retry.outputs.found }}" != "true" ]; then
             echo "⚠️ image 1 never arrived — no video was built, nothing was uploaded to YouTube."
-            echo "   To keep this script, upload the script printed in the 🚨 step as ${BASE}.script.md,"
-            echo "   plus ${BASE}.1.jpg, then re-run with edited_script."
+            echo "   To keep this script, upload the script from the 📝 Reflection script step as"
+            echo "   ${BASE}.script.md, plus ${BASE}.1.jpg, then re-run with edited_script."
           fi
 
       # Last on purpose. $GITHUB_STEP_SUMMARY renders blocks in the order steps append them, so
