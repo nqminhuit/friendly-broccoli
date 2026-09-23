@@ -40,20 +40,23 @@ on:
   workflow_dispatch:
     inputs:
       se_url:
-        description: 'Chapter URL copied from GitHub (…/<owner>/<repo>/blob/<ref>/src/epub/text/<chapter>.xhtml). Any owner and ref: a fork with edited text works, and the branch you name is the branch that is read.'
+        description: 'Chapter URL copied from GitHub (…/<owner>/<repo>/blob/<ref>/src/epub/text/<chapter>.xhtml). Any owner and ref: a fork with edited text works, and the branch you name is the branch that is read. Add #<section-id> to narrate one chapter of a file that holds several, e.g. …/part-1.xhtml#chapter-1-1.'
         required: true
         type: string
       # Everything else is inferred by prepare_chapter.py from that one URL:
       #   owner + repo + ref + chapter ← parsed out of the URL (the log line "Fetched …" shows
       #                    exactly what was read, which is how a fork run identifies itself)
-      #   BaseName       ← repo + chapter slugs      (TheWisdomOfFatherBrown.TheManInThePassage)
-      #   book title     ← <dc:title> in the book's content.opf
+      #   BaseName       ← repo + chapter slugs      (TheWisdomOfFatherBrown.TheManInThePassage),
+      #                    the author kept for a generic title (OHenryShortFiction.TheGiftOfTheMagi)
+      #                    and the #section id in place of the chapter (DarkPrincess.Chapter11)
+      #   book title     ← <dc:title> in the book's content.opf, as "<dc:creator>: <dc:title>" for a
+      #                    generic title ("O. Henry: Short Fiction")
       #   chapter title  ← the chapter's <h2 epub:type="title"> heading, prefixed "Chapter N: " when
       #                    the heading has a numeral (<h2 epub:type="ordinal">I</h2>), and with
       #                    "Part N: <part title>, " when the chapter sits in a part
       #                    (data-parent="part-2") — or chapter_title
       chapter_title:
-        description: 'Spoken chapter title override (default: derived — "Chapter N: <title>" when the heading has a numeral, prefixed "Part N: <part title>, " inside a part). Changing it on a re-run needs fresh, since audio reuse matches the intro by name.'
+        description: 'Spoken chapter title override (default: derived — "<Label> N: <title>" when the heading has a numeral, the label taken from the heading or section type ("Part N", "Chapter N" …), prefixed "Part N: <part title>, " inside a part). Changing it on a re-run needs fresh, since audio reuse matches the intro by name.'
         required: false
         type: string
         default: ''
@@ -87,6 +90,7 @@ env:
   IMAGE_EARLY_WAIT_MINUTES: '20' # while the chunk runs are synthesizing — free, that time is
                                  # otherwise spent idle in the collector's poll
   IMAGE_WAIT_MINUTES: '60'      # second chance, after the audio is collected; 0 disables the video
+  MAX_CHUNKS: '60'              # ~20 chunks take 41-81 min; more than this can't be collected in 200
   # Empty on purpose: no music beds, just the TTS. An empty INTRO_AUDIO drops the music from
   # the spoken intro (book title + chapter title) and an empty OUTRO_AUDIO skips the outro
   # segment entirely. Name a file in sec10v resources/music/ to bring either back.
@@ -162,7 +166,7 @@ jobs:
           # Not CHAPTER_TITLE: that name is exported below from what prepare_chapter.py derived.
           CHAPTER_TITLE_OVERRIDE: ${{ inputs.chapter_title }}
         run: |
-          args=(--url "$SE_URL")
+          args=(--url "$SE_URL" --max-chunks "$MAX_CHUNKS")
           if [ -n "$CHAPTER_TITLE_OVERRIDE" ]; then args+=(--chapter-title "$CHAPTER_TITLE_OVERRIDE"); fi
           python scripts/prepare_chapter.py "${args[@]}"
           # Export the parsed/inferred values for the later steps.
@@ -171,7 +175,7 @@ jobs:
           d = json.load(open("out/chapter.json"))
           for env, key in (("BASE", "base_name"), ("BOOK_TITLE", "book_title"),
                            ("CHAPTER_TITLE", "chapter_title"),
-                           ("SE_REPO", "repo")):
+                           ("AUTHOR", "author")):
               assert "\n" not in d[key]
               print(f"{env}={d[key]}")
           EOF
@@ -295,7 +299,7 @@ jobs:
           base = os.environ["BASE"]
           book_title = os.environ["BOOK_TITLE"]
           chapter_title = os.environ["CHAPTER_TITLE"]
-          se_repo = os.environ["SE_REPO"]
+          author = os.environ["AUTHOR"]
           chapter_text = Path(f"out/text/{base}.txt").read_text()
           seo_skill = Path(".github/skills/audiobook-youtube-seo/SKILL.md").read_text()
 
@@ -318,7 +322,7 @@ jobs:
 
               Book title: {book_title}
               Chapter title: {chapter_title}
-              Author: see the <dc:creator> of the Standard Ebooks repository {se_repo}
+              Author: {author}
               BaseName: {base}
               """
           else:
@@ -345,7 +349,7 @@ jobs:
 
               Book title: {book_title}
               Chapter title: {chapter_title}
-              Author: see the <dc:creator> of the Standard Ebooks repository {se_repo}
+              Author: {author}
               BaseName: {base}
               """
 
