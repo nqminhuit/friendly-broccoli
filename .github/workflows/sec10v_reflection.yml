@@ -673,8 +673,9 @@ jobs:
           fi
           if [ "${{ steps.image.outputs.found }}" != "true" ] && [ "${{ steps.image_retry.outputs.found }}" != "true" ]; then
             echo "⚠️ image 1 never arrived — no video was built, nothing was uploaded to YouTube."
-            echo "   To keep this script, upload the script from the 📝 Reflection script step as"
-            echo "   ${BASE}.script.md, plus ${BASE}.1.jpg, then re-run with edited_script."
+            echo "   The script, prompts and SEO were saved to the bucket (if the BUCKET_* secrets are set), so"
+            echo "   upload ${BASE}.1.jpg and re-run with edited_script, which reuses them all. Without the"
+            echo "   bucket secrets, first upload the script from the 📝 step as ${BASE}.script.md."
           fi
 
       # Last on purpose. $GITHUB_STEP_SUMMARY renders blocks in the order steps append them, so
