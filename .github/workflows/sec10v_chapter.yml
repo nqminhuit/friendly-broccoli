@@ -49,9 +49,11 @@ on:
       #   BaseName       ← repo + chapter slugs      (TheWisdomOfFatherBrown.TheManInThePassage)
       #   book title     ← <dc:title> in the book's content.opf
       #   chapter title  ← the chapter's <h2 epub:type="title"> heading, prefixed "Chapter N: " when
-      #                    the heading has a numeral (<h2 epub:type="ordinal">I</h2>) — or chapter_title
+      #                    the heading has a numeral (<h2 epub:type="ordinal">I</h2>), and with
+      #                    "Part N: <part title>, " when the chapter sits in a part
+      #                    (data-parent="part-2") — or chapter_title
       chapter_title:
-        description: 'Spoken chapter title override (default: derived — "Chapter N: <title>" when the heading has a numeral). Changing it on a re-run needs fresh, since audio reuse matches the intro by name.'
+        description: 'Spoken chapter title override (default: derived — "Chapter N: <title>" when the heading has a numeral, prefixed "Part N: <part title>, " inside a part). Changing it on a re-run needs fresh, since audio reuse matches the intro by name.'
         required: false
         type: string
         default: ''
