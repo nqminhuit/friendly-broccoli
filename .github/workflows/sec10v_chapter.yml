@@ -48,7 +48,9 @@ on:
       #                    exactly what was read, which is how a fork run identifies itself)
       #   BaseName       ← repo + chapter slugs      (TheWisdomOfFatherBrown.TheManInThePassage),
       #                    the author kept for a generic title (OHenryShortFiction.TheGiftOfTheMagi)
-      #                    and the #section id in place of the chapter (DarkPrincess.Chapter11)
+      #                    and the #section id in place of the chapter; a chapter in a part is
+      #                    Part<N>Chapter<N> (TheLandThatTimeForgot.Part1Chapter1,
+      #                    DarkPrincess.Part1Chapter1)
       #   book title     ← <dc:title> in the book's content.opf, as "<dc:creator>: <dc:title>" for a
       #                    generic title ("O. Henry: Short Fiction")
       #   chapter title  ← the chapter's <h2 epub:type="title"> heading, prefixed "Chapter N: " when
