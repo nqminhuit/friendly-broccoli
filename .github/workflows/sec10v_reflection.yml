@@ -47,7 +47,7 @@ env:
   # A stronger model may write better; list the models with
   # curl -H "x-goog-api-key: …" https://generativelanguage.googleapis.com/v1beta/models
   REFLECTION_MODEL: 'gemini-3.5-flash-lite'
-  GEMINI_FALLBACK_MODEL: 'gemma-4-26b-a4b-it' # used only after REFLECTION_MODEL returns HTTP 429
+  GEMINI_FALLBACK_MODEL: 'gemma-4-26b-a4b-it' # used only after REFLECTION_MODEL returns HTTP 429 or times out
   # The human drawing up to 5 images is the critical path, hence the long second window.
   IMAGE_EARLY_WAIT_MINUTES: '20'  # while the chunk runs are synthesizing
   IMAGE_WAIT_MINUTES: '120'       # second chance, after the audio is collected
@@ -113,6 +113,9 @@ jobs:
           IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          # A new script makes the bucket's images from an earlier script stale: the image waits
+          # count only images uploaded after this moment.
+          if [ "$EDITED_SCRIPT" != "true" ]; then echo "SCRIPT_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"; fi
           args=(--url "$SE_URL" --target-words "$TARGET_WORDS" --max-chunks "$MAX_CHUNKS")
           if [ "$EDITED_SCRIPT" = "true" ]; then
             if [ -z "$IMAGE_BASE_URL" ]; then
@@ -148,8 +151,10 @@ jobs:
       # No "Reuse audio from a previous run" step: per-chunk audio is matched by filename only, so
       # a re-run's new script would be paired with the old audio. ~10 chunks are cheap to redo.
 
-      # Single pass, so the prompt step below can mark images already in the bucket (a re-run).
+      # Single pass, so the prompt step below can mark images already in the bucket. Edited runs
+      # only: a new script's images can't exist yet.
       - name: Pick up images already uploaded
+        if: inputs.edited_script
         continue-on-error: true
         working-directory: sec10v
         env:
@@ -178,8 +183,19 @@ jobs:
         env:
           IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
         run: |
+          # A script that failed validation is still written, but without chapter.json or BASE.
           if [ -z "$BASE" ] || [ ! -f out/chapter.json ]; then
-            echo "no script was written — see the previous steps' log"
+            shopt -s nullglob
+            scripts=(out/*.script.md)
+            if [ "${#scripts[@]}" -eq 0 ]; then
+              echo "no script was written — see the previous steps' log"
+              exit 0
+            fi
+            for f in "${scripts[@]}"; do
+              echo "=== $(basename "$f") ==="; cat "$f"; echo
+            done
+            echo "Fix the script, upload it to your image bucket under that filename, and re-dispatch"
+            echo "this workflow with edited_script checked."
             exit 0
           fi
           # IMAGE_BASE_URL is a secret, so anything echoing it shows as ***; the filename is
@@ -214,7 +230,8 @@ jobs:
           EOF
           echo "=== to change the script ==="
           echo "Edit the script above, upload it to ${target} as ${BASE}.script.md, and re-dispatch"
-          echo "this workflow with edited_script checked. Uploaded images are picked up again automatically."
+          echo "this workflow with edited_script checked. Uploaded images are picked up again only with"
+          echo "edited_script: a re-run without it writes a new script and ignores images uploaded before it."
           echo
           echo "Polling starts as soon as the chunk runs are dispatched and lasts ${IMAGE_EARLY_WAIT_MINUTES} minute(s)."
           echo "A second window of ${IMAGE_WAIT_MINUTES} minute(s) follows once the audio is collected."
@@ -314,9 +331,10 @@ jobs:
             exit 0
           fi
           wait_minutes=${IMAGE_EARLY_WAIT_MINUTES%%.*}
+          args=(--base-url "$IMAGE_BASE_URL" --timeout "$((${wait_minutes:-0} * 60))" --poll-interval 20)
+          if [ -n "$SCRIPT_STARTED_AT" ]; then args+=(--newer-than "$SCRIPT_STARTED_AT"); fi
           set +e
-          python scripts/reflection_images.py --base-url "$IMAGE_BASE_URL" \
-            --timeout "$((${wait_minutes:-0} * 60))" --poll-interval 20
+          python scripts/reflection_images.py "${args[@]}"
           rc=$?
           set -e
           if [ "$rc" -eq 0 ]; then complete=true; else complete=false; fi
@@ -410,9 +428,10 @@ jobs:
             exit 0
           fi
           wait_minutes=${IMAGE_WAIT_MINUTES%%.*}
+          args=(--base-url "$IMAGE_BASE_URL" --timeout "$((${wait_minutes:-0} * 60))" --poll-interval 20)
+          if [ -n "$SCRIPT_STARTED_AT" ]; then args+=(--newer-than "$SCRIPT_STARTED_AT"); fi
           set +e
-          python scripts/reflection_images.py --base-url "$IMAGE_BASE_URL" \
-            --timeout "$((${wait_minutes:-0} * 60))" --poll-interval 20
+          python scripts/reflection_images.py "${args[@]}"
           rc=$?
           set -e
           if [ "$rc" -eq 0 ]; then complete=true; else complete=false; fi
@@ -549,7 +568,8 @@ jobs:
           fi
           if [ "${{ steps.image.outputs.found }}" != "true" ] && [ "${{ steps.image_retry.outputs.found }}" != "true" ]; then
             echo "⚠️ image 1 never arrived — no video was built, nothing was uploaded to YouTube."
-            echo "   Upload ${BASE}.1.jpg and re-run to get the video."
+            echo "   To keep this script, upload the script printed in the 🚨 step as ${BASE}.script.md,"
+            echo "   plus ${BASE}.1.jpg, then re-run with edited_script."
           fi
 
       # Last on purpose. $GITHUB_STEP_SUMMARY renders blocks in the order steps append them, so
