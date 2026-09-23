@@ -1,9 +1,10 @@
 # One manual dispatch turns a Standard Ebooks chapter URL into a ~10-minute *reflection* video
 # (not a word-for-word reading), waiting on the channel as a private upload:
 #
-#   prepare_reflection.py → Gemini writes a 3–5 section script, one image prompt per section and
-#   the SEO → THE PROMPTS ARE PRINTED IN THE LOG of the "🚨 IMAGE PROMPTS READY" step and the
-#   script in the "📝 Reflection script" step → trigger_workflow.py fans out one sec10v.yml run
+#   prepare_reflection.py reads your script (<BaseName>.script.md) from the bucket → Gemini writes
+#   one image prompt per section and the SEO, unless you uploaded them too → THE PROMPTS ARE
+#   PRINTED IN THE LOG of the "🚨 IMAGE PROMPTS READY" step and the script in the
+#   "📝 Reflection script" step → trigger_workflow.py fans out one sec10v.yml run
 #   per chunk + 1 intro run → reflection_images.py waits for <IMAGE_BASE_URL>/<BaseName>.<k>.jpg
 #   → import_artifacts_mp3s.py collects the audio → automate_audiobook.py builds the video,
 #   crossfading into each section's image → reflection_chapters.py adds YouTube chapters →
@@ -12,24 +13,25 @@
 # The voice input picks the narrator; every chunk run is dispatched with it. Its default is
 # deliberately not the audiobook's voice.
 #
-# Human steps: copy each image prompt out of the 🚨 step's log, draw the images, and upload them
-# to the bucket as <BaseName>.1.jpg … <BaseName>.<n>.jpg while the TTS runs. A missing image
+# Human steps: upload the script to the bucket as <BaseName>.script.md, then dispatch. Copy each
+# image prompt out of the 🚨 step's log, draw the images, and upload them as <BaseName>.1.jpg …
+# <BaseName>.<n>.jpg while the TTS runs (or upload them before dispatching). A missing image
 # falls back to the previous section's; without image 1 no video is built. To change the
-# script, edit <BaseName>.script.md in the bucket and re-dispatch with edited_script — images
-# already uploaded are picked up again automatically.
+# script, edit <BaseName>.script.md in the bucket and re-dispatch — uploaded images are reused.
 #
-# Every run saves Gemini's script, image prompts and SEO to the bucket; edited_script reuses them.
+# Every run saves the prompts and SEO Gemini wrote to the bucket; an uploaded <BaseName>.seo.md or
+# <BaseName>.<k>.prompt.txt replaces Gemini's for that file, and the next run reuses them.
 # YouTube upload is temporarily off (UPLOAD_TO_YOUTUBE); the video goes to the bucket as <BaseName>.<voice>.mp4.
 #
 # Secrets — those of sec10v_chapter.yml (see there for details), plus the four BUCKET_* ones:
-#   IMAGE_BASE_URL        image bucket prefix, no trailing slash; also where an edited script goes
+#   IMAGE_BASE_URL        image bucket prefix, no trailing slash; also where the script is read from (required)
 #   BUCKET_S3_ENDPOINT    S3 API endpoint of the bucket (MinIO or other S3-compatible), e.g. https://minio.example.com
 #   BUCKET_S3_URI         s3://<bucket>/<prefix>, the same folder IMAGE_BASE_URL serves
 #   BUCKET_ACCESS_KEY_ID  S3 access key with write access to that folder
 #   BUCKET_SECRET_ACCESS_KEY  its secret key
 #   SEC10V_ACCESS_TOKEN   also used by sec10v.yml
 #   YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REFRESH_TOKEN
-#   GEMINI_API_KEY        writes the script, the image prompts and the SEO
+#   GEMINI_API_KEY        writes the image prompts and the SEO
 #   HF_TOKEN
 name: sec10v reflection
 run-name: ${{ inputs.se_url }}
@@ -41,11 +43,6 @@ on:
         description: 'Chapter URL copied from GitHub (…/<owner>/<repo>/blob/<ref>/src/epub/text/<chapter>.xhtml). Any owner and ref: a fork with edited text works, and the branch you name is the branch that is read. Add #<section-id> to narrate one chapter of a file that holds several, e.g. …/part-1.xhtml#chapter-1-1.'
         required: true
         type: string
-      edited_script:
-        description: 'Reuse the script, image prompts and SEO saved in the image bucket (<BaseName>.script.md, .seo.md, .<k>.prompt.txt) instead of calling Gemini — e.g. to compare voices'
-        required: false
-        type: boolean
-        default: false
       sec10v_ref:
         description: 'nqminhuit/sec10v ref to check out'
         required: false
@@ -73,9 +70,8 @@ on:
 
 env:
   UPLOAD_TO_YOUTUBE: 'false'    # temporarily off while comparing voices; set to 'true' to publish to YouTube again
-  TARGET_WORDS: '1450'          # ~10 minutes at the voice's measured ~147 wpm
   MAX_CHUNKS: '20'
-  # Writes the script and the prompts/SEO; stronger than the audiobook's flash-lite because this call writes prose.
+  # Writes the image prompts and SEO; stronger than the audiobook's flash-lite.
   # List models: curl -H "x-goog-api-key: …" https://generativelanguage.googleapis.com/v1beta/models
   REFLECTION_MODEL: 'gemini-3.8-flash'
   # Tried in order after REFLECTION_MODEL; each but the last gets one try and moves on after any failure.
@@ -107,19 +103,16 @@ jobs:
         if: always()
         env:
           SE_URL: ${{ inputs.se_url }}
-          EDITED_SCRIPT: ${{ inputs.edited_script }}
           SEC10V_REF: ${{ inputs.sec10v_ref }}
           VOICE: ${{ inputs.voice }}
         run: |
           {
             echo "### Workflow Inputs"
             echo "- Chapter URL: \`$SE_URL\`"
-            echo "- Edited script: \`$EDITED_SCRIPT\`"
             echo "- sec10v ref: \`$SEC10V_REF\`"
             echo "- Voice: \`$VOICE\`"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Chapter URL: $SE_URL"
-          echo "Edited script: $EDITED_SCRIPT"
           echo "sec10v ref: $SEC10V_REF"
           echo "Voice: $VOICE"
 
@@ -142,28 +135,21 @@ jobs:
       - name: Install Python dependencies
         run: pip install requests
 
-      - name: Write the reflection script, image prompts and SEO
+      - name: Prepare the reflection from your script (image prompts and SEO)
         timeout-minutes: 90   # safety net only; gemini_client.py enforces its own retry budgets
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
           SE_URL: ${{ inputs.se_url }}   # via env, never spliced into the script body
-          EDITED_SCRIPT: ${{ inputs.edited_script }}
           VOICE: ${{ inputs.voice }}
           IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # A new script makes the bucket's images from an earlier script stale: the image waits
-          # count only images uploaded after this moment.
-          if [ "$EDITED_SCRIPT" != "true" ]; then echo "SCRIPT_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"; fi
-          args=(--url "$SE_URL" --target-words "$TARGET_WORDS" --max-chunks "$MAX_CHUNKS")
-          if [ "$EDITED_SCRIPT" = "true" ]; then
-            if [ -z "$IMAGE_BASE_URL" ]; then
-              echo "❌ edited_script needs the IMAGE_BASE_URL secret — the edited script is read from the image bucket"
-              exit 1
-            fi
-            args+=(--script-base-url "$IMAGE_BASE_URL")
+          if [ -z "$IMAGE_BASE_URL" ]; then
+            echo "❌ the IMAGE_BASE_URL secret is not set — your script is read from the image bucket"
+            exit 1
           fi
+          args=(--url "$SE_URL" --max-chunks "$MAX_CHUNKS" --script-base-url "$IMAGE_BASE_URL")
           if [ -n "$VOICE" ]; then args+=(--voice "$VOICE"); fi
           python scripts/prepare_reflection.py "${args[@]}"
           # Export the parsed/inferred values for the later steps.
@@ -179,8 +165,8 @@ jobs:
           echo "--- out/text ---"; ls -la out/text
           echo "--- dispatch manifest ---"; python -c "import json; print(len(json.load(open('out/workflow-input.json'))), 'item(s)')"
 
-      # Only what Gemini wrote this run, so bucket edits survive; the SEO goes up before the
-      # chapters block is added. aws's stderr is swallowed: it would show the bucket and prefix.
+      # Only what Gemini wrote this run (never the script), so bucket edits survive; the SEO goes up
+      # before the chapters block is added. aws's stderr is swallowed: it would show the bucket and prefix.
       - name: Save Gemini's outputs to the bucket
         continue-on-error: true
         working-directory: sec10v
@@ -200,16 +186,26 @@ jobs:
           # One "<local file>\t<bucket name>" line per file Gemini wrote this run.
           uploads=$(python - <<'EOF'
           import json
+          import os
 
           d = json.load(open("out/chapter.json"))
           base = d["base_name"]
-          models = d.get("models", {})
-          if models.get("script") != "edited":
-              print(f"out/{base}.script.md\t{base}.script.md")
-          if models.get("prompts") != "bucket":
-              print(f"out/seo/{base}.seo.md\t{base}.seo.md")
-              for k in range(1, len(d["sections"]) + 1):
-                  print(f"out/prompts/{base}.{k}.prompt.txt\t{base}.{k}.prompt.txt")
+          if "generated_files" in d:
+              for name in d["generated_files"]:
+                  if "/" in name or name.endswith(".script.md"):
+                      continue
+                  dirs = ("out/seo", "out/prompts")
+                  file = next((f"{p}/{name}" for p in dirs if os.path.exists(f"{p}/{name}")), f"{dirs[1]}/{name}")
+                  print(f"{file}\t{name}")
+          else:
+              # An older sec10v's chapter.json has no generated_files.
+              models = d.get("models", {})
+              if models.get("script") != "edited":
+                  print(f"out/{base}.script.md\t{base}.script.md")
+              if models.get("prompts") != "bucket":
+                  print(f"out/seo/{base}.seo.md\t{base}.seo.md")
+                  for k in range(1, len(d["sections"]) + 1):
+                      print(f"out/prompts/{base}.{k}.prompt.txt\t{base}.{k}.prompt.txt")
           EOF
           )
           if [ -z "$uploads" ]; then
@@ -244,10 +240,8 @@ jobs:
       # No "Reuse audio from a previous run" step: per-chunk audio is matched by filename only, so
       # a re-run's new script would be paired with the old audio. ~10 chunks are cheap to redo.
 
-      # Single pass, so the prompt step below can mark images already in the bucket. Edited runs
-      # only: a new script's images can't exist yet.
+      # Single pass, so the prompt step below can mark images already in the bucket.
       - name: Pick up images already uploaded
-        if: inputs.edited_script
         continue-on-error: true
         working-directory: sec10v
         env:
@@ -277,7 +271,7 @@ jobs:
           IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
         run: |
           if [ -z "$BASE" ] || [ ! -f out/chapter.json ]; then
-            echo 'no image prompts — the script step failed; see "📝 Reflection script — review it here"'
+            echo 'no image prompts — the prepare step failed; see its log for the errors'
             exit 0
           fi
           # IMAGE_BASE_URL is a secret, so anything echoing it shows as ***; the filename is
@@ -305,26 +299,14 @@ jobs:
           EOF
           echo "Polling starts as soon as the chunk runs are dispatched and lasts ${IMAGE_EARLY_WAIT_MINUTES} minute(s)."
           echo "A second window of ${IMAGE_WAIT_MINUTES} minute(s) follows once the audio is collected."
-          echo "Only images uploaded after this run's script was written count, unless edited_script is set."
 
       # Separate from the prompts so they are not buried under ~1,500 words of script.
       - name: "📝 Reflection script — review it here"
         if: always()
         working-directory: sec10v
         run: |
-          # A script that failed validation is still written, but without chapter.json or BASE.
           if [ -z "$BASE" ] || [ ! -f out/chapter.json ]; then
-            shopt -s nullglob
-            scripts=(out/*.script.md)
-            if [ "${#scripts[@]}" -eq 0 ]; then
-              echo "no script was written — see the previous steps' log"
-              exit 0
-            fi
-            for f in "${scripts[@]}"; do
-              echo "=== $(basename "$f") ==="; cat "$f"; echo
-            done
-            echo "Fix the script, upload it to your image bucket under that filename, and re-dispatch"
-            echo "this workflow with edited_script checked."
+            echo "no script — the prepare step failed; see its log for the errors"
             exit 0
           fi
           echo "=== script — ${BOOK_TITLE} / ${CHAPTER_TITLE} ==="
@@ -334,13 +316,7 @@ jobs:
             echo "(no out/${BASE}.script.md)"
           fi
           echo
-          echo "=== to change the script or the voice ==="
-          echo "This script, its image prompts and its SEO are saved to the bucket automatically"
-          echo "(when the BUCKET_* secrets are set)."
-          echo "To change the script, edit ${BASE}.script.md in the bucket."
-          echo "To re-narrate with another voice, re-dispatch this workflow with edited_script checked"
-          echo "and pick the voice. Uploaded images are reused only with edited_script: a re-run without"
-          echo "it writes a new script and ignores images uploaded before it."
+          echo "To change it, edit ${BASE}.script.md in the bucket and re-run."
 
       # Needed by the video build at the end (and it is cheap here, while the human is drawing).
       - name: Install ffmpeg
@@ -438,7 +414,6 @@ jobs:
           fi
           wait_minutes=${IMAGE_EARLY_WAIT_MINUTES%%.*}
           args=(--base-url "$IMAGE_BASE_URL" --timeout "$((${wait_minutes:-0} * 60))" --poll-interval 20)
-          if [ -n "$SCRIPT_STARTED_AT" ]; then args+=(--newer-than "$SCRIPT_STARTED_AT"); fi
           set +e
           python scripts/reflection_images.py "${args[@]}"
           rc=$?
@@ -535,7 +510,6 @@ jobs:
           fi
           wait_minutes=${IMAGE_WAIT_MINUTES%%.*}
           args=(--base-url "$IMAGE_BASE_URL" --timeout "$((${wait_minutes:-0} * 60))" --poll-interval 20)
-          if [ -n "$SCRIPT_STARTED_AT" ]; then args+=(--newer-than "$SCRIPT_STARTED_AT"); fi
           set +e
           python scripts/reflection_images.py "${args[@]}"
           rc=$?
@@ -711,9 +685,8 @@ jobs:
           fi
           if [ "${{ steps.image.outputs.found }}" != "true" ] && [ "${{ steps.image_retry.outputs.found }}" != "true" ]; then
             echo "⚠️ image 1 never arrived — no video was built, nothing was uploaded to YouTube."
-            echo "   The script, prompts and SEO were saved to the bucket (if the BUCKET_* secrets are set), so"
-            echo "   upload ${BASE}.1.jpg and re-run with edited_script, which reuses them all. Without the"
-            echo "   bucket secrets, first upload the script from the 📝 step as ${BASE}.script.md."
+            echo "   Upload ${BASE}.1.jpg to the bucket and re-run: the script is read from there, and the"
+            echo "   prompts and SEO were saved there too (if the BUCKET_* secrets are set)."
           fi
 
       # Last on purpose. $GITHUB_STEP_SUMMARY renders blocks in the order steps append them, so
