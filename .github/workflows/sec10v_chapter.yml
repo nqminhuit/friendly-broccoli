@@ -48,7 +48,13 @@ on:
       #                    exactly what was read, which is how a fork run identifies itself)
       #   BaseName       ← repo + chapter slugs      (TheWisdomOfFatherBrown.TheManInThePassage)
       #   book title     ← <dc:title> in the book's content.opf
-      #   chapter title  ← the chapter's <h2 epub:type="title"> heading
+      #   chapter title  ← the chapter's <h2 epub:type="title"> heading, prefixed "Chapter N: " when
+      #                    the heading has a numeral (<h2 epub:type="ordinal">I</h2>) — or chapter_title
+      chapter_title:
+        description: 'Spoken chapter title override (default: derived — "Chapter N: <title>" when the heading has a numeral). Changing it on a re-run needs fresh, since audio reuse matches the intro by name.'
+        required: false
+        type: string
+        default: ''
       image_url:
         description: 'Direct URL of an already-generated image (skips image-prompt generation and the wait — for a re-run)'
         required: false
@@ -103,6 +109,7 @@ jobs:
         if: always()
         env:
           SE_URL: ${{ inputs.se_url }}
+          CHAPTER_TITLE_OVERRIDE: ${{ inputs.chapter_title }}
           MODEL: ${{ inputs.model }}
           IMAGE_URL: ${{ inputs.image_url }}
           FRESH: ${{ inputs.fresh }}
@@ -114,12 +121,14 @@ jobs:
             echo "### Workflow Inputs"
             echo "- Model: \`$MODEL\`"
             echo "- Chapter URL: \`$SE_URL\`"
+            echo "- Chapter title override: \`${CHAPTER_TITLE_OVERRIDE:-(derived)}\`"
             echo "- Image URL supplied: \`$image_url_supplied\`"
             echo "- Fresh: \`$FRESH\`"
             echo "- sec10v ref: \`$SEC10V_REF\`"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Model: $MODEL"
           echo "Chapter URL: $SE_URL"
+          echo "Chapter title override: ${CHAPTER_TITLE_OVERRIDE:-(derived)}"
           echo "Image URL supplied: $image_url_supplied"
           echo "Fresh: $FRESH"
           echo "sec10v ref: $SEC10V_REF"
@@ -148,8 +157,12 @@ jobs:
         env:
           PYTHONPATH: scripts
           SE_URL: ${{ inputs.se_url }}   # via env, never spliced into the script body
+          # Not CHAPTER_TITLE: that name is exported below from what prepare_chapter.py derived.
+          CHAPTER_TITLE_OVERRIDE: ${{ inputs.chapter_title }}
         run: |
-          python scripts/prepare_chapter.py --url "$SE_URL"
+          args=(--url "$SE_URL")
+          if [ -n "$CHAPTER_TITLE_OVERRIDE" ]; then args+=(--chapter-title "$CHAPTER_TITLE_OVERRIDE"); fi
+          python scripts/prepare_chapter.py "${args[@]}"
           # Export the parsed/inferred values for the later steps.
           python - <<'EOF' >> "$GITHUB_ENV"
           import json
