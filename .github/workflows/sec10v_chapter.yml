@@ -34,7 +34,7 @@
 #   GEMINI_API_KEY       Google Gemini API key used to generate the image prompt and SEO
 #   HF_TOKEN
 name: sec10v chapter
-run-name: ${{ inputs.se_url }} — ${{ inputs.model }}
+run-name: ${{ inputs.se_url }}
 
 on:
   workflow_dispatch:
@@ -70,14 +70,6 @@ on:
         required: false
         type: boolean
         default: false
-      model:
-        description: 'Google AI model used for the image prompt and SEO'
-        required: true
-        type: choice
-        options:
-          - 'gemma-4-26b-a4b-it'
-          - 'gemini-3.5-flash-lite'
-        default: 'gemma-4-26b-a4b-it'
       sec10v_ref:
         description: 'nqminhuit/sec10v ref to check out'
         required: false
@@ -91,6 +83,8 @@ env:
                                  # otherwise spent idle in the collector's poll
   IMAGE_WAIT_MINUTES: '60'      # second chance, after the audio is collected; 0 disables the video
   MAX_CHUNKS: '60'              # ~20 chunks take 41-81 min; more than this can't be collected in 200
+  GEMINI_MODEL: 'gemini-3.5-flash-lite'       # tried first for the image prompt and SEO
+  GEMINI_FALLBACK_MODEL: 'gemma-4-26b-a4b-it' # used only after GEMINI_MODEL returns HTTP 429
   # Empty on purpose: no music beds, just the TTS. An empty INTRO_AUDIO drops the music from
   # the spoken intro (book title + chapter title) and an empty OUTRO_AUDIO skips the outro
   # segment entirely. Name a file in sec10v resources/music/ to bring either back.
@@ -116,7 +110,6 @@ jobs:
         env:
           SE_URL: ${{ inputs.se_url }}
           CHAPTER_TITLE_OVERRIDE: ${{ inputs.chapter_title }}
-          MODEL: ${{ inputs.model }}
           IMAGE_URL: ${{ inputs.image_url }}
           FRESH: ${{ inputs.fresh }}
           SEC10V_REF: ${{ inputs.sec10v_ref }}
@@ -125,14 +118,12 @@ jobs:
           if [ -n "$IMAGE_URL" ]; then image_url_supplied=true; fi
           {
             echo "### Workflow Inputs"
-            echo "- Model: \`$MODEL\`"
             echo "- Chapter URL: \`$SE_URL\`"
             echo "- Chapter title override: \`${CHAPTER_TITLE_OVERRIDE:-(derived)}\`"
             echo "- Image URL supplied: \`$image_url_supplied\`"
             echo "- Fresh: \`$FRESH\`"
             echo "- sec10v ref: \`$SEC10V_REF\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "Model: $MODEL"
           echo "Chapter URL: $SE_URL"
           echo "Chapter title override: ${CHAPTER_TITLE_OVERRIDE:-(derived)}"
           echo "Image URL supplied: $image_url_supplied"
@@ -276,17 +267,18 @@ jobs:
       # The only LLM step. It runs FIRST so the image prompt is on screen a few minutes into the
       # run — the human then draws while the TTS below is still going. With an existing image,
       # Gemini generates SEO only; otherwise it generates both files. Transport, HTTP,
-      # malformed-response and empty-output failures block the workflow rather than silently
-      # falling back. Rate-limit and transient server responses (429, 5xx) are logged and retried
-      # ten times with a fixed two-minute delay.
+      # malformed-response and empty-output failures block the workflow.
+      # GEMINI_MODEL is tried first; a 429 or timeout from it switches to GEMINI_FALLBACK_MODEL at once,
+      # while 5xx is retried on the same model. The fallback retries all three; each model gets ten
+      # retries (three for timeouts) with a fixed two-minute delay.
       - name: Generate image prompt and SEO with Gemini
         id: creative
         if: steps.tts.outputs.creative != 'true'
+        timeout-minutes: 45   # safety net only; the loop below enforces its own retry budgets
         working-directory: sec10v
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           IMAGE_AVAILABLE: ${{ steps.image_available.outputs.found }}
-          MODEL: ${{ inputs.model }}
         run: |
           set -euo pipefail
           mkdir -p out/prompts out/seo
@@ -353,48 +345,99 @@ jobs:
               BaseName: {base}
               """
 
-          generation_config = {"responseMimeType": "application/json"}
-          if os.environ["MODEL"] == "gemma-4-26b-a4b-it":
-              properties = {"seo_markdown": {"type": "STRING"}}
-              required = ["seo_markdown"]
-              if os.environ["IMAGE_AVAILABLE"] != "true":
-                  properties["image_prompt"] = {"type": "STRING"}
-                  required.append("image_prompt")
-              generation_config["responseSchema"] = {
-                  "type": "OBJECT",
-                  "properties": properties,
-                  "required": required,
-              }
+          for name, is_fallback in (("primary", False), ("fallback", True)):
+              generation_config = {"responseMimeType": "application/json"}
+              if is_fallback:
+                  properties = {"seo_markdown": {"type": "STRING"}}
+                  required = ["seo_markdown"]
+                  if os.environ["IMAGE_AVAILABLE"] != "true":
+                      properties["image_prompt"] = {"type": "STRING"}
+                      required.append("image_prompt")
+                  generation_config["responseSchema"] = {
+                      "type": "OBJECT",
+                      "properties": properties,
+                      "required": required,
+                  }
 
-          Path("gemini-request.json").write_text(json.dumps({
-              "contents": [{"parts": [{"text": prompt}]}],
-              "generationConfig": generation_config,
-          }))
+              Path(f"gemini-request.{name}.json").write_text(json.dumps({
+                  "contents": [{"parts": [{"text": prompt}]}],
+                  "generationConfig": generation_config,
+              }))
           PY
 
+          model=$GEMINI_MODEL
+          request_file=gemini-request.primary.json
+          on_fallback=false
           max_retries=10
+          max_timeout_retries=3
+          max_time=300
+          timeout_status=timeout
           attempt=1
+          timeout_retries=0
+          switch_to_fallback() {
+            model=$GEMINI_FALLBACK_MODEL
+            request_file=gemini-request.fallback.json
+            on_fallback=true
+            attempt=1
+          }
           while :; do
-            if ! http_status=$(curl --show-error --silent \
-              --connect-timeout 30 --max-time 600 \
+            # A stale body from an earlier attempt must never be printed or parsed after a timeout.
+            rm -f gemini-response.json
+            if http_status=$(curl --show-error --silent \
+              --connect-timeout 30 --max-time "$max_time" \
               -H "x-goog-api-key: $GEMINI_API_KEY" \
               -H "Content-Type: application/json" \
-              "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent" \
-              --data-binary @gemini-request.json \
+              "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent" \
+              --data-binary @"$request_file" \
               --output gemini-response.json \
               --write-out '%{http_code}'); then
-              echo "❌ Gemini request failed before receiving an HTTP response"
+              curl_rc=0
+            else
+              curl_rc=$?
+            fi
+            # curl exit 28 is a timeout, handled like a 429; any other transport failure is fatal.
+            if [ "$curl_rc" = 28 ]; then
+              http_status=$timeout_status
+            elif [ "$curl_rc" != 0 ]; then
+              echo "❌ $model request failed before receiving an HTTP response (curl exit $curl_rc)"
               exit 1
             fi
 
+            if [ "$on_fallback" = false ]; then
+              case "$http_status" in
+                429)
+                echo "⚠️ $GEMINI_MODEL rate limited (HTTP 429) — falling back to $GEMINI_FALLBACK_MODEL"
+                echo "--- $model rate-limit response ---"
+                cat gemini-response.json
+                echo
+                switch_to_fallback
+                continue
+                ;;
+                "$timeout_status")
+                echo "⚠️ $GEMINI_MODEL timed out after ${max_time}s — falling back to $GEMINI_FALLBACK_MODEL"
+                switch_to_fallback
+                continue
+                ;;
+              esac
+            fi
+
             case "$http_status" in
-              429|500|502|503|504)
-              echo "⚠️ Gemini transient HTTP $http_status on attempt $attempt"
-              echo "--- Gemini transient-error response ---"
-              cat gemini-response.json
-              echo
+              "$timeout_status"|429|500|502|503|504)
+              if [ "$http_status" = "$timeout_status" ]; then
+                echo "⚠️ $model timed out after ${max_time}s on attempt $attempt"
+                timeout_retries=$((timeout_retries + 1))
+                if [ "$timeout_retries" -gt "$max_timeout_retries" ]; then
+                  echo "❌ $model timed out after $max_timeout_retries retries"
+                  exit 1
+                fi
+              else
+                echo "⚠️ $model transient HTTP $http_status on attempt $attempt"
+                echo "--- $model transient-error response ---"
+                cat gemini-response.json
+                echo
+              fi
               if [ "$attempt" -gt "$max_retries" ]; then
-                echo "❌ Gemini HTTP $http_status persisted after $max_retries retries"
+                echo "❌ $model HTTP $http_status persisted after $max_retries retries"
                 exit 1
               fi
               echo "⏳ waiting 2 minute(s) before retry $((attempt + 1))"
@@ -405,7 +448,7 @@ jobs:
             esac
 
             if [ "$http_status" -lt 200 ] || [ "$http_status" -ge 300 ]; then
-              echo "❌ Gemini request failed with HTTP $http_status"
+              echo "❌ $model request failed with HTTP $http_status"
               cat gemini-response.json
               echo
               exit 1
@@ -440,7 +483,9 @@ jobs:
             printf '%s\n' "$image_prompt" > "out/prompts/${BASE}.prompt.txt"
           fi
 
-          rm -f gemini-request.json gemini-response.json
+          echo "✅ generated with $model"
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          rm -f gemini-request.primary.json gemini-request.fallback.json gemini-response.json
 
       - name: Check Gemini outputs
         id: creative_check
