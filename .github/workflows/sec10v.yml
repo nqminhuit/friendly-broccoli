@@ -167,10 +167,13 @@ jobs:
       - name: Run TTS generation (attempt 1)
         id: tts1
         working-directory: sec10v
+        env:
+          TTS_TEXT: ${{ github.event.inputs.tts_text }}
+          AUDIO_RATE: ${{ github.event.inputs.audio_rate }}
         run: |
           python scripts/audiobook.py \
-            --tts "${{ github.event.inputs.tts_text }}" \
-            --audio-rate "${{ github.event.inputs.audio_rate }}"
+            --tts "$TTS_TEXT" \
+            --audio-rate "$AUDIO_RATE"
           if [ -f "out/audiobook.mp3" ]; then
             echo "✅ TTS audio file generated successfully"
             ffprobe -v error -show_entries format=duration,bit_rate -of default=noprint_wrappers=1 out/audiobook.mp3
@@ -203,8 +206,10 @@ jobs:
         id: verify1
         working-directory: sec10v
         continue-on-error: true
+        env:
+          TTS_TEXT: ${{ github.event.inputs.tts_text }}
         run: |
-            echo "${{ github.event.inputs.tts_text }}" > expected_text.txt
+            printf '%s\n' "$TTS_TEXT" > expected_text.txt
             cat expected_text.txt
             if [ ! -f "audiobook.gen.txt" ]; then
                 echo "❌ Transcription file missing"
@@ -216,11 +221,14 @@ jobs:
         if: steps.verify1.outcome == 'failure'
         id: tts2
         working-directory: sec10v
+        env:
+          TTS_TEXT: ${{ github.event.inputs.tts_text }}
+          AUDIO_RATE: ${{ github.event.inputs.audio_rate }}
         run: |
             echo "🔁 Retry triggered due to verification failure"
             python scripts/audiobook.py \
-                --tts "${{ github.event.inputs.tts_text }}" \
-                --audio-rate "${{ github.event.inputs.audio_rate }}"
+                --tts "$TTS_TEXT" \
+                --audio-rate "$AUDIO_RATE"
 
             if [ ! -f "out/audiobook.mp3" ]; then
                 echo "❌ Retry failed to generate audio"
@@ -241,8 +249,10 @@ jobs:
       - name: Verify TTS output (retry)
         if: steps.tts2.outcome == 'success'
         working-directory: sec10v
+        env:
+          TTS_TEXT: ${{ github.event.inputs.tts_text }}
         run: |
-            echo "${{ github.event.inputs.tts_text }}" > expected_text.txt
+            printf '%s\n' "$TTS_TEXT" > expected_text.txt
             if [ ! -f "audiobook.gen.txt" ]; then
                 echo "❌ Transcription file missing"
                 exit 1
@@ -256,11 +266,13 @@ jobs:
 
       - name: Rename output to custom name
         working-directory: sec10v
+        env:
+          OUTPUT_NAME: ${{ github.event.inputs.output_name }}
         run: |
           if [ -f "out/audiobook.mp3" ]; then
-            mv out/audiobook.mp3 "out/${{ github.event.inputs.output_name }}.mp3"
+            mv out/audiobook.mp3 "out/$OUTPUT_NAME.mp3"
             if [ -f "out/audiobook.srt" ]; then
-              mv out/audiobook.srt "out/${{ github.event.inputs.output_name }}.srt"
+              mv out/audiobook.srt "out/$OUTPUT_NAME.srt"
             fi
           fi
 
