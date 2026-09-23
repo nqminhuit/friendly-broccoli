@@ -268,12 +268,13 @@ jobs:
       # run — the human then draws while the TTS below is still going. With an existing image,
       # Gemini generates SEO only; otherwise it generates both files. Transport, HTTP,
       # malformed-response and empty-output failures block the workflow.
-      # GEMINI_MODEL is tried first; a 429 from it switches to GEMINI_FALLBACK_MODEL at once, while
-      # 5xx is retried on the same model. The fallback retries 429 and 5xx; each model gets ten
-      # retries with a fixed two-minute delay.
+      # GEMINI_MODEL is tried first; a 429 or timeout from it switches to GEMINI_FALLBACK_MODEL at once,
+      # while 5xx is retried on the same model. The fallback retries all three; each model gets ten
+      # retries (three for timeouts) with a fixed two-minute delay.
       - name: Generate image prompt and SEO with Gemini
         id: creative
         if: steps.tts.outputs.creative != 'true'
+        timeout-minutes: 45   # safety net only; the loop below enforces its own retry budgets
         working-directory: sec10v
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -368,38 +369,73 @@ jobs:
           request_file=gemini-request.primary.json
           on_fallback=false
           max_retries=10
+          max_timeout_retries=3
+          max_time=300
+          timeout_status=timeout
           attempt=1
+          timeout_retries=0
+          switch_to_fallback() {
+            model=$GEMINI_FALLBACK_MODEL
+            request_file=gemini-request.fallback.json
+            on_fallback=true
+            attempt=1
+          }
           while :; do
-            if ! http_status=$(curl --show-error --silent \
-              --connect-timeout 30 --max-time 600 \
+            # A stale body from an earlier attempt must never be printed or parsed after a timeout.
+            rm -f gemini-response.json
+            if http_status=$(curl --show-error --silent \
+              --connect-timeout 30 --max-time "$max_time" \
               -H "x-goog-api-key: $GEMINI_API_KEY" \
               -H "Content-Type: application/json" \
               "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent" \
               --data-binary @"$request_file" \
               --output gemini-response.json \
               --write-out '%{http_code}'); then
-              echo "❌ $model request failed before receiving an HTTP response"
+              curl_rc=0
+            else
+              curl_rc=$?
+            fi
+            # curl exit 28 is a timeout, handled like a 429; any other transport failure is fatal.
+            if [ "$curl_rc" = 28 ]; then
+              http_status=$timeout_status
+            elif [ "$curl_rc" != 0 ]; then
+              echo "❌ $model request failed before receiving an HTTP response (curl exit $curl_rc)"
               exit 1
             fi
 
-            if [ "$http_status" = 429 ] && [ "$on_fallback" = false ]; then
-              echo "⚠️ $GEMINI_MODEL rate limited (HTTP 429) — falling back to $GEMINI_FALLBACK_MODEL"
-              echo "--- $model rate-limit response ---"
-              cat gemini-response.json
-              echo
-              model=$GEMINI_FALLBACK_MODEL
-              request_file=gemini-request.fallback.json
-              on_fallback=true
-              attempt=1
-              continue
+            if [ "$on_fallback" = false ]; then
+              case "$http_status" in
+                429)
+                echo "⚠️ $GEMINI_MODEL rate limited (HTTP 429) — falling back to $GEMINI_FALLBACK_MODEL"
+                echo "--- $model rate-limit response ---"
+                cat gemini-response.json
+                echo
+                switch_to_fallback
+                continue
+                ;;
+                "$timeout_status")
+                echo "⚠️ $GEMINI_MODEL timed out after ${max_time}s — falling back to $GEMINI_FALLBACK_MODEL"
+                switch_to_fallback
+                continue
+                ;;
+              esac
             fi
 
             case "$http_status" in
-              429|500|502|503|504)
-              echo "⚠️ $model transient HTTP $http_status on attempt $attempt"
-              echo "--- $model transient-error response ---"
-              cat gemini-response.json
-              echo
+              "$timeout_status"|429|500|502|503|504)
+              if [ "$http_status" = "$timeout_status" ]; then
+                echo "⚠️ $model timed out after ${max_time}s on attempt $attempt"
+                timeout_retries=$((timeout_retries + 1))
+                if [ "$timeout_retries" -gt "$max_timeout_retries" ]; then
+                  echo "❌ $model timed out after $max_timeout_retries retries"
+                  exit 1
+                fi
+              else
+                echo "⚠️ $model transient HTTP $http_status on attempt $attempt"
+                echo "--- $model transient-error response ---"
+                cat gemini-response.json
+                echo
+              fi
               if [ "$attempt" -gt "$max_retries" ]; then
                 echo "❌ $model HTTP $http_status persisted after $max_retries retries"
                 exit 1
