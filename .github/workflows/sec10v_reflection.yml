@@ -19,6 +19,7 @@
 # already uploaded are picked up again automatically.
 #
 # Every run saves Gemini's script, image prompts and SEO to the bucket; edited_script reuses them.
+# YouTube upload is temporarily off (UPLOAD_TO_YOUTUBE); the video goes to the bucket as <BaseName>.<voice>.mp4.
 #
 # Secrets — those of sec10v_chapter.yml (see there for details), plus the four BUCKET_* ones:
 #   IMAGE_BASE_URL        image bucket prefix, no trailing slash; also where an edited script goes
@@ -71,6 +72,7 @@ on:
           - '_live/thestorygirl_cut_cm2_02_mason_128kb.mp3'
 
 env:
+  UPLOAD_TO_YOUTUBE: 'false'    # temporarily off while comparing voices; set to 'true' to publish to YouTube again
   TARGET_WORDS: '1450'          # ~10 minutes at the voice's measured ~147 wpm
   MAX_CHUNKS: '20'
   # Writes the script and the prompts/SEO; stronger than the audiobook's flash-lite because this call writes prose.
@@ -622,7 +624,7 @@ jobs:
       # youtube_upload.py, not an input — review the video in Studio and publish it from there.
       - name: Upload video to YouTube
         id: youtube
-        if: steps.video.outcome == 'success'
+        if: steps.video.outcome == 'success' && env.UPLOAD_TO_YOUTUBE == 'true'
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
@@ -637,6 +639,39 @@ jobs:
                 --fallback-title "${BOOK_TITLE} — A reflection on ${CHAPTER_TITLE}")
           if [ -s "out/pics/${BASE}.thumb.jpg" ]; then args+=(--thumbnail "out/pics/${BASE}.thumb.jpg"); fi
           python scripts/youtube_upload.py "${args[@]}"
+
+      # While YouTube is off this is the deliverable, so it fails the job. Named by voice so
+      # several voice runs sit side by side; aws's stderr is swallowed as in the save step.
+      - name: Upload the video to the bucket
+        id: bucket_video
+        if: steps.video.outcome == 'success' && env.UPLOAD_TO_YOUTUBE != 'true'
+        working-directory: sec10v
+        env:
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1   # MinIO accepts any region unless one is configured
+          VOICE: ${{ inputs.voice }}
+        run: |
+          if [ -z "$BUCKET_S3_ENDPOINT" ] || [ -z "$BUCKET_S3_URI" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "⏭️ bucket upload secrets not set (BUCKET_S3_ENDPOINT, BUCKET_S3_URI, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY) — the video has nowhere to go"
+            exit 1
+          fi
+          voice=$(basename "${VOICE:-default}")
+          voice=${voice%.*}
+          name="${BASE}.${voice:-default}.mp4"
+          file="out/${BASE}.final.mp4"
+          aws configure set default.s3.addressing_style path   # MinIO needs path-style
+          if err=$(aws s3 cp --endpoint-url "$BUCKET_S3_ENDPOINT" --only-show-errors \
+              --content-type video/mp4 "$file" "${BUCKET_S3_URI%/}/${name}" 2>&1 </dev/null); then
+            echo "✅ video uploaded to your bucket as ${name} ($(du -h "$file" | cut -f1))"
+            echo "   it is at <IMAGE_BASE_URL>/${name}, the same folder the images come from"
+          else
+            code=$(printf '%s' "${err:-}" | grep -o 'An error occurred ([A-Za-z]*)' | head -n1 || true)
+            echo "❌ could not upload ${name}${code:+ — $code}"
+            exit 1
+          fi
 
       # Fail loudly *after* the upload, so a finished video is never lost to a late failure.
       - name: Report chunk, image and video status
@@ -670,6 +705,9 @@ jobs:
           # This run uploads no artifacts at all; the channel is where the output went.
           if [ "${{ steps.youtube.outcome }}" = "success" ]; then
             echo "📺 uploaded to YouTube as private — the link is in the upload step's log"
+          fi
+          if [ "${{ steps.bucket_video.outcome }}" = "success" ]; then
+            echo "🪣 video uploaded to your bucket — the name is in the \"Upload the video to the bucket\" step's log"
           fi
           if [ "${{ steps.image.outputs.found }}" != "true" ] && [ "${{ steps.image_retry.outputs.found }}" != "true" ]; then
             echo "⚠️ image 1 never arrived — no video was built, nothing was uploaded to YouTube."
