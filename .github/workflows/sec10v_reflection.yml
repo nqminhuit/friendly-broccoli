@@ -20,7 +20,8 @@
 # script, edit <BaseName>.script.md in the bucket and re-dispatch — uploaded images are reused.
 #
 # Every run saves the prompts and SEO Gemini wrote to the bucket; an uploaded <BaseName>.seo.md or
-# <BaseName>.<k>.prompt.txt replaces Gemini's for that file, and the next run reuses them.
+# <BaseName>.<k>.prompt.txt replaces Gemini's for that file, and the next run reuses them — so after
+# changing what a section is about (or the number of sections), delete them so Gemini writes new ones.
 # YouTube upload is temporarily off (UPLOAD_TO_YOUTUBE); the video goes to the bucket as <BaseName>.<voice>.mp4.
 #
 # Secrets — those of sec10v_chapter.yml (see there for details), plus the four BUCKET_* ones:
@@ -317,6 +318,8 @@ jobs:
           fi
           echo
           echo "To change it, edit ${BASE}.script.md in the bucket and re-run."
+          echo "If you change what a section is about (or the number of sections), delete the saved"
+          echo "${BASE}.seo.md and ${BASE}.<k>.prompt.txt from the bucket too, so Gemini writes new ones."
 
       # Needed by the video build at the end (and it is cheap here, while the human is drawing).
       - name: Install ffmpeg
