@@ -47,8 +47,10 @@ env:
   # Writes the script and the prompts/SEO; stronger than the audiobook's flash-lite because this call writes prose.
   # List models: curl -H "x-goog-api-key: …" https://generativelanguage.googleapis.com/v1beta/models
   REFLECTION_MODEL: 'gemini-3.8-flash'
-  # Tried in order when the model before returns HTTP 429 or 503 or times out; the last one also retries 5xx.
-  GEMINI_FALLBACK_MODELS: 'gemini-3.5-flash,gemma-4-26b-a4b-it'
+  # Tried in order after REFLECTION_MODEL; each but the last gets one try and moves on after any failure.
+  # The last one retries 429, 5xx and timeouts; Gemma is last because it has its own rate limits.
+  # The 2.5 models are left out because Google limits them to earlier users.
+  GEMINI_FALLBACK_MODELS: 'gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-26b-a4b-it'
   # The human drawing up to 5 images is the critical path, hence the long second window.
   IMAGE_EARLY_WAIT_MINUTES: '20'  # while the chunk runs are synthesizing
   IMAGE_WAIT_MINUTES: '120'       # second chance, after the audio is collected
