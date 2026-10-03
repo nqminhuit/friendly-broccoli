@@ -2,14 +2,15 @@ name: inference-probe
 run-name: inference-probe ${{ inputs.hours }}h as ${{ inputs.node_id }}
 
 # Serves a small CPU gemma4 through llama.cpp and relays minator jobs to it with apps/inference-probe
-# for a bounded test run. Needs INFERENCE_NODE_TOKEN (that node's token, already in the box's
+# for `hours` in total. A job is capped at 6h, so a longer campaign is a chain of runs: each one queues
+# its successor (same concurrency group, so it starts the moment this one ends) until `until` passes. Needs INFERENCE_NODE_TOKEN (that node's token, already in the box's
 # INFERENCE_NODE_TOKENS) and NUC14ESS_ACCESS_TOKEN (read access to the private nuc14ess repo).
 
 on:
   workflow_dispatch:
     inputs:
       hours:
-        description: 'How long to stay connected (max 5.5)'
+        description: 'Total hours to stay connected, across chained runs (max 96)'
         required: false
         type: string
         default: '5'
@@ -28,9 +29,19 @@ on:
         required: false
         type: string
         default: 'https://prud.uk'
+      until:
+        description: 'Set by the chain itself: unix time the campaign ends. Leave empty.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  actions: write  # the final step dispatches the next run of this workflow
+
+concurrency:
+  group: inference-probe
+  cancel-in-progress: false
 
 env:
   MODEL_REPO: unsloth/gemma-4-E4B-it-qat-GGUF
@@ -41,7 +52,7 @@ env:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 345  # 5.5h of probe plus setup, under the 6h job cap
+    timeout-minutes: 345  # 5.4h of probe plus setup, under the 6h job cap
     steps:
       - name: Validate inputs
         env:
@@ -49,16 +60,35 @@ jobs:
           NODE_ID: ${{ inputs.node_id }}
           MODEL_NAME: ${{ inputs.model_name }}
           REGISTRY_URL: ${{ inputs.registry_url }}
+          UNTIL: ${{ inputs.until }}
         run: |
           python3 - <<'PY'
           import os, re, sys
           e = os.environ
-          ok = (re.fullmatch(r"\d+(\.\d+)?", e["HOURS"]) and 0 < float(e["HOURS"]) <= 5.5
+          ok = (re.fullmatch(r"\d+(\.\d+)?", e["HOURS"]) and 0 < float(e["HOURS"]) <= 96
                 and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", e["NODE_ID"])
                 and re.fullmatch(r"[A-Za-z0-9._:@+-]{1,128}", e["MODEL_NAME"])
-                and re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?", e["REGISTRY_URL"]))
+                and re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?", e["REGISTRY_URL"])
+                and re.fullmatch(r"\d{0,12}", e["UNTIL"]))
           sys.exit(0 if ok else "invalid input")
           PY
+
+      - name: Plan this run
+        id: plan
+        env:
+          HOURS: ${{ inputs.hours }}
+          UNTIL: ${{ inputs.until }}
+        run: |
+          now=$(date +%s)
+          until=${UNTIL:-$(python3 -c "print($now + int(float('$HOURS') * 3600))")}
+          left=$((until - now))
+          # 5.4h per run keeps setup and teardown inside the 6h job cap.
+          secs=$(( left < 19440 ? left : 19440 ))
+          if [ "$secs" -le 60 ]; then echo "campaign already over"; secs=0; fi
+          echo "until=$until" >> "$GITHUB_OUTPUT"
+          echo "secs=$secs" >> "$GITHUB_OUTPUT"
+          echo "more=$([ $((left - secs)) -gt 300 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "this run: ${secs}s, campaign ends in ${left}s"
 
       - name: Checkout the probe
         uses: actions/checkout@v7
@@ -141,12 +171,14 @@ jobs:
           PY
 
       - name: Run the probe
+        id: probe
+        if: steps.plan.outputs.secs != '0'
         env:
-          HOURS: ${{ inputs.hours }}
+          SECS: ${{ steps.plan.outputs.secs }}
         run: |
           # timeout's 124 is the planned end; the probe's own 2 means the registry rejected the token.
           rc=0
-          timeout --signal=TERM "$(python3 -c "print(int(float('$HOURS') * 3600))")" \
+          timeout --signal=TERM "$SECS" \
             "$RUNNER_TEMP/inference-probe" -config "$RUNNER_TEMP/config.json" || rc=$?
           echo "probe exited with $rc"
           [ "$rc" -eq 124 ] || [ "$rc" -eq 0 ]
@@ -154,3 +186,16 @@ jobs:
       - name: Stop llama-server
         if: always()
         run: docker rm -f llama || true
+
+      # Only after a clean run: a rejected token must not respawn runs that fail the same way.
+      - name: Queue the next run
+        if: always() && steps.probe.outcome == 'success' && steps.plan.outputs.more == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UNTIL: ${{ steps.plan.outputs.until }}
+          NODE_ID: ${{ inputs.node_id }}
+          MODEL_NAME: ${{ inputs.model_name }}
+          REGISTRY_URL: ${{ inputs.registry_url }}
+        run: |
+          gh workflow run inference-probe.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
+            -f hours=96 -f until="$UNTIL" -f node_id="$NODE_ID" -f model_name="$MODEL_NAME" -f registry_url="$REGISTRY_URL"
