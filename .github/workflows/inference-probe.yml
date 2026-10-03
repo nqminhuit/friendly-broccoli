@@ -137,7 +137,7 @@ jobs:
           (umask 077; printf %s "$key" > "$RUNNER_TEMP/llama.key")
           docker run -d --name llama -e LLAMA_API_KEY="$key" -p 127.0.0.1:$LLAMA_PORT:8080 \
             -v "$HOME/models:/models:ro" "$LLAMA_IMAGE" \
-            -m "/models/$MODEL_FILE" --alias "$MODEL_NAME" -t "$(nproc)" -c 8192 --jinja --host 0.0.0.0 \
+            -m "/models/$MODEL_FILE" --alias "$MODEL_NAME" -t "$(nproc)" -c 8192 --jinja --host 0.0.0.0 --log-disable \
             --chat-template-kwargs '{"enable_thinking":false}'
           for _ in $(seq 120); do
             if curl -fsS -m 3 "http://127.0.0.1:$LLAMA_PORT/health" >/dev/null 2>&1; then
@@ -146,8 +146,9 @@ jobs:
             fi
             sleep 5
           done
+          # No docker logs here on purpose: llama runs with --log-disable so no prompt can reach this public log.
           echo "llama-server did not become ready" >&2
-          docker logs --tail 20 llama >&2 || true
+          docker inspect -f 'state={{.State.Status}} exit={{.State.ExitCode}}' llama >&2 || true
           exit 1
 
       - name: Write the probe config
