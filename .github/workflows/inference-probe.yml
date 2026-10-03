@@ -1,16 +1,10 @@
 name: inference-probe
 run-name: inference-probe ${{ inputs.hours }}h as ${{ inputs.node_id }}
-
-# Serves a small CPU gemma4 through llama.cpp and relays minator jobs to it with apps/inference-probe
-# for `hours` in total. A job is capped at 6h, so a longer campaign is a chain of runs: each one queues
-# its successor (same concurrency group, so it starts the moment this one ends) until `until` passes. Needs INFERENCE_NODE_TOKEN (that node's token, already in the box's
-# INFERENCE_NODE_TOKENS) and NUC14ESS_ACCESS_TOKEN (read access to the private nuc14ess repo).
-
 on:
   workflow_dispatch:
     inputs:
       hours:
-        description: 'Total hours to stay connected, across chained runs (max 96)'
+        description: 'Total hours to stay connected, across chained runs (max 960)'
         required: false
         type: string
         default: '5'
@@ -52,7 +46,7 @@ env:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 345  # 5.4h of probe plus setup, under the 6h job cap
+    timeout-minutes: 45
     steps:
       - name: Validate inputs
         env:
@@ -65,7 +59,7 @@ jobs:
           python3 - <<'PY'
           import os, re, sys
           e = os.environ
-          ok = (re.fullmatch(r"\d+(\.\d+)?", e["HOURS"]) and 0 < float(e["HOURS"]) <= 96
+          ok = (re.fullmatch(r"\d+(\.\d+)?", e["HOURS"]) and 0 < float(e["HOURS"]) <= 960
                 and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", e["NODE_ID"])
                 and re.fullmatch(r"[A-Za-z0-9._:@+-]{1,128}", e["MODEL_NAME"])
                 and re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?", e["REGISTRY_URL"])
