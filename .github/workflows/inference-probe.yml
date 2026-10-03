@@ -1,0 +1,156 @@
+name: inference-probe
+run-name: inference-probe ${{ inputs.hours }}h as ${{ inputs.node_id }}
+
+# Serves a small CPU gemma4 through llama.cpp and relays minator jobs to it with apps/inference-probe
+# for a bounded test run. Needs INFERENCE_NODE_TOKEN (that node's token, already in the box's
+# INFERENCE_NODE_TOKENS) and NUC14ESS_ACCESS_TOKEN (read access to the private nuc14ess repo).
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'How long to stay connected (max 5.5)'
+        required: false
+        type: string
+        default: '5'
+      node_id:
+        description: 'Node id registered on the box'
+        required: false
+        type: string
+        default: 'gh-runner'
+      model_name:
+        description: 'Model name advertised to the relay (llama --alias)'
+        required: false
+        type: string
+        default: 'gh-test'
+      registry_url:
+        description: 'Relay base URL'
+        required: false
+        type: string
+        default: 'https://prud.uk'
+
+permissions:
+  contents: read
+
+env:
+  MODEL_REPO: unsloth/gemma-4-E4B-it-qat-GGUF
+  MODEL_FILE: gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf
+  LLAMA_IMAGE: ghcr.io/ggml-org/llama.cpp:server
+  LLAMA_PORT: '11881'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345  # 5.5h of probe plus setup, under the 6h job cap
+    steps:
+      - name: Validate inputs
+        env:
+          HOURS: ${{ inputs.hours }}
+          NODE_ID: ${{ inputs.node_id }}
+          MODEL_NAME: ${{ inputs.model_name }}
+          REGISTRY_URL: ${{ inputs.registry_url }}
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          e = os.environ
+          ok = (re.fullmatch(r"\d+(\.\d+)?", e["HOURS"]) and 0 < float(e["HOURS"]) <= 5.5
+                and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", e["NODE_ID"])
+                and re.fullmatch(r"[A-Za-z0-9._:@+-]{1,128}", e["MODEL_NAME"])
+                and re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?", e["REGISTRY_URL"]))
+          sys.exit(0 if ok else "invalid input")
+          PY
+
+      - name: Checkout the probe
+        uses: actions/checkout@v7
+        with:
+          repository: nqminhuit/nuc14ess
+          ref: master
+          token: ${{ secrets.NUC14ESS_ACCESS_TOKEN }}
+          sparse-checkout: apps/inference-probe
+          path: nuc14ess
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: nuc14ess/apps/inference-probe/go.mod
+
+      - name: Build the probe
+        working-directory: nuc14ess/apps/inference-probe
+        run: go build -trimpath -o "$RUNNER_TEMP/inference-probe" ./cmd/inference-probe
+
+      - name: Cache the model
+        uses: actions/cache@v6
+        with:
+          path: ~/models
+          key: gguf-${{ env.MODEL_REPO }}-${{ env.MODEL_FILE }}
+
+      - name: Download the model
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          mkdir -p ~/models
+          if [ ! -s ~/models/"$MODEL_FILE" ]; then
+            curl -fL --retry 5 --retry-delay 10 ${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"} \
+              -o ~/models/"$MODEL_FILE" \
+              "https://huggingface.co/$MODEL_REPO/resolve/main/$MODEL_FILE"
+          fi
+          ls -l ~/models
+
+      - name: Start llama-server
+        env:
+          MODEL_NAME: ${{ inputs.model_name }}
+        run: |
+          # The server only listens on the runner's loopback, but it still gets a key like the real nodes.
+          key="$(openssl rand -hex 24)"
+          echo "::add-mask::$key"
+          (umask 077; printf %s "$key" > "$RUNNER_TEMP/llama.key")
+          docker run -d --name llama -e LLAMA_API_KEY="$key" -p 127.0.0.1:$LLAMA_PORT:8080 \
+            -v "$HOME/models:/models:ro" "$LLAMA_IMAGE" \
+            -m "/models/$MODEL_FILE" --alias "$MODEL_NAME" -t "$(nproc)" -c 8192 --jinja --host 0.0.0.0 \
+            --chat-template-kwargs '{"enable_thinking":false}'
+          for _ in $(seq 120); do
+            if curl -fsS -m 3 "http://127.0.0.1:$LLAMA_PORT/health" >/dev/null 2>&1; then
+              echo "llama-server ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "llama-server did not become ready" >&2
+          docker logs --tail 20 llama >&2 || true
+          exit 1
+
+      - name: Write the probe config
+        env:
+          INFERENCE_NODE_TOKEN: ${{ secrets.INFERENCE_NODE_TOKEN }}
+          NODE_ID: ${{ inputs.node_id }}
+          MODEL_NAME: ${{ inputs.model_name }}
+          REGISTRY_URL: ${{ inputs.registry_url }}
+        run: |
+          (umask 077; printf %s "$INFERENCE_NODE_TOKEN" > "$RUNNER_TEMP/token")
+          python3 - <<'PY'
+          import json, os
+          e, t = os.environ, os.environ["RUNNER_TEMP"]
+          cfg = {"registry_url": e["REGISTRY_URL"], "node_id": e["NODE_ID"], "token_file": t + "/token",
+                 "max_polls": 2, "max_concurrent_jobs": 1,
+                 "backends": {"chat": {"url": "http://127.0.0.1:" + e["LLAMA_PORT"],
+                                       "api_key_file": t + "/llama.key",
+                                       "models": [e["MODEL_NAME"]], "health": "llama"}}}
+          with open(t + "/config.json", "w") as f:
+              json.dump(cfg, f)
+          PY
+
+      - name: Run the probe
+        env:
+          HOURS: ${{ inputs.hours }}
+        run: |
+          # timeout's 124 is the planned end; the probe's own 2 means the registry rejected the token.
+          rc=0
+          timeout --signal=TERM "$(python3 -c "print(int(float('$HOURS') * 3600))")" \
+            "$RUNNER_TEMP/inference-probe" -config "$RUNNER_TEMP/config.json" || rc=$?
+          echo "probe exited with $rc"
+          [ "$rc" -eq 124 ] || [ "$rc" -eq 0 ]
+
+      - name: Stop llama-server
+        if: always()
+        run: docker rm -f llama || true
