@@ -66,7 +66,7 @@ async function type(selector, text) {
         await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, code }, page);
     }
     const value = await evaluate(page, `(e => e.tagName === 'DIV' ? e.innerText : e.value)(document.querySelector('${selector}'))`);
-    return value.replace(/ /g, ' ');
+    return value.replace(/\u00a0/g, ' ');
 }
 
 before(async () => {
