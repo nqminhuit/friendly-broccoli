@@ -26,7 +26,7 @@ on:
         type: string
         default: '10'
       threads:
-        description: CPU threads (empty = sd.cpp default, physical cores)
+        description: CPU threads (empty = all vCPUs from nproc)
         type: string
         default: ''
       swap_gb:
@@ -66,12 +66,17 @@ env:
   SD_SHA256: 9ad35ed309dbe59f5e66f35edafac9a69e6cc233ea6b9577071feae829159d37
   HF_UC_BASE: https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/resolve/main
   HF_LLM_BASE: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main
-  MIN_FREE_GB: '13'
+  IMAGE_ARTIFACT: qwen-image-cpu-image
 
 jobs:
+  # No secrets here: this job runs sd-cli on third-party GGUF files, and its processes outlive the generate step.
   probe:
     runs-on: ubuntu-24.04
     timeout-minutes: 330
+    permissions:
+      contents: read
+    outputs:
+      image_artifact_id: ${{ steps.image.outputs.artifact-id }}
     steps:
       - name: Validate inputs and record runner facts
         run: |
@@ -93,6 +98,9 @@ jobs:
           {
             echo "nproc: $(nproc)"
             echo "cpu: $(lscpu | sed -n 's/^Model name:[[:space:]]*//p')"
+            echo "threads_per_core: $(lscpu | sed -n 's/^Thread(s) per core:[[:space:]]*//p')"
+            echo "cores_per_socket: $(lscpu | sed -n 's/^Core(s) per socket:[[:space:]]*//p')"
+            echo "sockets: $(lscpu | sed -n 's/^Socket(s):[[:space:]]*//p')"
             for f in avx avx2 avx512f; do
               if grep -qw "$f" /proc/cpuinfo; then echo "$f: yes"; else echo "$f: no"; fi
             done
@@ -103,9 +111,35 @@ jobs:
             df -h / /mnt
           } | tee "$OUT/facts.txt"
 
-      - name: Pick models directory
+      - name: Pick models and directory
         run: |
           set -euo pipefail
+          # Approximate sizes in whole GB, rounded up, used only for the free-space check.
+          case "$IN_DIFFUSION" in
+            Q4_0)   dm=qwen-image-2.1-UC-Q4_0.gguf;   dm_sha=13f59f20656efc0aa385d03c1fcac1a9dc2ad6e5ccc0ea9bfe1d6ac636f2c5b9; dm_gb=4 ;;
+            Q4_K_M) dm=qwen-image-2.1-UC-Q4_K_M.gguf; dm_sha=e79c8a009f2ecbdb6c70fd663d9aea9ee304a0d91f347e4169a756b8ad141b41; dm_gb=5 ;;
+            Q5_K_M) dm=qwen-image-2.1-UC-Q5_K_M.gguf; dm_sha=af0bf278cf16d204fb31c384dc82fd41dca82d976b15fe9305a60c726fd6f821; dm_gb=6 ;;
+            Q8_0)   dm=qwen-image-2.1-UC-Q8_0.gguf;   dm_sha=cde456c72ea3ecebfc1be783300e972711d875e0c5f1bed33d42b66b156affa8; dm_gb=8 ;;
+            *) echo "::error::unknown diffusion quant"; exit 1 ;;
+          esac
+          case "$IN_TEXT_ENCODER" in
+            Q4_K_M) llm=Qwen3VL-8B-Instruct-Q4_K_M.gguf; llm_sha=67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2; llm_gb=5 ;;
+            Q8_0)   llm=Qwen3VL-8B-Instruct-Q8_0.gguf;   llm_sha=0d264b3941185d00a74f75c4245521dae088ff1efc90ab8d1754e83f5844adb0; llm_gb=9 ;;
+            *) echo "::error::unknown text encoder quant"; exit 1 ;;
+          esac
+          vae=qwen_image_2.1_vae_bf16.safetensors
+          vae_sha=bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9
+          vae_gb=1
+          need=$((dm_gb + llm_gb + vae_gb + 1))   # +1 GB margin
+          {
+            echo "DM_FILE=$dm"
+            echo "DM_SHA=$dm_sha"
+            echo "LLM_FILE=$llm"
+            echo "LLM_SHA=$llm_sha"
+            echo "VAE_FILE=$vae"
+            echo "VAE_SHA=$vae_sha"
+          } >> "$GITHUB_ENV"
+
           # The runner's default swapfile lives on /mnt; drop it to free space and get clean swap numbers.
           sudo swapoff -a
           sudo rm -f /mnt/swapfile
@@ -115,9 +149,9 @@ jobs:
           best="$RUNNER_TEMP"
           if [ "$(free_gb /mnt)" -gt "$(free_gb "$RUNNER_TEMP")" ]; then best=/mnt; fi
           avail="$(free_gb "$best")"
-          echo "Chosen: $best with ${avail} GB free"
-          if [ "$avail" -lt "$MIN_FREE_GB" ]; then
-            echo "::error::Only ${avail} GB free on $best, need at least ${MIN_FREE_GB} GB for the models"
+          echo "Chosen: $best with ${avail} GB free, models need about ${need} GB"
+          if [ "$avail" -lt "$need" ]; then
+            echo "::error::Only ${avail} GB free on $best, need ${need} GB for the chosen models"
             exit 1
           fi
           mkdir -p "$best/models"
@@ -147,27 +181,9 @@ jobs:
             curl --fail --location --show-error --retry 3 -o "$MODELS_DIR/$2" "$1"
             echo "$3  $MODELS_DIR/$2" | sha256sum -c -
           }
-          case "$IN_DIFFUSION" in
-            Q4_0)   dm=qwen-image-2.1-UC-Q4_0.gguf;   dm_sha=13f59f20656efc0aa385d03c1fcac1a9dc2ad6e5ccc0ea9bfe1d6ac636f2c5b9 ;;
-            Q4_K_M) dm=qwen-image-2.1-UC-Q4_K_M.gguf; dm_sha=e79c8a009f2ecbdb6c70fd663d9aea9ee304a0d91f347e4169a756b8ad141b41 ;;
-            Q5_K_M) dm=qwen-image-2.1-UC-Q5_K_M.gguf; dm_sha=af0bf278cf16d204fb31c384dc82fd41dca82d976b15fe9305a60c726fd6f821 ;;
-            Q8_0)   dm=qwen-image-2.1-UC-Q8_0.gguf;   dm_sha=cde456c72ea3ecebfc1be783300e972711d875e0c5f1bed33d42b66b156affa8 ;;
-            *) echo "::error::unknown diffusion quant"; exit 1 ;;
-          esac
-          case "$IN_TEXT_ENCODER" in
-            Q4_K_M) llm=Qwen3VL-8B-Instruct-Q4_K_M.gguf; llm_sha=67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2 ;;
-            Q8_0)   llm=Qwen3VL-8B-Instruct-Q8_0.gguf;   llm_sha=0d264b3941185d00a74f75c4245521dae088ff1efc90ab8d1754e83f5844adb0 ;;
-            *) echo "::error::unknown text encoder quant"; exit 1 ;;
-          esac
-          vae=qwen_image_2.1_vae_bf16.safetensors
-          fetch "$HF_UC_BASE/$dm" "$dm" "$dm_sha"
-          fetch "$HF_LLM_BASE/$llm" "$llm" "$llm_sha"
-          fetch "$HF_UC_BASE/vae/$vae" "$vae" bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9
-          {
-            echo "DM_FILE=$dm"
-            echo "LLM_FILE=$llm"
-            echo "VAE_FILE=$vae"
-          } >> "$GITHUB_ENV"
+          fetch "$HF_UC_BASE/$DM_FILE" "$DM_FILE" "$DM_SHA"
+          fetch "$HF_LLM_BASE/$LLM_FILE" "$LLM_FILE" "$LLM_SHA"
+          fetch "$HF_UC_BASE/vae/$VAE_FILE" "$VAE_FILE" "$VAE_SHA"
           df -h "$MODELS_DIR"
           # Drop the download page cache so it does not skew memory readings.
           sync
@@ -229,7 +245,10 @@ jobs:
           [ "$IN_FA" = true ] && args+=(--fa)
           [ "$IN_MMAP" = true ] && args+=(--mmap)
           [ "$IN_VAE_TILING" = true ] && args+=(--vae-tiling)
-          [ -n "$IN_THREADS" ] && args+=(-t "$((10#$IN_THREADS))")
+          # sd.cpp's default is physical cores, half the vCPUs on these runners.
+          if [ -n "$IN_THREADS" ]; then threads="$((10#$IN_THREADS))"; else threads="$(nproc)"; fi
+          args+=(-t "$threads")
+          echo "$threads" > threads.txt
 
           set +e
           /usr/bin/time -v -o time.txt "$SD/sd-cli" "${args[@]}" -o out.png 2>&1 | tee sd.log
@@ -248,6 +267,10 @@ jobs:
           if [ -s out.png ] && [ "$rc" = 0 ]; then result="image produced"; else result="failed (exit code $rc)"; fi
 
           cpu="$(sed -n 's/^cpu: //p' facts.txt 2>/dev/null)"; : "${cpu:=$na}"
+          tpc="$(sed -n 's/^threads_per_core: //p' facts.txt 2>/dev/null)"; : "${tpc:=$na}"
+          cps="$(sed -n 's/^cores_per_socket: //p' facts.txt 2>/dev/null)"; : "${cps:=$na}"
+          sockets="$(sed -n 's/^sockets: //p' facts.txt 2>/dev/null)"; : "${sockets:=$na}"
+          threads_used="$(cat threads.txt 2>/dev/null || echo "$na")"
           nproc_v="$(sed -n 's/^nproc: //p' facts.txt 2>/dev/null)"; : "${nproc_v:=$na}"
           avx2="$(sed -n 's/^avx2: //p' facts.txt 2>/dev/null)"; : "${avx2:=$na}"
           avx512="$(sed -n 's/^avx512f: //p' facts.txt 2>/dev/null)"; : "${avx512:=$na}"
@@ -275,8 +298,8 @@ jobs:
             echo "| Item | Value |"
             echo "| --- | --- |"
             echo "| Result | $result |"
-            echo "| Runner | nproc $nproc_v, $cpu, avx2 $avx2, avx512f $avx512, MemTotal $memtotal |"
-            echo "| Inputs | diffusion $IN_DIFFUSION, text encoder $IN_TEXT_ENCODER, ${IN_WIDTH}x${IN_HEIGHT}, steps $IN_STEPS, threads ${IN_THREADS:-default}, swap ${IN_SWAP_GB} GB, mmap $IN_MMAP, fa $IN_FA, vae tiling $IN_VAE_TILING |"
+            echo "| Runner | nproc $nproc_v, cores $cps x threads/core $tpc x sockets $sockets, $cpu, avx2 $avx2, avx512f $avx512, MemTotal $memtotal |"
+            echo "| Inputs | diffusion $IN_DIFFUSION, text encoder $IN_TEXT_ENCODER, ${IN_WIDTH}x${IN_HEIGHT}, steps $IN_STEPS, threads $threads_used, swap ${IN_SWAP_GB} GB, mmap $IN_MMAP, fa $IN_FA, vae tiling $IN_VAE_TILING |"
             echo "| Wall time | $wall |"
             echo "| Max RSS | $rss |"
             echo "| Min MemAvailable | $minavail |"
@@ -299,30 +322,15 @@ jobs:
           fi
           exit 0
 
-      # Same BUCKET_* secrets as sec10v_reflection.yml. aws's stderr is swallowed: it would show the bucket and prefix.
-      - name: Upload image to the bucket
-        env:
-          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
-          BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: us-east-1   # MinIO accepts any region unless one is configured
-        run: |
-          set -euo pipefail
-          if [ -z "$BUCKET_S3_ENDPOINT" ] || [ -z "$BUCKET_S3_URI" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
-            echo "::error::bucket upload secrets not set (BUCKET_S3_ENDPOINT, BUCKET_S3_URI, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY)"
-            exit 1
-          fi
-          aws configure set default.s3.addressing_style path   # MinIO needs path-style
-          name="qwen-image-cpu/${GITHUB_RUN_ID}-${IN_DIFFUSION}-${IN_TEXT_ENCODER}-${IN_WIDTH}x${IN_HEIGHT}-${IN_STEPS}steps.png"
-          if err=$(aws s3 cp --endpoint-url "$BUCKET_S3_ENDPOINT" --only-show-errors \
-              --content-type image/png "$OUT/out.png" "${BUCKET_S3_URI%/}/${name}" 2>&1 </dev/null); then
-            echo "saved ${name}" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            code=$(printf '%s' "$err" | grep -o 'An error occurred ([A-Za-z]*)' | head -n1 || true)
-            echo "::error::could not save ${name}${code:+ — $code}"
-            exit 1
-          fi
+      - name: Upload image artifact
+        id: image
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.IMAGE_ARTIFACT }}
+          path: ${{ runner.temp }}/out/out.png
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Upload logs
         if: always()
@@ -338,3 +346,57 @@ jobs:
             ${{ runner.temp }}/out/exit.txt
           if-no-files-found: warn
           retention-days: 1
+
+  # Holds the bucket secrets and never runs sd.cpp or touches model files.
+  upload:
+    needs: probe
+    if: needs.probe.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: write   # to delete the image artifact afterwards
+      contents: read
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.probe.outputs.image_artifact_id }}
+          path: ${{ runner.temp }}/image
+
+      # Same BUCKET_* secrets as sec10v_reflection.yml. aws's stderr is swallowed: it would show the bucket and prefix.
+      - name: Upload image to the bucket
+        env:
+          IMG_DIR: ${{ runner.temp }}/image
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1   # MinIO accepts any region unless one is configured
+        run: |
+          set -euo pipefail
+          IMG="$(find "$IMG_DIR" -type f -name '*.png' | head -1)"
+          [ -n "$IMG" ] || { echo "::error::image artifact is empty"; exit 1; }
+          if [ -z "$BUCKET_S3_ENDPOINT" ] || [ -z "$BUCKET_S3_URI" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::bucket upload secrets not set (BUCKET_S3_ENDPOINT, BUCKET_S3_URI, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY)"
+            exit 1
+          fi
+          aws configure set default.s3.addressing_style path   # MinIO needs path-style
+          name="qwen-image-cpu/${GITHUB_RUN_ID}-${IN_DIFFUSION}-${IN_TEXT_ENCODER}-${IN_WIDTH}x${IN_HEIGHT}-${IN_STEPS}steps.png"
+          if err=$(aws s3 cp --endpoint-url "$BUCKET_S3_ENDPOINT" --only-show-errors \
+              --content-type image/png "$IMG" "${BUCKET_S3_URI%/}/${name}" 2>&1 </dev/null); then
+            echo "saved ${name}" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            code=$(printf '%s' "$err" | grep -o 'An error occurred ([A-Za-z]*)' | head -n1 || true)
+            echo "::error::could not save ${name}${code:+ — $code}"
+            exit 1
+          fi
+
+      # The run page is public, so do not leave the image downloadable there.
+      - name: Delete image artifact
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.probe.outputs.image_artifact_id }}
+        run: |
+          [ -n "$ARTIFACT_ID" ] || exit 0
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
