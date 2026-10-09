@@ -30,7 +30,7 @@
     let debug = false;
 
     // With the Debug option, explains in the page console why a suggestion did or did not show.
-    const log = (...args) => { if (debug) console.debug('[bcoin]', ...args); };
+    const log = (...args) => { if (debug) console.info('[bcoin]', ...args); };
 
     function topHost() {
         const origins = location.ancestorOrigins;
@@ -171,7 +171,9 @@
         };
     }
 
-    // The text of a DOM fragment, with a newline for <br> and between blocks; nbsp and zero-width marks normalized.
+    // The text of a DOM fragment, with a newline for <br> and between blocks. Nbsp becomes a space, and invisible
+    // format characters (zero-width spaces, CKEditor's word-joiner fillers) are dropped, since editors add and
+    // remove them while idle.
     function fragmentText(frag) {
         let s = '';
         let pendingBreak = false;
@@ -182,7 +184,7 @@
         };
         const walk = (n) => {
             if (n.nodeType === Node.TEXT_NODE) {
-                const t = n.data.replace(/ /g, ' ').replace(/[​﻿]/g, '');
+                const t = n.data.replace(/\u00a0/g, ' ').replace(/\p{Cf}/gu, '');
                 if (t) emit(t);
             } else if (n.nodeName === 'BR') {
                 emit('\n');
@@ -275,10 +277,28 @@
         watcher = null;
     }
 
+    const lineOf = (after) => after.split('\n', 1)[0];
+
+    // Same caret spot: same text before it and same rest of its line. Lines below may change (editors and pages
+    // keep re-rendering them), since a suggestion depends only on what precedes the caret and where its line ends.
+    const sameSpot = (a, b) => !!a && !!b && a.before === b.before && lineOf(a.after) === lineOf(b.after);
+
+    // For the Debug log: where the text at the caret changed, with invisible characters escaped.
+    function describeChange(a, b) {
+        if (!b) return 'no caret in the field now';
+        const inBefore = a.before !== b.before;
+        const x = inBefore ? a.before : lineOf(a.after);
+        const y = inBefore ? b.before : lineOf(b.after);
+        let i = 0;
+        while (i < x.length && x[i] === y[i]) i++;
+        const show = (t) => JSON.stringify(t.slice(i, i + 16))
+            .replace(/[^\x20-\x7e\u00c0-\u1ef9]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+        return `${inBefore ? 'text before the caret' : 'rest of the line'} changed at ${i}: ${show(x)} -> ${show(y)}`;
+    }
+
     function snapshotHolds(g) {
         if (document.activeElement !== g.field.el && !g.field.el.contains(document.activeElement)) return false;
-        const now = g.field.read();
-        return !!now && now.before === g.before && now.after === g.after;
+        return sameSpot(g.field.read(), g);
     }
 
     function show(field, text, at) {
@@ -332,7 +352,7 @@
             if (mine !== seq) return log('drop: a newer request replaced this one');
         }
         const now = field.read();
-        if (!now || now.before !== at.before || now.after !== at.after) return log('drop: the text changed meanwhile');
+        if (!sameSpot(now, at)) return log('drop: the text changed meanwhile;', describeChange(at, now));
         let text = postprocess(content, ctx);
         if (text && !field.multiline) text = text.split('\n')[0];
         if (!text || !/\S/.test(text)) return log('drop: nothing left after clean-up');
@@ -340,7 +360,12 @@
         show(field, text, at);
     }
 
-    function schedule(field) {
+    // What the field held when the last request was scheduled, so a re-render that changes nothing at the caret
+    // neither restarts the pause nor sends the same request again.
+    let pending = null;
+
+    function schedule(field, at) {
+        pending = { el: field.el, at };
         clearTimeout(timer);
         timer = setTimeout(() => request(field), DEBOUNCE_MS);
     }
@@ -348,19 +373,22 @@
     // The field's text may have changed: shrink a ghost typed through, else clear it and ask again after a pause.
     function changed(field) {
         if (!enabled) return;
+        const now = field.read();
         if (ghost && ghost.field.el === field.el) {
             const g = ghost;
-            const now = field.read();
-            if (now && now.before === g.before && now.after === g.after) return;
-            const typed = now && now.after === g.after && now.before.startsWith(g.before) ? now.before.slice(g.before.length) : null;
+            if (sameSpot(now, g)) return;
+            const typed = now && lineOf(now.after) === lineOf(g.after) && now.before.startsWith(g.before)
+                ? now.before.slice(g.before.length) : null;
             if (typed && g.text.startsWith(typed) && g.text.length > typed.length) {
-                ghost = { ...g, before: now.before, text: g.text.slice(typed.length) };
+                ghost = { ...g, before: now.before, after: now.after, text: g.text.slice(typed.length) };
                 g.field.draw(ghost);
                 return;
             }
+        } else if (pending && pending.el === field.el && sameSpot(now, pending.at)) {
+            return;
         }
         clear();
-        schedule(field);
+        schedule(field, now);
     }
 
     document.addEventListener('input', (e) => {

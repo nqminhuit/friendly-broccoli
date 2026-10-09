@@ -24,7 +24,17 @@ const PAGE = '<!doctype html><body><textarea id=t rows=6 cols=60></textarea><inp
     + '  const sel = getSelection(), r = sel.getRangeAt(0), t = document.createTextNode(e.data);'
     + '  r.deleteContents(); r.insertNode(t); r.setStartAfter(t); r.collapse(true);'
     + '  sel.removeAllRanges(); sel.addRange(r);'
-    + '});</script></body>';
+    + '});</script>'
+    // Like Teams' editor while idle: an invisible word joiner at the end of the caret's line comes and goes, and a
+    // line below keeps changing.
+    + '<div id=c contenteditable style="width:420px;min-height:60px;border:1px solid #888"></div>'
+    + '<script>let n = 0; setInterval(() => {'
+    + '  let tick = c.querySelector("i");'
+    + '  if (!tick) { c.append(document.createElement("br"), document.createElement("i")); tick = c.querySelector("i"); }'
+    + '  tick.textContent = String(n++);'
+    + '  const f = c.querySelector("b");'
+    + '  if (f) f.remove(); else { const b = document.createElement("b"); b.textContent = "\\u2060"; c.querySelector("br").before(b); }'
+    + '}, 120);</script></body>';
 // Fake model answers by the current line before the caret.
 const ANSWERS = { 'x = ': '1 + 2', 'y = ': 'x * 2', 'z = ': 'first\nsecond', 'tiếng ': 'Việt' };
 const PAUSE_MS = 700;
@@ -295,4 +305,15 @@ it('rich editor that types itself without input events, as CKEditor 5 does', asy
     assert.equal(await ghostText(), ' + 2');
     await key('Tab', { vk: 9 });
     assert.equal(await value('#m'), 'x = 1 + 2');
+});
+
+it('rich editor that keeps re-rendering while idle, as Teams does', async () => {
+    await reset('#c');
+    await type('#c', 'x = ');
+    await sleep(PAUSE_MS);
+    assert.equal(await ghostText(), '1 + 2');
+    await sleep(PAUSE_MS);
+    assert.equal(await ghostText(), '1 + 2');
+    await key('Tab', { vk: 9 });
+    assert.ok((await value('#c')).startsWith('x = 1 + 2'));
 });
