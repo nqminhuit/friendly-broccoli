@@ -26,6 +26,7 @@ Start the server with a FIM model, as for ecoin, for example `llama-server --fim
 - Never in single-line inputs, password fields, or code editors embedded in pages (Monaco, CodeMirror, Ace).
 - While an `@mention` or `#issue` list is open (GitHub and similar), Tab belongs to the list and no ghost shows.
 - Answers are cached per page, at most one request is in flight per tab, and a failed request pauses suggestions for 10 seconds.
+- No suggestion where you expect one? Tick Debug in Options and open the page console (F12): bcoin logs each request, answer, and the reason it skipped or dropped one.
 
 The request matches ecoin's: the 256 lines above as `input_prefix`, the current line up to the caret as `prompt`, the rest and the 64 lines below as `input_suffix`, plus `n_indent`, `n_predict`, `t_max_predict_ms` and the top-k/top-p/infill samplers. The answer is cleaned up with ecoin's rules: leaked FIM tokens, repeats of the following lines, degenerate repetition and closers the text already has are dropped.
 

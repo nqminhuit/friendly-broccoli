@@ -2,7 +2,7 @@
 // and shows each tab's state on the badge.
 const SETTINGS = 'settings';
 const TOGGLE_COMMAND = 'toggle-bcoin';
-const DEFAULT_SETTINGS = { url: 'http://127.0.0.1:8012', key: '', model: '', nPredict: 128, tMaxPredictMs: 250 };
+const DEFAULT_SETTINGS = { url: 'http://127.0.0.1:8012', key: '', model: '', nPredict: 128, tMaxPredictMs: 250, debug: false };
 // Loading or waking a model takes seconds; only a newer request cuts an older one short.
 const REQUEST_TIMEOUT_MS = 120000;
 const LOOPBACK_RE = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d{1,5})?\/?$/;

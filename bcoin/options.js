@@ -1,6 +1,6 @@
 // Edits the server settings in chrome.storage.local; the background script reads them per request.
 const SETTINGS = 'settings';
-const DEFAULT_SETTINGS = { url: 'http://127.0.0.1:8012', key: '', model: '', nPredict: 128, tMaxPredictMs: 250 };
+const DEFAULT_SETTINGS = { url: 'http://127.0.0.1:8012', key: '', model: '', nPredict: 128, tMaxPredictMs: 250, debug: false };
 const LOOPBACK_RE = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d{1,5})?\/?$/;
 const FIELDS = Object.keys(DEFAULT_SETTINGS);
 const status = document.getElementById('status');
@@ -8,12 +8,18 @@ const input = (name) => document.getElementById(name);
 
 chrome.storage.local.get(SETTINGS, (r) => {
     const s = { ...DEFAULT_SETTINGS, ...r[SETTINGS] };
-    for (const f of FIELDS) input(f).value = s[f];
+    for (const f of FIELDS) {
+        if (typeof DEFAULT_SETTINGS[f] === 'boolean') input(f).checked = s[f];
+        else input(f).value = s[f];
+    }
 });
 
 function read() {
     const s = {};
-    for (const f of FIELDS) s[f] = typeof DEFAULT_SETTINGS[f] === 'number' ? Number(input(f).value) : input(f).value.trim();
+    for (const f of FIELDS) {
+        const kind = typeof DEFAULT_SETTINGS[f];
+        s[f] = kind === 'boolean' ? input(f).checked : kind === 'number' ? Number(input(f).value) : input(f).value.trim();
+    }
     return s;
 }
 

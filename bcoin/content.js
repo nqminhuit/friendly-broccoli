@@ -5,6 +5,7 @@
     'use strict';
     const { buildContext, postprocess, nextWord } = globalThis.bcoinInfill;
     const SITES = 'sites';
+    const SETTINGS = 'settings';
     const DEBOUNCE_MS = 300;
     const BACKOFF_MS = 10000;
     const CACHE_SIZE = 100;
@@ -24,6 +25,12 @@
     let ghost = null;
     let overlay = null;
     let watcher = null;
+    // Rich editors such as CKEditor 5 apply some typing themselves, without an input event, so their DOM is watched.
+    let observed = null;
+    let debug = false;
+
+    // With the Debug option, explains in the page console why a suggestion did or did not show.
+    const log = (...args) => { if (debug) console.debug('[bcoin]', ...args); };
 
     function topHost() {
         const origins = location.ancestorOrigins;
@@ -49,9 +56,14 @@
         report();
     }
 
-    chrome.storage.local.get(SITES, (r) => setEnabled(r[SITES]));
+    chrome.storage.local.get([SITES, SETTINGS], (r) => {
+        setEnabled(r[SITES]);
+        debug = !!(r[SETTINGS] && r[SETTINGS].debug);
+    });
     chrome.storage.onChanged.addListener((changes, area) => {
-        if (area === 'local' && changes[SITES]) setEnabled(changes[SITES].newValue);
+        if (area !== 'local') return;
+        if (changes[SITES]) setEnabled(changes[SITES].newValue);
+        if (changes[SETTINGS]) debug = !!(changes[SETTINGS].newValue && changes[SETTINGS].newValue.debug);
     });
 
     let toastHost = null;
@@ -287,16 +299,19 @@
     }
 
     async function request(field) {
-        if (!enabled || Date.now() < backoffUntil || autocompleteOpen(field.el)) return;
+        if (!enabled) return;
+        if (Date.now() < backoffUntil) return log('skip: backing off after a server error');
+        if (autocompleteOpen(field.el)) return log('skip: an autocomplete list is open', field.el);
         const at = field.read();
-        if (!at) return;
+        if (!at) return log('skip: no caret, or a selection, in the field');
         const ctx = buildContext(at.before + at.after, at.before.length);
         // The overlay cannot push text aside, so only suggest at the end of a line.
-        if (/\S/.test(ctx.textAfter)) return;
+        if (/\S/.test(ctx.textAfter)) return log('skip: text after the caret on this line', JSON.stringify(ctx.textAfter));
         const key = `${ctx.prefix}\x1e${ctx.middle}\x1e${ctx.suffix}`;
         let content = cache.get(key);
         if (content === undefined) {
             const mine = ++seq;
+            log('request', { prompt: ctx.middle, prefixChars: ctx.prefix.length, suffixChars: ctx.suffix.length });
             let res;
             try {
                 res = await chrome.runtime.sendMessage({
@@ -309,17 +324,20 @@
             if (!res || res.aborted) return;
             if (res.error) {
                 backoffUntil = Date.now() + BACKOFF_MS;
-                return;
+                return log('server error', res.error);
             }
             content = res.content;
             remember(key, content);
-            if (mine !== seq) return;
+            log('answer', JSON.stringify(content));
+            if (mine !== seq) return log('drop: a newer request replaced this one');
         }
         const now = field.read();
-        if (!now || now.before !== at.before || now.after !== at.after) return;
+        if (!now || now.before !== at.before || now.after !== at.after) return log('drop: the text changed meanwhile');
         let text = postprocess(content, ctx);
         if (text && !field.multiline) text = text.split('\n')[0];
-        if (text && /\S/.test(text)) show(field, text, at);
+        if (!text || !/\S/.test(text)) return log('drop: nothing left after clean-up');
+        log('show', JSON.stringify(text));
+        show(field, text, at);
     }
 
     function schedule(field) {
@@ -327,13 +345,13 @@
         timer = setTimeout(() => request(field), DEBOUNCE_MS);
     }
 
-    document.addEventListener('input', (e) => {
+    // The field's text may have changed: shrink a ghost typed through, else clear it and ask again after a pause.
+    function changed(field) {
         if (!enabled) return;
-        const field = fieldFor(e.composedPath()[0]);
-        if (!field) return;
         if (ghost && ghost.field.el === field.el) {
             const g = ghost;
             const now = field.read();
+            if (now && now.before === g.before && now.after === g.after) return;
             const typed = now && now.after === g.after && now.before.startsWith(g.before) ? now.before.slice(g.before.length) : null;
             if (typed && g.text.startsWith(typed) && g.text.length > typed.length) {
                 ghost = { ...g, before: now.before, text: g.text.slice(typed.length) };
@@ -343,9 +361,41 @@
         }
         clear();
         schedule(field);
+    }
+
+    document.addEventListener('input', (e) => {
+        const field = fieldFor(e.composedPath()[0]);
+        if (field) changed(field);
+    }, true);
+
+    // Watches the focused rich editor, coalescing a burst of mutations into one check.
+    function observe(field) {
+        if (observed && observed.el === field.el) return;
+        if (observed) observed.observer.disconnect();
+        let queued = false;
+        const observer = new MutationObserver(() => {
+            if (queued) return;
+            queued = true;
+            queueMicrotask(() => {
+                queued = false;
+                if (document.activeElement === field.el || field.el.contains(document.activeElement)) changed(field);
+            });
+        });
+        observer.observe(field.el, { childList: true, characterData: true, subtree: true });
+        observed = { el: field.el, observer };
+    }
+
+    document.addEventListener('focusin', (e) => {
+        const field = fieldFor(e.composedPath()[0]);
+        if (field && !field.multiline) observe(field);
     }, true);
 
     window.addEventListener('keydown', (e) => {
+        // A field focused before bcoin loaded or was switched on never saw focusin.
+        if (enabled && !ghost) {
+            const field = fieldFor(e.composedPath()[0]);
+            if (field && !field.multiline) observe(field);
+        }
         if (!ghost) return;
         const target = e.composedPath()[0];
         if (target !== ghost.field.el && !ghost.field.el.contains(target)) return;

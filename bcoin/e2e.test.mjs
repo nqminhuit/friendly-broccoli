@@ -15,7 +15,16 @@ const CHROME = [process.env.CHROME, '/opt/google/chrome/chrome', '/usr/bin/googl
 const KEY = 'test-key';
 const MODEL = 'test-model';
 const PAGE = '<!doctype html><body><textarea id=t rows=6 cols=60></textarea><input id=i><input id=p type=password>'
-    + '<div id=r contenteditable style="width:420px;min-height:60px;border:1px solid #888;font:15px sans-serif"></div></body>';
+    + '<div id=r contenteditable style="width:420px;min-height:60px;border:1px solid #888;font:15px sans-serif"></div>'
+    // Like CKEditor 5: it inserts typed text itself from beforeinput, so no input event ever fires.
+    + '<div id=m contenteditable style="width:420px;min-height:60px;border:1px solid #888;white-space:pre-wrap"></div>'
+    + '<script>m.addEventListener("beforeinput", (e) => {'
+    + '  if (e.inputType !== "insertText") return;'
+    + '  e.preventDefault();'
+    + '  const sel = getSelection(), r = sel.getRangeAt(0), t = document.createTextNode(e.data);'
+    + '  r.deleteContents(); r.insertNode(t); r.setStartAfter(t); r.collapse(true);'
+    + '  sel.removeAllRanges(); sel.addRange(r);'
+    + '});</script></body>';
 // Fake model answers by the current line before the caret.
 const ANSWERS = { 'x = ': '1 + 2', 'y = ': 'x * 2', 'z = ': 'first\nsecond', 'tiếng ': 'Việt' };
 const PAUSE_MS = 700;
@@ -275,4 +284,15 @@ it('rich editor: only the first line of a suggestion, and context across paragra
     assert.equal(await ghostText(), 'first');
     await key('Escape', { vk: 27 });
     assert.equal(await ghostText(), null);
+});
+
+it('rich editor that types itself without input events, as CKEditor 5 does', async () => {
+    await reset('#m');
+    await type('#m', 'x = ');
+    await sleep(PAUSE_MS);
+    assert.equal(await ghostText(), '1 + 2');
+    await type('#m', '1');
+    assert.equal(await ghostText(), ' + 2');
+    await key('Tab', { vk: 9 });
+    assert.equal(await value('#m'), 'x = 1 + 2');
 });
