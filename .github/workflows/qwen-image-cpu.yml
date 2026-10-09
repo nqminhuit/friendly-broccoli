@@ -242,7 +242,7 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
-          cd "$OUT" 2>/dev/null || { echo "No output dir, nothing to summarise" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          cd "${OUT:-/nonexistent}" 2>/dev/null || { echo "No output dir, nothing to summarise" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
           na=n/a
           rc="$(cat exit.txt 2>/dev/null || echo "$na")"
           if [ -s out.png ] && [ "$rc" = 0 ]; then result="image produced"; else result="failed (exit code $rc)"; fi
@@ -299,14 +299,30 @@ jobs:
           fi
           exit 0
 
-      - name: Upload image
-        uses: actions/upload-artifact@v7
-        with:
-          name: qwen-image-cpu-out-${{ inputs.diffusion }}-${{ inputs.width }}x${{ inputs.height }}
-          path: ${{ runner.temp }}/out/out.png
-          archive: false
-          if-no-files-found: error
-          retention-days: 1
+      # Same BUCKET_* secrets as sec10v_reflection.yml. aws's stderr is swallowed: it would show the bucket and prefix.
+      - name: Upload image to the bucket
+        env:
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1   # MinIO accepts any region unless one is configured
+        run: |
+          set -euo pipefail
+          if [ -z "$BUCKET_S3_ENDPOINT" ] || [ -z "$BUCKET_S3_URI" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::bucket upload secrets not set (BUCKET_S3_ENDPOINT, BUCKET_S3_URI, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY)"
+            exit 1
+          fi
+          aws configure set default.s3.addressing_style path   # MinIO needs path-style
+          name="qwen-image-cpu/${GITHUB_RUN_ID}-${IN_DIFFUSION}-${IN_TEXT_ENCODER}-${IN_WIDTH}x${IN_HEIGHT}-${IN_STEPS}steps.png"
+          if err=$(aws s3 cp --endpoint-url "$BUCKET_S3_ENDPOINT" --only-show-errors \
+              --content-type image/png "$OUT/out.png" "${BUCKET_S3_URI%/}/${name}" 2>&1 </dev/null); then
+            echo "saved ${name}" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            code=$(printf '%s' "$err" | grep -o 'An error occurred ([A-Za-z]*)' | head -n1 || true)
+            echo "::error::could not save ${name}${code:+ — $code}"
+            exit 1
+          fi
 
       - name: Upload logs
         if: always()
