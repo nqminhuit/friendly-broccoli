@@ -66,7 +66,6 @@ env:
   SD_SHA256: 9ad35ed309dbe59f5e66f35edafac9a69e6cc233ea6b9577071feae829159d37
   HF_UC_BASE: https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/resolve/main
   HF_LLM_BASE: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main
-  IMAGE_ARTIFACT: qwen-image-cpu-image
 
 jobs:
   # No secrets here: this job runs sd-cli on third-party GGUF files, and its processes outlive the generate step.
@@ -326,7 +325,6 @@ jobs:
         id: image
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.IMAGE_ARTIFACT }}
           path: ${{ runner.temp }}/out/out.png
           archive: false
           if-no-files-found: error
