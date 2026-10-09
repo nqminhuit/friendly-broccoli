@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "bcoin",
-  "version": "0.1.1",
-  "description": "Inline fill-in-the-middle suggestions in textareas from a local llama.cpp server.",
+  "version": "0.2.0",
+  "description": "Inline fill-in-the-middle suggestions in textareas and rich editors from a local llama.cpp server.",
   "permissions": [
     "storage"
   ],

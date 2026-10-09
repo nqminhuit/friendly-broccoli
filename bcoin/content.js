@@ -1,5 +1,6 @@
-// Shows a FIM suggestion as grey ghost text in textareas after a typing pause, on sites switched on.
-// Tab accepts it, Ctrl+Right accepts a word, Esc dismisses, typing its next characters shrinks it.
+// Shows a FIM suggestion as grey ghost text after a typing pause, on sites switched on, in textareas and in
+// rich editors (contenteditable). Tab accepts it, Ctrl+Right accepts a word, Esc dismisses, typing its next
+// characters shrinks it.
 (() => {
     'use strict';
     const { buildContext, postprocess, nextWord } = globalThis.bcoinInfill;
@@ -11,12 +12,15 @@
     const IS_TOP = window === window.top;
     const SITE = topHost();
     const NAV_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown']);
+    // Code editors draw their own text and have their own completion.
+    const CODE_EDITORS = '.monaco-editor, .cm-editor, .CodeMirror, .ace_editor';
+    const BLOCK_RE = /^(?:ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DD|DIV|DL|DT|FIGCAPTION|FIGURE|FOOTER|H[1-6]|HEADER|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TR|UL)$/;
     const cache = new Map();
     let enabled = false;
     let timer = null;
     let seq = 0;
     let backoffUntil = 0;
-    // The visible suggestion: the field, its value and caret when shown, and the remaining text.
+    // The visible suggestion: its field, the text before and after the caret when shown, and the remaining text.
     let ghost = null;
     let overlay = null;
     let watcher = null;
@@ -83,8 +87,6 @@
         });
     }
 
-    const isTextarea = (el) => el instanceof HTMLTextAreaElement && !el.readOnly && !el.disabled;
-
     // An open @mention or #issue list owns Tab, so no ghost then.
     function autocompleteOpen(el) {
         if (el.getAttribute('aria-expanded') === 'true' || el.getAttribute('aria-activedescendant')) return true;
@@ -93,6 +95,164 @@
         const expander = el.closest('text-expander');
         if (expander) lists.push(expander.querySelector('[role="listbox"]'));
         return lists.some((l) => l && l.getClientRects().length > 0);
+    }
+
+    // The ghost's overlay: a host with an open shadow root (the tests read it) holding a fixed, click-through box.
+    function overlayBox() {
+        if (!overlay) {
+            const host = document.createElement('div');
+            host.setAttribute('data-bcoin', 'ghost');
+            const box = document.createElement('div');
+            host.attachShadow({ mode: 'open' }).append(box);
+            document.documentElement.append(host);
+            overlay = { host, box };
+        }
+        Object.assign(overlay.box.style, { position: 'fixed', pointerEvents: 'none', zIndex: '2147483647', margin: '0' });
+        return overlay.box;
+    }
+
+    const MIRRORED = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontVariant', 'fontStretch', 'lineHeight',
+                      'letterSpacing', 'wordSpacing', 'textIndent', 'textTransform', 'tabSize', 'textAlign', 'direction',
+                      'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth',
+                      'borderBottomWidth', 'borderLeftWidth', 'whiteSpace', 'overflowWrap', 'wordBreak', 'boxSizing'];
+
+    // A <textarea>: the text is its value, and the ghost is drawn in an invisible copy of the field laid over it,
+    // so it wraps the same way.
+    function textareaField(el) {
+        return {
+            el,
+            multiline: true,
+            read() {
+                const c = el.selectionStart;
+                if (c === null || c !== el.selectionEnd) return null;
+                return { before: el.value.slice(0, c), after: el.value.slice(c) };
+            },
+            insert(text) {
+                if (!document.execCommand('insertText', false, text)) {
+                    el.setRangeText(text, el.selectionStart, el.selectionEnd, 'end');
+                    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+                }
+            },
+            draw(g) {
+                const box = overlayBox();
+                const cs = getComputedStyle(el);
+                const r = el.getBoundingClientRect();
+                const borders = parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
+                const scrollbar = Math.max(0, el.offsetWidth - el.clientWidth - borders);
+                Object.assign(box.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`, overflow: 'hidden' });
+                const mirror = document.createElement('div');
+                const m = mirror.style;
+                for (const p of MIRRORED) m[p] = cs[p];
+                Object.assign(m, {
+                    position: 'absolute', left: `${-el.scrollLeft}px`, top: `${-el.scrollTop}px`, width: `${r.width}px`,
+                    boxSizing: 'border-box', borderStyle: 'solid', borderColor: 'transparent', color: 'transparent',
+                    paddingRight: `${parseFloat(cs.paddingRight) + scrollbar}px`, margin: '0',
+                });
+                if (cs.whiteSpace !== 'pre') m.whiteSpace = 'pre-wrap';
+                const text = document.createElement('span');
+                text.setAttribute('data-ghost', '');
+                text.textContent = g.text;
+                Object.assign(text.style, { color: cs.color, opacity: '0.45' });
+                mirror.append(g.before, text, g.after);
+                box.replaceChildren(mirror);
+            },
+        };
+    }
+
+    // The text of a DOM fragment, with a newline for <br> and between blocks; nbsp and zero-width marks normalized.
+    function fragmentText(frag) {
+        let s = '';
+        let pendingBreak = false;
+        const emit = (t) => {
+            if (pendingBreak && s && !s.endsWith('\n')) s += '\n';
+            pendingBreak = false;
+            s += t;
+        };
+        const walk = (n) => {
+            if (n.nodeType === Node.TEXT_NODE) {
+                const t = n.data.replace(/ /g, ' ').replace(/[​﻿]/g, '');
+                if (t) emit(t);
+            } else if (n.nodeName === 'BR') {
+                emit('\n');
+            } else if (n.nodeType === Node.ELEMENT_NODE || n.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+                const block = BLOCK_RE.test(n.nodeName);
+                if (block) pendingBreak = true;
+                for (const c of n.childNodes) walk(c);
+                if (block) pendingBreak = true;
+            }
+        };
+        walk(frag);
+        return s;
+    }
+
+    // A contenteditable editor: the text comes from the DOM around the selection, and the ghost is one line
+    // drawn at the caret, since chat editors send on Enter.
+    function richField(host) {
+        const caretRange = () => {
+            const sel = document.getSelection();
+            if (!sel || !sel.rangeCount || !sel.isCollapsed || !host.contains(sel.anchorNode)) return null;
+            return sel.getRangeAt(0);
+        };
+        return {
+            el: host,
+            multiline: false,
+            read() {
+                const caret = caretRange();
+                if (!caret) return null;
+                const head = document.createRange();
+                head.selectNodeContents(host);
+                head.setEnd(caret.startContainer, caret.startOffset);
+                const tail = document.createRange();
+                tail.selectNodeContents(host);
+                tail.setStart(caret.startContainer, caret.startOffset);
+                return { before: fragmentText(head.cloneContents()), after: fragmentText(tail.cloneContents()) };
+            },
+            // Slate and CKEditor take text only from beforeinput, which execCommand never fires; others take execCommand.
+            insert(text) {
+                const caret = caretRange();
+                if (!caret) return;
+                const target = caret.startContainer.nodeType === Node.TEXT_NODE ? caret.startContainer.parentElement : caret.startContainer;
+                const handled = !target.dispatchEvent(new InputEvent('beforeinput', {
+                    inputType: 'insertText', data: text, bubbles: true, cancelable: true, composed: true,
+                    targetRanges: [new StaticRange({ startContainer: caret.startContainer, startOffset: caret.startOffset,
+                                                     endContainer: caret.startContainer, endOffset: caret.startOffset })],
+                }));
+                if (!handled) document.execCommand('insertText', false, text);
+            },
+            draw(g) {
+                const caret = caretRange();
+                if (!caret) return;
+                const node = caret.startContainer.nodeType === Node.TEXT_NODE ? caret.startContainer.parentElement : caret.startContainer;
+                const cs = getComputedStyle(node);
+                let rect = caret.getClientRects()[0];
+                // An empty line has no caret rect, so use its block's content box.
+                if (!rect || (!rect.width && !rect.height)) {
+                    const r = node.getBoundingClientRect();
+                    const lineHeight = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
+                    rect = { left: r.left + parseFloat(cs.paddingLeft), top: r.top + parseFloat(cs.paddingTop), height: lineHeight };
+                }
+                const hostRect = host.getBoundingClientRect();
+                const box = overlayBox();
+                Object.assign(box.style, {
+                    left: `${rect.left}px`, top: `${rect.top}px`, height: `${rect.height}px`, lineHeight: `${rect.height}px`,
+                    maxWidth: `${Math.max(0, hostRect.right - rect.left)}px`, overflow: 'hidden', whiteSpace: 'pre',
+                    textOverflow: 'ellipsis', font: cs.font, letterSpacing: cs.letterSpacing, color: cs.color, opacity: '0.45',
+                });
+                const text = document.createElement('span');
+                text.setAttribute('data-ghost', '');
+                text.textContent = g.text;
+                box.replaceChildren(text);
+            },
+        };
+    }
+
+    // The field the event target belongs to, or null where bcoin stays out (inputs, password fields, code editors).
+    function fieldFor(el) {
+        if (el instanceof HTMLTextAreaElement) return el.readOnly || el.disabled ? null : textareaField(el);
+        if (!(el instanceof HTMLElement) || !el.isContentEditable || el.closest(CODE_EDITORS)) return null;
+        let host = el;
+        while (host.parentElement && host.parentElement.isContentEditable) host = host.parentElement;
+        return richField(host);
     }
 
     function clear() {
@@ -104,64 +264,19 @@
     }
 
     function snapshotHolds(g) {
-        const el = g.el;
-        return document.activeElement === el && el.value === g.value
-            && el.selectionStart === g.caret && el.selectionEnd === g.caret;
+        if (document.activeElement !== g.field.el && !g.field.el.contains(document.activeElement)) return false;
+        const now = g.field.read();
+        return !!now && now.before === g.before && now.after === g.after;
     }
 
-    const MIRRORED = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontVariant', 'fontStretch', 'lineHeight',
-                      'letterSpacing', 'wordSpacing', 'textIndent', 'textTransform', 'tabSize', 'textAlign', 'direction',
-                      'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth',
-                      'borderBottomWidth', 'borderLeftWidth', 'whiteSpace', 'overflowWrap', 'wordBreak', 'boxSizing'];
-
-    // Draws the field's text, invisible, over the field with the ghost in grey at the caret, so it wraps alike.
-    function render() {
-        const el = ghost.el;
-        if (!overlay) {
-            const host = document.createElement('div');
-            host.setAttribute('data-bcoin', 'ghost');
-            const root = host.attachShadow({ mode: 'open' });
-            const box = document.createElement('div');
-            const mirror = document.createElement('div');
-            const before = document.createElement('span');
-            const text = document.createElement('span');
-            const after = document.createElement('span');
-            mirror.append(before, text, after);
-            box.append(mirror);
-            root.append(box);
-            document.documentElement.append(host);
-            overlay = { host, box, mirror, before, text, after };
-        }
-        const cs = getComputedStyle(el);
-        const r = el.getBoundingClientRect();
-        const borders = parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
-        const scrollbar = Math.max(0, el.offsetWidth - el.clientWidth - borders);
-        Object.assign(overlay.box.style, {
-            position: 'fixed', left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`,
-            overflow: 'hidden', pointerEvents: 'none', zIndex: '2147483647', margin: '0',
-        });
-        const m = overlay.mirror.style;
-        for (const p of MIRRORED) m[p] = cs[p];
-        Object.assign(m, {
-            position: 'absolute', left: `${-el.scrollLeft}px`, top: `${-el.scrollTop}px`, width: `${r.width}px`,
-            boxSizing: 'border-box', borderStyle: 'solid', borderColor: 'transparent', color: 'transparent',
-            paddingRight: `${parseFloat(cs.paddingRight) + scrollbar}px`, margin: '0',
-        });
-        if (cs.whiteSpace !== 'pre') m.whiteSpace = 'pre-wrap';
-        overlay.before.textContent = ghost.value.slice(0, ghost.caret);
-        overlay.text.textContent = ghost.text;
-        Object.assign(overlay.text.style, { color: cs.color, opacity: '0.45' });
-        overlay.after.textContent = ghost.value.slice(ghost.caret);
-    }
-
-    function show(el, text) {
+    function show(field, text, at) {
         clear();
-        ghost = { el, value: el.value, caret: el.selectionStart, text };
-        render();
-        // Pages can change the value without an input event, and fields move as they grow or scroll.
+        ghost = { field, before: at.before, after: at.after, text };
+        field.draw(ghost);
+        // Pages can change the text without an input event, and fields move as they grow or scroll.
         watcher = setInterval(() => {
             if (!ghost || !snapshotHolds(ghost)) clear();
-            else render();
+            else ghost.field.draw(ghost);
         }, WATCH_MS);
     }
 
@@ -171,15 +286,14 @@
         if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value);
     }
 
-    async function request(el) {
-        if (!enabled || document.activeElement !== el || !isTextarea(el) || Date.now() < backoffUntil) return;
-        const caret = el.selectionStart;
-        if (caret !== el.selectionEnd || autocompleteOpen(el)) return;
-        const ctx = buildContext(el.value, caret);
+    async function request(field) {
+        if (!enabled || Date.now() < backoffUntil || autocompleteOpen(field.el)) return;
+        const at = field.read();
+        if (!at) return;
+        const ctx = buildContext(at.before + at.after, at.before.length);
         // The overlay cannot push text aside, so only suggest at the end of a line.
         if (/\S/.test(ctx.textAfter)) return;
         const key = `${ctx.prefix}\x1e${ctx.middle}\x1e${ctx.suffix}`;
-        const value = el.value;
         let content = cache.get(key);
         if (content === undefined) {
             const mine = ++seq;
@@ -201,51 +315,40 @@
             remember(key, content);
             if (mine !== seq) return;
         }
-        if (document.activeElement !== el || el.value !== value || el.selectionStart !== caret || el.selectionEnd !== caret) return;
-        const text = postprocess(content, ctx);
-        if (text) show(el, text);
+        const now = field.read();
+        if (!now || now.before !== at.before || now.after !== at.after) return;
+        let text = postprocess(content, ctx);
+        if (text && !field.multiline) text = text.split('\n')[0];
+        if (text && /\S/.test(text)) show(field, text, at);
     }
 
-    function schedule(el) {
+    function schedule(field) {
         clearTimeout(timer);
-        timer = setTimeout(() => request(el), DEBOUNCE_MS);
-    }
-
-    function insert(el, text) {
-        el.focus();
-        if (!document.execCommand('insertText', false, text)) {
-            const at = el.selectionStart;
-            el.setRangeText(text, at, el.selectionEnd, 'end');
-            el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-        }
+        timer = setTimeout(() => request(field), DEBOUNCE_MS);
     }
 
     document.addEventListener('input', (e) => {
-        const el = e.composedPath()[0];
-        if (!enabled || !isTextarea(el)) return;
-        if (ghost && ghost.el === el) {
+        if (!enabled) return;
+        const field = fieldFor(e.composedPath()[0]);
+        if (!field) return;
+        if (ghost && ghost.field.el === field.el) {
             const g = ghost;
-            const caret = el.selectionStart;
-            const typed = el.value.slice(g.caret, caret);
-            const typedThrough = caret > g.caret && el.selectionEnd === caret
-                && el.value.length - g.value.length === typed.length
-                && el.value.slice(0, g.caret) === g.value.slice(0, g.caret)
-                && el.value.slice(caret) === g.value.slice(g.caret)
-                && g.text.startsWith(typed);
-            if (typedThrough && g.text.length > typed.length) {
-                ghost = { el, value: el.value, caret, text: g.text.slice(typed.length) };
-                render();
+            const now = field.read();
+            const typed = now && now.after === g.after && now.before.startsWith(g.before) ? now.before.slice(g.before.length) : null;
+            if (typed && g.text.startsWith(typed) && g.text.length > typed.length) {
+                ghost = { ...g, before: now.before, text: g.text.slice(typed.length) };
+                g.field.draw(ghost);
                 return;
             }
         }
         clear();
-        schedule(el);
+        schedule(field);
     }, true);
 
     window.addEventListener('keydown', (e) => {
         if (!ghost) return;
-        const el = ghost.el;
-        if (e.composedPath()[0] !== el) return;
+        const target = e.composedPath()[0];
+        if (target !== ghost.field.el && !ghost.field.el.contains(target)) return;
         if (!snapshotHolds(ghost)) {
             clear();
             return;
@@ -253,7 +356,7 @@
         const plain = !e.altKey && !e.metaKey && !e.shiftKey;
         let accept = null;
         if (e.key === 'Tab' && plain && !e.ctrlKey) {
-            if (autocompleteOpen(el)) {
+            if (autocompleteOpen(ghost.field.el)) {
                 clear();
                 return;
             }
@@ -272,10 +375,10 @@
         e.preventDefault();
         e.stopImmediatePropagation();
         // The input event then shrinks the ghost by what went in, or asks again after a full accept.
-        insert(el, accept);
+        ghost.field.insert(accept);
     }, true);
 
     for (const type of ['mousedown', 'focusout']) document.addEventListener(type, () => clear(), true);
-    document.addEventListener('scroll', () => { if (ghost) render(); }, true);
+    document.addEventListener('scroll', () => { if (ghost) ghost.field.draw(ghost); }, true);
     window.addEventListener('resize', () => clear());
 })();
