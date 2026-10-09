@@ -73,12 +73,18 @@ before(async () => {
     if (!CHROME) return;
     server = http.createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end(PAGE); }).listen(WEB_PORT);
     profile = fs.mkdtempSync(path.join(os.tmpdir(), 'vtelex-e2e-'));
+    // Some runner images block Chrome's sandbox (AppArmor user namespaces), so CI runs without it.
+    const sandbox = process.env.CI ? ['--no-sandbox'] : [];
     chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${profile}`,
-                            '--no-first-run', '--enable-unsafe-extension-debugging', 'about:blank'], { stdio: 'ignore' });
+                            '--no-first-run', '--enable-unsafe-extension-debugging', ...sandbox, 'about:blank'],
+                   { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    chrome.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });
     let version;
-    for (let i = 0; i < 50 && !version; i++) {
+    for (let i = 0; i < 150 && !version && chrome.exitCode === null; i++) {
         try { version = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json(); } catch { await sleep(200); }
     }
+    if (!version) throw new Error(`Chrome did not start (exit ${chrome.exitCode}):\n${stderr}`);
     ws = new WebSocket(version.webSocketDebuggerUrl);
     await new Promise((r) => { ws.onopen = r; });
     ws.onmessage = (m) => {
@@ -94,11 +100,17 @@ before(async () => {
 
 after(async () => {
     if (!CHROME) return;
-    server.close();
-    const exited = new Promise((r) => chrome.once('exit', r));
-    await send('Browser.close');
-    ws.close();
-    await exited;
+    if (server) server.close();
+    if (chrome && chrome.exitCode === null) {
+        const exited = new Promise((r) => chrome.once('exit', r));
+        // Not awaited: a wedged Chrome may never answer, and the kill below covers that.
+        if (ws && ws.readyState === WebSocket.OPEN) send('Browser.close');
+        else chrome.kill();
+        const killer = setTimeout(() => chrome.kill('SIGKILL'), 5000);
+        await exited;
+        clearTimeout(killer);
+    }
+    if (ws) ws.close();
     // Helper processes can still be writing the profile; it is only a temp dir.
     try {
         fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
