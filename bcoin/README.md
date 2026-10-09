@@ -7,7 +7,7 @@ Browser COpilot INline: grey ghost-text suggestions in Brave/Chrome textareas fr
 Download the latest release into `~/.local/share/bcoin` (on the owner's machines, `./lazarus.sh bcoin` from linux-config does the same):
 
 ```sh
-tag=$(curl -fsSL 'https://api.github.com/repos/nqminhuit/friendly-broccoli/releases?per_page=100' | jq -r '[.[].tag_name | select(startswith("bcoin-"))][0]')
+tag=$(curl -fsSL https://github.com/nqminhuit/friendly-broccoli/releases.atom | grep -o 'releases/tag/bcoin-v[^"<]*' | head -n 1 | sed 's|releases/tag/||')
 curl -fsSL -o /tmp/bcoin.zip "https://github.com/nqminhuit/friendly-broccoli/releases/download/$tag/bcoin.zip"
 rm -rf ~/.local/share/bcoin && unzip -q /tmp/bcoin.zip -d ~/.local/share/bcoin
 ```

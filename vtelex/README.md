@@ -7,7 +7,7 @@ Vietnamese telex typing for Brave/Chrome as a browser extension, so no system in
 Download the latest release into `~/.local/share/vtelex` (on the owner's machines, `./lazarus.sh vtelex` from linux-config does the same):
 
 ```sh
-tag=$(curl -fsSL 'https://api.github.com/repos/nqminhuit/friendly-broccoli/releases?per_page=100' | jq -r '[.[].tag_name | select(startswith("vtelex-"))][0]')
+tag=$(curl -fsSL https://github.com/nqminhuit/friendly-broccoli/releases.atom | grep -o 'releases/tag/vtelex-v[^"<]*' | head -n 1 | sed 's|releases/tag/||')
 curl -fsSL -o /tmp/vtelex.zip "https://github.com/nqminhuit/friendly-broccoli/releases/download/$tag/vtelex.zip"
 rm -rf ~/.local/share/vtelex && unzip -q /tmp/vtelex.zip -d ~/.local/share/vtelex
 ```
