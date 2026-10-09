@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A personal automation repo with no application code and no local build/test system. It builds tools from source inside containerized environments via GitHub Actions, publishes the results as images to `docker.io/nqminhuit/*`, and the owner later pulls an image with **podman** (not docker) and copies the binary out to the local machine. All work happens in `.github/workflows/` and `containers/`.
 
+The one exception is `vtelex/`, a browser extension for Vietnamese telex typing (plain JavaScript, no build). It has node tests (`node --test vtelex/telex.test.js vtelex/macros.test.js`), and `.github/workflows/vtelex.yml` tests every change and, on master, releases `vtelex-v<manifest version>` with `vtelex.zip` once per version. See `vtelex/README.md`.
+
 ## Commands
 
 There is nothing to build, lint, or test locally. Everything runs through manually dispatched workflows:
