@@ -62,15 +62,15 @@ env:
   IN_VAE_TILING: ${{ inputs.vae_tiling }}
   # Hardcoded and benign: run inputs and logs of a public repo are public.
   PROMPT: A red lighthouse on a rocky coast at dusk, calm sea, soft warm light
-  SD_URL: https://github.com/leejet/stable-diffusion.cpp/releases/download/master-929-3f8527a/sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64.zip
-  SD_SHA256: 9ad35ed309dbe59f5e66f35edafac9a69e6cc233ea6b9577071feae829159d37
+  SD_REPO: https://github.com/leejet/stable-diffusion.cpp.git
+  SD_COMMIT: 3f8527a46c54ecf4cb4ed6003da8e8982283c73c
   HF_UC_BASE: https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/resolve/main
   HF_LLM_BASE: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main
 
 jobs:
   # No secrets here: this job runs sd-cli on third-party GGUF files, and its processes outlive the generate step.
   probe:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 330
     permissions:
       contents: read
@@ -95,6 +95,9 @@ jobs:
           mkdir -p "$OUT"
           echo "OUT=$OUT" >> "$GITHUB_ENV"
           {
+            echo "os: $(. /etc/os-release; echo "$PRETTY_NAME")"
+            echo "gcc: $(gcc --version | head -1)"
+            echo "sd_commit: $SD_COMMIT"
             echo "nproc: $(nproc)"
             echo "cpu: $(lscpu | sed -n 's/^Model name:[[:space:]]*//p')"
             echo "threads_per_core: $(lscpu | sed -n 's/^Thread(s) per core:[[:space:]]*//p')"
@@ -107,7 +110,7 @@ jobs:
             echo "--- swapon"
             swapon --show
             echo "--- df"
-            df -h / /mnt
+            df -h / $(mountpoint -q /mnt && echo /mnt)
           } | tee "$OUT/facts.txt"
 
       - name: Pick models and directory
@@ -142,11 +145,13 @@ jobs:
           # The runner's default swapfile lives on /mnt; drop it to free space and get clean swap numbers.
           sudo swapoff -a
           sudo rm -f /mnt/swapfile
-          sudo mkdir -p /mnt
-          sudo chown "$USER" /mnt
           free_gb() { df -BG --output=avail "$1" | tail -1 | tr -dc '0-9'; }
           best="$RUNNER_TEMP"
-          if [ "$(free_gb /mnt)" -gt "$(free_gb "$RUNNER_TEMP")" ]; then best=/mnt; fi
+          # Only a separate disk mounted at /mnt is worth considering; on a plain directory it is the same filesystem.
+          if mountpoint -q /mnt; then
+            sudo chown "$USER" /mnt
+            if [ "$(free_gb /mnt)" -gt "$(free_gb "$RUNNER_TEMP")" ]; then best=/mnt; fi
+          fi
           avail="$(free_gb "$best")"
           echo "Chosen: $best with ${avail} GB free, models need about ${need} GB"
           if [ "$avail" -lt "$need" ]; then
@@ -156,22 +161,35 @@ jobs:
           mkdir -p "$best/models"
           echo "MODELS_DIR=$best/models" >> "$GITHUB_ENV"
 
-      - name: Install stable-diffusion.cpp (CPU build)
+      # Upstream ships Linux binaries for Ubuntu 24.04 only, so build the pinned commit here. Same flags as its CPU release.
+      - name: Build stable-diffusion.cpp (CPU)
         run: |
           set -euo pipefail
-          zipdir="$RUNNER_TEMP/sd-zip"
-          mkdir -p "$zipdir"
-          curl --fail --location --show-error --retry 3 -o "$zipdir/sd.zip" "$SD_URL"
-          echo "$SD_SHA256  $zipdir/sd.zip" | sha256sum -c -
-          unzip -q "$zipdir/sd.zip" -d "$zipdir/x"
-          cli="$(find "$zipdir/x" -name sd-cli -type f | head -1)"
-          [ -n "$cli" ] || { echo "::error::sd-cli not found in the zip"; exit 1; }
-          # Keep neighbouring ggml CPU variant .so files together with the binary.
-          cp -r "$(dirname "$cli")" "$RUNNER_TEMP/sd"
-          chmod +x "$RUNNER_TEMP/sd/sd-cli"
+          src="$RUNNER_TEMP/sd-src"
+          mkdir -p "$src"
+          git -C "$src" init -q
+          git -C "$src" remote add origin "$SD_REPO"
+          git -C "$src" fetch -q --depth 1 origin "$SD_COMMIT"
+          git -C "$src" checkout -q FETCH_HEAD
+          [ "$(git -C "$src" rev-parse HEAD)" = "$SD_COMMIT" ] || { echo "::error::checked out commit is not $SD_COMMIT"; exit 1; }
+          # The server frontend submodule is skipped: sd-cli does not need it, so neither Node nor pnpm is required.
+          git -C "$src" submodule update --init --recursive --depth 1 -- ggml thirdparty/libwebp thirdparty/libwebm
+
+          cmake -S "$src" -B "$src/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSD_BUILD_SHARED_LIBS=ON -DSD_BUILD_SHARED_GGML_LIB=ON \
+            -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON '-DCMAKE_INSTALL_RPATH=$ORIGIN'
+          cmake --build "$src/build" --target sd-cli -j "$(nproc)"
+
+          # bin/ also holds the libggml-cpu-*.so backends that sd-cli loads at run time.
+          mkdir -p "$RUNNER_TEMP/sd"
+          cp -a "$src/build/bin/." "$RUNNER_TEMP/sd/"
+          rm -rf "$src"
           echo "SD=$RUNNER_TEMP/sd" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/sd/sd-cli" --version
-          "$RUNNER_TEMP/sd/sd-cli" --list-devices
+          devices="$("$RUNNER_TEMP/sd/sd-cli" --list-devices)"
+          echo "$devices"
+          grep -q '^CPU' <<< "$devices" || { echo "::error::sd-cli lists no CPU device"; exit 1; }
 
       - name: Download models
         run: |
@@ -195,11 +213,11 @@ jobs:
           if [ "$((10#$IN_SWAP_GB))" -gt 0 ]; then
             n="$((10#$IN_SWAP_GB))"
             free_gb() { df -BG --output=avail "$1" | tail -1 | tr -dc '0-9'; }
-            swapfile=/mnt/swapfile-test
-            if [ "$(free_gb /mnt)" -lt "$((n + 1))" ]; then
-              swapfile="$MODELS_DIR/swapfile-test"
-              [ "$(free_gb "$MODELS_DIR")" -ge "$((n + 1))" ] || { echo "::error::No filesystem has ${n} GB free for swap"; exit 1; }
+            swapfile="$MODELS_DIR/swapfile-test"
+            if mountpoint -q /mnt && [ "$(free_gb /mnt)" -ge "$((n + 1))" ]; then
+              swapfile=/mnt/swapfile-test
             fi
+            [ "$(free_gb "$(dirname "$swapfile")")" -ge "$((n + 1))" ] || { echo "::error::No filesystem has ${n} GB free for swap"; exit 1; }
             sudo fallocate -l "${n}G" "$swapfile"
             sudo chmod 600 "$swapfile"
             sudo mkswap "$swapfile"
@@ -270,6 +288,9 @@ jobs:
           cps="$(sed -n 's/^cores_per_socket: //p' facts.txt 2>/dev/null)"; : "${cps:=$na}"
           sockets="$(sed -n 's/^sockets: //p' facts.txt 2>/dev/null)"; : "${sockets:=$na}"
           threads_used="$(cat threads.txt 2>/dev/null || echo "$na")"
+          os="$(sed -n 's/^os: //p' facts.txt 2>/dev/null)"; : "${os:=$na}"
+          gccv="$(sed -n 's/^gcc: //p' facts.txt 2>/dev/null)"; : "${gccv:=$na}"
+          sdc="$(sed -n 's/^sd_commit: //p' facts.txt 2>/dev/null)"; : "${sdc:=$na}"
           nproc_v="$(sed -n 's/^nproc: //p' facts.txt 2>/dev/null)"; : "${nproc_v:=$na}"
           avx2="$(sed -n 's/^avx2: //p' facts.txt 2>/dev/null)"; : "${avx2:=$na}"
           avx512="$(sed -n 's/^avx512f: //p' facts.txt 2>/dev/null)"; : "${avx512:=$na}"
@@ -298,6 +319,7 @@ jobs:
             echo "| --- | --- |"
             echo "| Result | $result |"
             echo "| Runner | nproc $nproc_v, cores $cps x threads/core $tpc x sockets $sockets, $cpu, avx2 $avx2, avx512f $avx512, MemTotal $memtotal |"
+            echo "| Build | $os, $gccv, sd.cpp ${sdc:0:7} built from source |"
             echo "| Inputs | diffusion $IN_DIFFUSION, text encoder $IN_TEXT_ENCODER, ${IN_WIDTH}x${IN_HEIGHT}, steps $IN_STEPS, threads $threads_used, swap ${IN_SWAP_GB} GB, mmap $IN_MMAP, fa $IN_FA, vae tiling $IN_VAE_TILING |"
             echo "| Wall time | $wall |"
             echo "| Max RSS | $rss |"
@@ -349,7 +371,7 @@ jobs:
   upload:
     needs: probe
     if: needs.probe.result == 'success'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       actions: write   # to delete the image artifact afterwards
