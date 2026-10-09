@@ -1,0 +1,45 @@
+name: bcoin
+
+# Tests every bcoin change; on master, publishes bcoin-v<manifest version> once per version.
+on:
+  push:
+    branches: [master]
+    paths: ["bcoin/**", "vtelex/**", ".github/workflows/bcoin.yml"]
+  pull_request:
+    paths: ["bcoin/**", "vtelex/**", ".github/workflows/bcoin.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: node --test bcoin/infill.test.js
+      # The runner image ships Google Chrome, so this loads the real extension.
+      - run: node --test bcoin/e2e.test.mjs
+
+  release:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Publish the manifest version unless it is already released
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r .version bcoin/manifest.json)
+          tag="bcoin-v$version"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "$tag is already released"
+            exit 0
+          fi
+          (cd bcoin && zip -q ../bcoin.zip manifest.json ./*.js ./*.html -x '*.test.js')
+          gh release create "$tag" bcoin.zip --target "$GITHUB_SHA" --title "bcoin $version" \
+            --notes "Unzip and load unpacked in brave://extensions. See bcoin/README.md."

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bcoin settings</title>
+<style>
+  :root { color-scheme: light dark; font: 14px system-ui, sans-serif; }
+  body { margin: 16px; min-width: 440px; }
+  label { display: block; margin: 0 0 10px; }
+  label span { display: block; margin-bottom: 3px; opacity: 0.8; }
+  input { box-sizing: border-box; width: 100%; font: 13px ui-monospace, monospace; padding: 4px 6px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .pair { display: flex; gap: 12px; }
+  .pair label { flex: 1; }
+  #status { opacity: 0.85; }
+</style>
+</head>
+<body>
+<label><span>llama.cpp server URL (http on 127.0.0.1 or localhost)</span><input id="url" placeholder="http://127.0.0.1:8012"></label>
+<label><span>API key (empty if the server has none)</span><input id="key" type="password" autocomplete="off"></label>
+<label><span>Model (needed when the server routes several models)</span><input id="model" placeholder="Seed-Coder-8B-Base.Q4_K_M.gguf"></label>
+<div class="pair">
+  <label><span>Max tokens</span><input id="nPredict" type="number" min="1" max="1024"></label>
+  <label><span>Stop at next newline after (ms)</span><input id="tMaxPredictMs" type="number" min="0" max="10000"></label>
+</div>
+<div class="row">
+  <button id="save">Save</button>
+  <button id="test">Test connection</button>
+  <span id="status"></span>
+</div>
+<script src="options.js"></script>
+</body>
+</html>

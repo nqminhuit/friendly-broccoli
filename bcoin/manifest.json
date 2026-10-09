@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "bcoin",
+  "version": "0.1.0",
+  "description": "Inline fill-in-the-middle suggestions in textareas from a local llama.cpp server.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "bcoin"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "commands": {
+    "toggle-bcoin": {
+      "suggested_key": {
+        "default": "Alt+Shift+C"
+      },
+      "description": "Toggle suggestions on this site"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "all_frames": true,
+      "match_about_blank": true,
+      "run_at": "document_idle",
+      "js": [
+        "infill.js",
+        "content.js"
+      ]
+    }
+  ]
+}
