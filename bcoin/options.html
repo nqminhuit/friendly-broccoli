@@ -29,6 +29,7 @@
   <label><span>Max tokens</span><input id="nPredict" type="number" min="1" max="1024"></label>
   <label><span>Stop at next newline after (ms)</span><input id="tMaxPredictMs" type="number" min="0" max="10000"></label>
 </div>
+<label class="check"><input id="pageContext" type="checkbox"> Page context: also send the page's visible text above the field (up to 4000 characters), such as the chat so far</label>
 <label class="check"><input id="debug" type="checkbox"> Debug: log why a suggestion did or did not show to the page console (F12)</label>
 <div class="row">
   <button id="save">Save</button>
