@@ -2,7 +2,7 @@
 // and shows each tab's state on the badge.
 const SETTINGS = 'settings';
 const TOGGLE_COMMAND = 'toggle-bcoin';
-const DEFAULT_SETTINGS = { url: 'http://127.0.0.1:8012', key: '', model: '', nPredict: 128, tMaxPredictMs: 250, debug: false };
+const DEFAULT_SETTINGS = { url: 'http://127.0.0.1:8012', key: '', model: '', nPredict: 128, tMaxPredictMs: 250, debug: false, pageContext: false };
 // Loading or waking a model takes seconds; only a newer request cuts an older one short.
 const REQUEST_TIMEOUT_MS = 120000;
 const LOOPBACK_RE = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d{1,5})?\/?$/;
@@ -35,7 +35,8 @@ async function infill(tabId, ctx) {
         input_prefix: ctx.prefix,
         input_suffix: ctx.suffix,
         prompt: ctx.middle,
-        input_extra: [],
+        // llama.cpp puts these chunks before the code context, as it does for other files of a project.
+        input_extra: ctx.extra ? [{ filename: 'page', text: ctx.extra }] : [],
         n_predict: s.nPredict,
         n_indent: ctx.nIndent,
         t_max_predict_ms: s.tMaxPredictMs,

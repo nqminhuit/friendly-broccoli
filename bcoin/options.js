@@ -1,6 +1,6 @@
 // Edits the server settings in chrome.storage.local; the background script reads them per request.
 const SETTINGS = 'settings';
-const DEFAULT_SETTINGS = { url: 'http://127.0.0.1:8012', key: '', model: '', nPredict: 128, tMaxPredictMs: 250, debug: false };
+const DEFAULT_SETTINGS = { url: 'http://127.0.0.1:8012', key: '', model: '', nPredict: 128, tMaxPredictMs: 250, debug: false, pageContext: false };
 const LOOPBACK_RE = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d{1,5})?\/?$/;
 const FIELDS = Object.keys(DEFAULT_SETTINGS);
 const status = document.getElementById('status');

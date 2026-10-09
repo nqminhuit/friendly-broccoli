@@ -28,6 +28,10 @@
     // Rich editors such as CKEditor 5 apply some typing themselves, without an input event, so their DOM is watched.
     let observed = null;
     let debug = false;
+    // With the Page context option, the visible page text above the field goes along as extra context.
+    let pageContext = false;
+    const PAGE_CONTEXT_CHARS = 4000;
+    const SKIPPED_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'SELECT', 'OPTION']);
 
     // With the Debug option, explains in the page console why a suggestion did or did not show.
     const log = (...args) => { if (debug) console.info('[bcoin]', ...args); };
@@ -56,14 +60,19 @@
         report();
     }
 
+    function applySettings(settings) {
+        debug = !!(settings && settings.debug);
+        pageContext = !!(settings && settings.pageContext);
+    }
+
     chrome.storage.local.get([SITES, SETTINGS], (r) => {
         setEnabled(r[SITES]);
-        debug = !!(r[SETTINGS] && r[SETTINGS].debug);
+        applySettings(r[SETTINGS]);
     });
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local') return;
         if (changes[SITES]) setEnabled(changes[SITES].newValue);
-        if (changes[SETTINGS]) debug = !!(changes[SETTINGS].newValue && changes[SETTINGS].newValue.debug);
+        if (changes[SETTINGS]) applySettings(changes[SETTINGS].newValue);
     });
 
     let toastHost = null;
@@ -260,6 +269,29 @@
         };
     }
 
+    // The visible text before the field in reading order, its last PAGE_CONTEXT_CHARS characters: in a chat, the
+    // latest messages above the box. Walks back from the field, so long pages cost no more than the cap.
+    function pageText(field) {
+        const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+        walker.currentNode = field;
+        const parts = [];
+        let length = 0;
+        let lastBlock = null;
+        for (let node = walker.previousNode(); node && length < PAGE_CONTEXT_CHARS; node = walker.previousNode()) {
+            const parent = node.parentElement;
+            if (!parent || SKIPPED_TAGS.has(parent.tagName) || parent.closest('[data-bcoin]')) continue;
+            const text = node.data.replace(/\u00a0/g, ' ').replace(/\p{Cf}/gu, '').replace(/\s+/g, ' ');
+            if (!text.trim() || !parent.checkVisibility()) continue;
+            let block = parent;
+            while (block.parentElement && !BLOCK_RE.test(block.tagName)) block = block.parentElement;
+            parts.unshift(block === lastBlock ? text : text + '\n');
+            lastBlock = block;
+            length += text.length + 1;
+        }
+        const all = parts.join('').replace(/ *\n */g, '\n').replace(/\n{2,}/g, '\n').trim();
+        return all.slice(-PAGE_CONTEXT_CHARS);
+    }
+
     // The field the event target belongs to, or null where bcoin stays out (inputs, password fields, code editors).
     function fieldFor(el) {
         if (el instanceof HTMLTextAreaElement) return el.readOnly || el.disabled ? null : textareaField(el);
@@ -327,16 +359,17 @@
         const ctx = buildContext(at.before + at.after, at.before.length);
         // The overlay cannot push text aside, so only suggest at the end of a line.
         if (/\S/.test(ctx.textAfter)) return log('skip: text after the caret on this line', JSON.stringify(ctx.textAfter));
-        const key = `${ctx.prefix}\x1e${ctx.middle}\x1e${ctx.suffix}`;
+        const extra = pageContext ? pageText(field.el) : '';
+        const key = `${extra}\x1e${ctx.prefix}\x1e${ctx.middle}\x1e${ctx.suffix}`;
         let content = cache.get(key);
         if (content === undefined) {
             const mine = ++seq;
-            log('request', { prompt: ctx.middle, prefixChars: ctx.prefix.length, suffixChars: ctx.suffix.length });
+            log('request', { prompt: ctx.middle, prefixChars: ctx.prefix.length, suffixChars: ctx.suffix.length, pageChars: extra.length });
             let res;
             try {
                 res = await chrome.runtime.sendMessage({
                     type: 'infill',
-                    ctx: { prefix: ctx.prefix, middle: ctx.middle, suffix: ctx.suffix, nIndent: ctx.nIndent },
+                    ctx: { prefix: ctx.prefix, middle: ctx.middle, suffix: ctx.suffix, nIndent: ctx.nIndent, extra },
                 });
             } catch {
                 return;

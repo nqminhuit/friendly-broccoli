@@ -14,7 +14,9 @@ const VTELEX = path.join(HERE, '..', 'vtelex');
 const CHROME = [process.env.CHROME, '/opt/google/chrome/chrome', '/usr/bin/google-chrome'].find((p) => p && fs.existsSync(p));
 const KEY = 'test-key';
 const MODEL = 'test-model';
-const PAGE = '<!doctype html><body><textarea id=t rows=6 cols=60></textarea><input id=i><input id=p type=password>'
+const PAGE = '<!doctype html><body>'
+    + '<div id=chat><p><b>Alice</b>: lunch at noon?</p><p>Bob: sure</p><p style="display:none">SECRET</p></div>'
+    + '<textarea id=t rows=6 cols=60></textarea><input id=i><input id=p type=password>'
     + '<div id=r contenteditable style="width:420px;min-height:60px;border:1px solid #888;font:15px sans-serif"></div>'
     // Like CKEditor 5: it inserts typed text itself from beforeinput, so no input event ever fires.
     + '<div id=m contenteditable style="width:420px;min-height:60px;border:1px solid #888;white-space:pre-wrap"></div>'
@@ -34,7 +36,7 @@ const PAGE = '<!doctype html><body><textarea id=t rows=6 cols=60></textarea><inp
     + '  tick.textContent = String(n++);'
     + '  const f = c.querySelector("b");'
     + '  if (f) f.remove(); else { const b = document.createElement("b"); b.textContent = "\\u2060"; c.querySelector("br").before(b); }'
-    + '}, 120);</script></body>';
+    + '}, 120);</script><p>AFTER-TEXT</p></body>';
 // Fake model answers by the current line before the caret.
 const ANSWERS = { 'x = ': '1 + 2', 'y = ': 'x * 2', 'z = ': 'first\nsecond', 'tiếng ': 'Việt' };
 const PAUSE_MS = 700;
@@ -65,6 +67,7 @@ async function attach(match) {
     return (await send('Target.attachToTarget', { targetId: target.targetId, flatten: true })).result.sessionId;
 }
 
+const settingsJs = (pageContext) => `chrome.storage.local.set({ settings: { url: '${site}', key: '${KEY}', model: '${MODEL}', nPredict: 64, tMaxPredictMs: 250, pageContext: ${pageContext} } })`;
 const toggle = (worker) => evaluate(worker, `(async () => {
     const [tab] = await chrome.tabs.query({});
     await chrome.tabs.sendMessage(tab.id, { type: 'toggle' }, { frameId: 0 });
@@ -150,7 +153,7 @@ before(async () => {
     await sleep(1000);
     bcoinWorker = await attach((t) => t.type === 'service_worker' && t.url.includes(bcoinId));
     vtelexWorker = await attach((t) => t.type === 'service_worker' && t.url.includes(vtelexId));
-    await evaluate(bcoinWorker, `chrome.storage.local.set({ settings: { url: '${site}', key: '${KEY}', model: '${MODEL}', nPredict: 64, tMaxPredictMs: 250 } })`);
+    await evaluate(bcoinWorker, settingsJs(false));
     page = await attach((t) => t.type === 'page');
     await send('Page.navigate', { url: site + '/' }, page);
     await sleep(800);
@@ -200,6 +203,7 @@ it('after a pause the suggestion shows as a ghost', async () => {
     assert.equal(body.input_prefix, '');
     assert.equal(body.input_suffix, '\n');
     assert.equal(body.n_predict, 64);
+    assert.deepEqual(body.input_extra, []);
     assert.equal(await ghostText(), '1 + 2');
 });
 
@@ -316,4 +320,19 @@ it('rich editor that keeps re-rendering while idle, as Teams does', async () => 
     assert.equal(await ghostText(), '1 + 2');
     await key('Tab', { vk: 9 });
     assert.ok((await value('#c')).startsWith('x = 1 + 2'));
+});
+
+it('page context sends the visible text above the field, only when switched on', async () => {
+    await evaluate(bcoinWorker, settingsJs(true));
+    await sleep(200);
+    await reset('#t');
+    await type('#t', 'y = ');
+    await sleep(PAUSE_MS);
+    const extra = requests.at(-1).body.input_extra;
+    assert.equal(extra.length, 1);
+    assert.equal(extra[0].filename, 'page');
+    assert.match(extra[0].text, /Alice: lunch at noon\?\nBob: sure$/);
+    assert.doesNotMatch(extra[0].text, /SECRET|AFTER-TEXT/);
+    assert.equal(await ghostText(), 'x * 2');
+    await evaluate(bcoinWorker, settingsJs(false));
 });
