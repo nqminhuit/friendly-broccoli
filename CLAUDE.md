@@ -5,7 +5,7 @@ A personal automation repo with no application code and no local build/test syst
 The exceptions are two browser extensions, plain JavaScript with no build, each with node tests and a workflow that tests every change and, on master, releases `<name>-v<manifest version>` with `<name>.zip` once per version:
 
 - `vtelex/`: Vietnamese telex typing. Tests: `node --test vtelex/telex.test.js vtelex/macros.test.js`, plus `vtelex/e2e.test.mjs`, which loads it into headless Chrome. See `vtelex/README.md`.
-- `bcoin/`: inline FIM suggestions in textareas from a local llama.cpp server, the browser sibling of ecoin. Tests: `node --test bcoin/infill.test.js`, plus `bcoin/e2e.test.mjs` (bcoin and vtelex against a fake `/infill`). See `bcoin/README.md`.
+- `bcoin/`: inline FIM suggestions in textareas and rich editors from a local llama.cpp server, the browser sibling of ecoin. Tests: `node --test bcoin/infill.test.js`, plus `bcoin/e2e.test.mjs` (bcoin and vtelex against a fake `/infill`). See `bcoin/README.md`.
 
 ## Commands
 

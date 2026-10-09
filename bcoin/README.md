@@ -1,6 +1,6 @@
 # bcoin
 
-Browser COpilot INline: grey ghost-text suggestions in Brave/Chrome textareas from your own [llama.cpp](https://github.com/ggml-org/llama.cpp) server's `/infill` endpoint, the browser sibling of [ecoin](https://github.com/nqminhuit/ecoin). Text goes only to the server you configure, which must be on `127.0.0.1` or `localhost`.
+Browser COpilot INline: grey ghost-text suggestions in Brave/Chrome textareas and rich editors from your own [llama.cpp](https://github.com/ggml-org/llama.cpp) server's `/infill` endpoint, the browser sibling of [ecoin](https://github.com/nqminhuit/ecoin). Text goes only to the server you configure, which must be on `127.0.0.1` or `localhost`.
 
 ## Install
 
@@ -21,8 +21,9 @@ Start the server with a FIM model, as for ecoin, for example `llama-server --fim
 ## Use
 
 - Suggestions are off everywhere until you switch a site on with Alt+Shift+C or the toolbar icon; the badge shows `AI` on such sites and `!` after a server error (hover it for the message). Change the key at `brave://extensions/shortcuts`.
-- After a 300 ms pause in a textarea, at the end of a line, the suggestion appears in grey. Tab accepts it, Ctrl+Right accepts the next word, Esc dismisses it, and typing its next characters shrinks it. Anything else clears it.
-- Only textareas: never single-line inputs, password fields, or rich editors (Slack, Confluence, Jira's editor) and code editors embedded in pages (Monaco, CodeMirror).
+- After a 300 ms pause at the end of a line, the suggestion appears in grey. Tab accepts it, Ctrl+Right accepts the next word, Esc dismisses it, and typing its next characters shrinks it. Anything else clears it.
+- Textareas show the whole suggestion, laid out like the field. Rich editors (`contenteditable`: Teams, Slack, Jira, Confluence) show only its first line at the caret, since Enter sends in chat boxes. Tried in the Lexical, ProseMirror, Quill, Draft.js, CKEditor 5 and Slate demos.
+- Never in single-line inputs, password fields, or code editors embedded in pages (Monaco, CodeMirror, Ace).
 - While an `@mention` or `#issue` list is open (GitHub and similar), Tab belongs to the list and no ghost shows.
 - Answers are cached per page, at most one request is in flight per tab, and a failed request pauses suggestions for 10 seconds.
 

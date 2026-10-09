@@ -14,9 +14,10 @@ const VTELEX = path.join(HERE, '..', 'vtelex');
 const CHROME = [process.env.CHROME, '/opt/google/chrome/chrome', '/usr/bin/google-chrome'].find((p) => p && fs.existsSync(p));
 const KEY = 'test-key';
 const MODEL = 'test-model';
-const PAGE = '<!doctype html><body><textarea id=t rows=6 cols=60></textarea><input id=i><input id=p type=password></body>';
+const PAGE = '<!doctype html><body><textarea id=t rows=6 cols=60></textarea><input id=i><input id=p type=password>'
+    + '<div id=r contenteditable style="width:420px;min-height:60px;border:1px solid #888;font:15px sans-serif"></div></body>';
 // Fake model answers by the current line before the caret.
-const ANSWERS = { 'x = ': '1 + 2', 'y = ': 'x * 2', 'tiếng ': 'Việt' };
+const ANSWERS = { 'x = ': '1 + 2', 'y = ': 'x * 2', 'z = ': 'first\nsecond', 'tiếng ': 'Việt' };
 const PAUSE_MS = 700;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -52,9 +53,11 @@ const toggle = (worker) => evaluate(worker, `(async () => {
 const badge = () => evaluate(bcoinWorker, `(async () => chrome.action.getBadgeText({ tabId: (await chrome.tabs.query({}))[0].id }))()`);
 const ghostText = () => evaluate(page, `(() => {
     const host = document.querySelector('[data-bcoin]');
-    return host ? host.shadowRoot.querySelectorAll('span')[1].textContent : null;
+    const ghost = host && host.shadowRoot.querySelector('[data-ghost]');
+    return ghost ? ghost.textContent : null;
 })()`);
-const value = (selector) => evaluate(page, `document.querySelector('${selector}').value`);
+// A textarea's value, or a rich editor's text with non-breaking spaces as spaces.
+const value = (selector) => evaluate(page, `(e => e.tagName === 'TEXTAREA' ? e.value : e.innerText.replace(/\\u00a0/g, ' '))(document.querySelector('${selector}'))`);
 
 async function key(k, { code = k, vk = 0, text, modifiers = 0 } = {}) {
     await send('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', key: k, code, text, windowsVirtualKeyCode: vk, modifiers }, page);
@@ -70,7 +73,11 @@ async function type(selector, text) {
 }
 
 async function reset(selector) {
-    await evaluate(page, `(e => { e.value = ''; e.focus(); e.removeAttribute('aria-expanded'); })(document.querySelector('${selector}'))`);
+    await evaluate(page, `(e => {
+        if (e.tagName === 'TEXTAREA') e.value = ''; else e.replaceChildren();
+        e.focus();
+        e.removeAttribute('aria-expanded');
+    })(document.querySelector('${selector}'))`);
     await key('Escape', { vk: 27 });
 }
 
@@ -243,4 +250,29 @@ it('works alongside vtelex telex typing', async () => {
     assert.equal(await ghostText(), 'Việt');
     await key('Tab', { vk: 9 });
     assert.equal(await value('#t'), 'tiếng Việt');
+});
+
+it('rich editor: a ghost at the caret, typing through it and Tab', async () => {
+    await reset('#r');
+    await type('#r', 'x = ');
+    await sleep(PAUSE_MS);
+    assert.equal(await ghostText(), '1 + 2');
+    const before = requests.length;
+    await type('#r', '1');
+    assert.equal(await ghostText(), ' + 2');
+    await key('Tab', { vk: 9 });
+    assert.equal(await value('#r'), 'x = 1 + 2');
+    assert.equal(requests.length, before);
+});
+
+it('rich editor: only the first line of a suggestion, and context across paragraphs', async () => {
+    await reset('#r');
+    await type('#r', 'line one\nz = ');
+    await sleep(PAUSE_MS);
+    const { body } = requests.at(-1);
+    assert.equal(body.input_prefix, 'line one\n');
+    assert.equal(body.prompt, 'z = ');
+    assert.equal(await ghostText(), 'first');
+    await key('Escape', { vk: 27 });
+    assert.equal(await ghostText(), null);
 });
