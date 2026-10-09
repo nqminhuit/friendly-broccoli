@@ -60,8 +60,8 @@ env:
   IN_MMAP: ${{ inputs.mmap }}
   IN_FA: ${{ inputs.flash_attn }}
   IN_VAE_TILING: ${{ inputs.vae_tiling }}
-  # Hardcoded and benign: run inputs and logs of a public repo are public.
-  PROMPT: A red lighthouse on a rocky coast at dusk, calm sea, soft warm light
+  # Hardcoded, no prompt input: it shows in this public repo's file and logs, so keep it SFW.
+  PROMPT: 'Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
   SD_REPO: https://github.com/leejet/stable-diffusion.cpp.git
   SD_COMMIT: 3f8527a46c54ecf4cb4ed6003da8e8982283c73c
   HF_UC_BASE: https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/resolve/main
