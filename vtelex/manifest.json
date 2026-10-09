@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "vtelex",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Vietnamese telex typing in browser text fields, no system input method.",
   "permissions": [
     "storage"
@@ -10,7 +10,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "vtelex: off"
+    "default_title": "vtelex"
   },
   "options_ui": {
     "page": "options.html",
