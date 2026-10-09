@@ -4,15 +4,19 @@
 <meta charset="utf-8">
 <title>bcoin settings</title>
 <style>
-  :root { color-scheme: light dark; font: 14px system-ui, sans-serif; }
-  body { margin: 16px; min-width: 440px; }
+  /* Brave and Chrome size the options dialog to the page: a scrollbar that changes the width would rewrap
+     the text, change the height and toggle the scrollbar again, so its gutter is always kept. */
+  :root { color-scheme: light dark; font: 14px system-ui, sans-serif; scrollbar-gutter: stable; }
+  body { margin: 16px; min-width: 400px; }
   label { display: block; margin: 0 0 10px; }
   label span { display: block; margin-bottom: 3px; opacity: 0.8; }
   input { box-sizing: border-box; width: 100%; font: 13px ui-monospace, monospace; padding: 4px 6px; }
   .row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  button { white-space: nowrap; }
   .pair { display: flex; gap: 12px; }
   .pair label { flex: 1; }
-  #status { opacity: 0.85; }
+  /* Room for two lines up front, so a message never changes the page height. */
+  #status { opacity: 0.85; margin-top: 8px; min-height: 2.6em; line-height: 1.3em; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -26,8 +30,8 @@
 <div class="row">
   <button id="save">Save</button>
   <button id="test">Test connection</button>
-  <span id="status"></span>
 </div>
+<div id="status"></div>
 <script src="options.js"></script>
 </body>
 </html>
