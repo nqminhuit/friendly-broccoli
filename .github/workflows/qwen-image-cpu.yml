@@ -1,0 +1,422 @@
+name: qwen-image-cpu
+
+on:
+  workflow_dispatch:
+    inputs:
+      diffusion:
+        description: Qwen-Image 2.1 UC diffusion quant
+        type: choice
+        default: Q4_K_M
+        options: [Q4_0, Q4_K_M, Q5_K_M, Q8_0]
+      text_encoder:
+        description: Qwen3-VL-8B-Instruct text encoder quant
+        type: choice
+        default: Q4_K_M
+        options: [Q4_K_M, Q8_0]
+      width:
+        description: Image width (multiple of 32)
+        type: string
+        default: '512'
+      height:
+        description: Image height (multiple of 32)
+        type: string
+        default: '512'
+      steps:
+        description: Sampling steps
+        type: string
+        default: '10'
+      threads:
+        description: CPU threads (empty = all vCPUs from nproc)
+        type: string
+        default: ''
+      swap_gb:
+        description: Swap size in GB (0 = swap off, so an OOM kill means it does not fit; 0-16)
+        type: string
+        default: '0'
+      mmap:
+        description: Pass --mmap
+        type: boolean
+        default: false
+      flash_attn:
+        description: Pass --fa
+        type: boolean
+        default: true
+      vae_tiling:
+        description: Pass --vae-tiling
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  IN_DIFFUSION: ${{ inputs.diffusion }}
+  IN_TEXT_ENCODER: ${{ inputs.text_encoder }}
+  IN_WIDTH: ${{ inputs.width }}
+  IN_HEIGHT: ${{ inputs.height }}
+  IN_STEPS: ${{ inputs.steps }}
+  IN_THREADS: ${{ inputs.threads }}
+  IN_SWAP_GB: ${{ inputs.swap_gb }}
+  IN_MMAP: ${{ inputs.mmap }}
+  IN_FA: ${{ inputs.flash_attn }}
+  IN_VAE_TILING: ${{ inputs.vae_tiling }}
+  # Hardcoded, no prompt input: it shows in this public repo's file and logs, so keep it SFW.
+  PROMPT: 'Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
+  SD_REPO: https://github.com/leejet/stable-diffusion.cpp.git
+  SD_COMMIT: 3f8527a46c54ecf4cb4ed6003da8e8982283c73c
+  HF_UC_BASE: https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/resolve/main
+  HF_LLM_BASE: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main
+
+jobs:
+  # No secrets here: this job runs sd-cli on third-party GGUF files, and its processes outlive the generate step.
+  probe:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 330
+    permissions:
+      contents: read
+    outputs:
+      image_artifact_id: ${{ steps.image.outputs.artifact-id }}
+    steps:
+      - name: Validate inputs and record runner facts
+        run: |
+          set -euo pipefail
+          for v in IN_WIDTH IN_HEIGHT IN_STEPS IN_SWAP_GB; do
+            [[ "${!v}" =~ ^[0-9]+$ ]] || { echo "::error::$v must be an integer"; exit 1; }
+          done
+          if [ -n "$IN_THREADS" ]; then
+            [[ "$IN_THREADS" =~ ^[0-9]+$ ]] || { echo "::error::threads must be an integer"; exit 1; }
+          fi
+          (( 10#$IN_WIDTH >= 32 && 10#$IN_WIDTH % 32 == 0 )) || { echo "::error::width must be a multiple of 32"; exit 1; }
+          (( 10#$IN_HEIGHT >= 32 && 10#$IN_HEIGHT % 32 == 0 )) || { echo "::error::height must be a multiple of 32"; exit 1; }
+          (( 10#$IN_STEPS >= 1 )) || { echo "::error::steps must be >= 1"; exit 1; }
+          (( 10#$IN_SWAP_GB <= 16 )) || { echo "::error::swap_gb must be 0-16"; exit 1; }
+
+          OUT="$RUNNER_TEMP/out"
+          mkdir -p "$OUT"
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
+          {
+            echo "os: $(. /etc/os-release; echo "$PRETTY_NAME")"
+            echo "gcc: $(gcc --version | head -1)"
+            echo "sd_commit: $SD_COMMIT"
+            echo "nproc: $(nproc)"
+            echo "cpu: $(lscpu | sed -n 's/^Model name:[[:space:]]*//p')"
+            echo "threads_per_core: $(lscpu | sed -n 's/^Thread(s) per core:[[:space:]]*//p')"
+            echo "cores_per_socket: $(lscpu | sed -n 's/^Core(s) per socket:[[:space:]]*//p')"
+            echo "sockets: $(lscpu | sed -n 's/^Socket(s):[[:space:]]*//p')"
+            for f in avx avx2 avx512f; do
+              if grep -qw "$f" /proc/cpuinfo; then echo "$f: yes"; else echo "$f: no"; fi
+            done
+            free -m
+            echo "--- swapon"
+            swapon --show
+            echo "--- df"
+            df -h / $(mountpoint -q /mnt && echo /mnt)
+          } | tee "$OUT/facts.txt"
+
+      - name: Pick models and directory
+        run: |
+          set -euo pipefail
+          # Approximate sizes in whole GB, rounded up, used only for the free-space check.
+          case "$IN_DIFFUSION" in
+            Q4_0)   dm=qwen-image-2.1-UC-Q4_0.gguf;   dm_sha=13f59f20656efc0aa385d03c1fcac1a9dc2ad6e5ccc0ea9bfe1d6ac636f2c5b9; dm_gb=4 ;;
+            Q4_K_M) dm=qwen-image-2.1-UC-Q4_K_M.gguf; dm_sha=e79c8a009f2ecbdb6c70fd663d9aea9ee304a0d91f347e4169a756b8ad141b41; dm_gb=5 ;;
+            Q5_K_M) dm=qwen-image-2.1-UC-Q5_K_M.gguf; dm_sha=af0bf278cf16d204fb31c384dc82fd41dca82d976b15fe9305a60c726fd6f821; dm_gb=6 ;;
+            Q8_0)   dm=qwen-image-2.1-UC-Q8_0.gguf;   dm_sha=cde456c72ea3ecebfc1be783300e972711d875e0c5f1bed33d42b66b156affa8; dm_gb=8 ;;
+            *) echo "::error::unknown diffusion quant"; exit 1 ;;
+          esac
+          case "$IN_TEXT_ENCODER" in
+            Q4_K_M) llm=Qwen3VL-8B-Instruct-Q4_K_M.gguf; llm_sha=67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2; llm_gb=5 ;;
+            Q8_0)   llm=Qwen3VL-8B-Instruct-Q8_0.gguf;   llm_sha=0d264b3941185d00a74f75c4245521dae088ff1efc90ab8d1754e83f5844adb0; llm_gb=9 ;;
+            *) echo "::error::unknown text encoder quant"; exit 1 ;;
+          esac
+          vae=qwen_image_2.1_vae_bf16.safetensors
+          vae_sha=bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9
+          vae_gb=1
+          need=$((dm_gb + llm_gb + vae_gb + 1))   # +1 GB margin
+          {
+            echo "DM_FILE=$dm"
+            echo "DM_SHA=$dm_sha"
+            echo "LLM_FILE=$llm"
+            echo "LLM_SHA=$llm_sha"
+            echo "VAE_FILE=$vae"
+            echo "VAE_SHA=$vae_sha"
+          } >> "$GITHUB_ENV"
+
+          # The runner's default swapfile lives on /mnt; drop it to free space and get clean swap numbers.
+          sudo swapoff -a
+          sudo rm -f /mnt/swapfile
+          free_gb() { df -BG --output=avail "$1" | tail -1 | tr -dc '0-9'; }
+          best="$RUNNER_TEMP"
+          # Only a separate disk mounted at /mnt is worth considering; on a plain directory it is the same filesystem.
+          if mountpoint -q /mnt; then
+            sudo chown "$USER" /mnt
+            if [ "$(free_gb /mnt)" -gt "$(free_gb "$RUNNER_TEMP")" ]; then best=/mnt; fi
+          fi
+          avail="$(free_gb "$best")"
+          echo "Chosen: $best with ${avail} GB free, models need about ${need} GB"
+          if [ "$avail" -lt "$need" ]; then
+            echo "::error::Only ${avail} GB free on $best, need ${need} GB for the chosen models"
+            exit 1
+          fi
+          mkdir -p "$best/models"
+          echo "MODELS_DIR=$best/models" >> "$GITHUB_ENV"
+
+      # Upstream ships Linux binaries for Ubuntu 24.04 only, so build the pinned commit here. Same flags as its CPU release.
+      - name: Build stable-diffusion.cpp (CPU)
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/sd-src"
+          mkdir -p "$src"
+          git -C "$src" init -q
+          git -C "$src" remote add origin "$SD_REPO"
+          git -C "$src" fetch -q --depth 1 origin "$SD_COMMIT"
+          git -C "$src" checkout -q FETCH_HEAD
+          [ "$(git -C "$src" rev-parse HEAD)" = "$SD_COMMIT" ] || { echo "::error::checked out commit is not $SD_COMMIT"; exit 1; }
+          # The server frontend submodule is skipped: sd-cli does not need it, so neither Node nor pnpm is required.
+          git -C "$src" submodule update --init --recursive --depth 1 -- ggml thirdparty/libwebp thirdparty/libwebm
+
+          cmake -S "$src" -B "$src/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSD_BUILD_SHARED_LIBS=ON -DSD_BUILD_SHARED_GGML_LIB=ON \
+            -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON '-DCMAKE_INSTALL_RPATH=$ORIGIN'
+          cmake --build "$src/build" --target sd-cli -j "$(nproc)"
+
+          # bin/ also holds the libggml-cpu-*.so backends that sd-cli loads at run time.
+          mkdir -p "$RUNNER_TEMP/sd"
+          cp -a "$src/build/bin/." "$RUNNER_TEMP/sd/"
+          rm -rf "$src"
+          echo "SD=$RUNNER_TEMP/sd" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/sd/sd-cli" --version
+          devices="$("$RUNNER_TEMP/sd/sd-cli" --list-devices)"
+          echo "$devices"
+          grep -q '^CPU' <<< "$devices" || { echo "::error::sd-cli lists no CPU device"; exit 1; }
+
+      - name: Download models
+        run: |
+          set -euo pipefail
+          fetch() { # url file sha256
+            curl --fail --location --show-error --retry 3 -o "$MODELS_DIR/$2" "$1"
+            echo "$3  $MODELS_DIR/$2" | sha256sum -c -
+          }
+          fetch "$HF_UC_BASE/$DM_FILE" "$DM_FILE" "$DM_SHA"
+          fetch "$HF_LLM_BASE/$LLM_FILE" "$LLM_FILE" "$LLM_SHA"
+          fetch "$HF_UC_BASE/vae/$VAE_FILE" "$VAE_FILE" "$VAE_SHA"
+          df -h "$MODELS_DIR"
+          # Drop the download page cache so it does not skew memory readings.
+          sync
+          echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+
+      - name: Configure swap
+        run: |
+          set -euo pipefail
+          sudo swapoff -a
+          if [ "$((10#$IN_SWAP_GB))" -gt 0 ]; then
+            n="$((10#$IN_SWAP_GB))"
+            free_gb() { df -BG --output=avail "$1" | tail -1 | tr -dc '0-9'; }
+            swapfile="$MODELS_DIR/swapfile-test"
+            if mountpoint -q /mnt && [ "$(free_gb /mnt)" -ge "$((n + 1))" ]; then
+              swapfile=/mnt/swapfile-test
+            fi
+            [ "$(free_gb "$(dirname "$swapfile")")" -ge "$((n + 1))" ] || { echo "::error::No filesystem has ${n} GB free for swap"; exit 1; }
+            sudo fallocate -l "${n}G" "$swapfile"
+            sudo chmod 600 "$swapfile"
+            sudo mkswap "$swapfile"
+            sudo swapon "$swapfile"
+          fi
+          swapon --show
+          free -m
+
+      - name: Generate image
+        run: |
+          set -euo pipefail
+          cd "$OUT"
+          if [ ! -x /usr/bin/time ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq time
+          fi
+
+          sampler() {
+            while true; do
+              awk -v t="$(date +%s)" '
+                /^MemAvailable:/ {a=$2} /^SwapTotal:/ {st=$2} /^SwapFree:/ {sf=$2}
+                END {print t, a, st - sf}' /proc/meminfo >> mem.log
+              sleep 5
+            done
+          }
+          : > mem.log
+          sampler &
+          sampler_pid=$!
+          vmstat -t 5 > vmstat.log &
+          vmstat_pid=$!
+          trap 'kill "$sampler_pid" "$vmstat_pid" 2>/dev/null || true' EXIT
+
+          args=(
+            --diffusion-model "$MODELS_DIR/$DM_FILE"
+            --llm "$MODELS_DIR/$LLM_FILE"
+            --vae "$MODELS_DIR/$VAE_FILE"
+            -p "$PROMPT"
+            -W "$((10#$IN_WIDTH))" -H "$((10#$IN_HEIGHT))"
+            --steps "$((10#$IN_STEPS))"
+            --cfg-scale 1.0 --sampling-method euler --backend cpu -s 42 -v
+          )
+          [ "$IN_FA" = true ] && args+=(--fa)
+          [ "$IN_MMAP" = true ] && args+=(--mmap)
+          [ "$IN_VAE_TILING" = true ] && args+=(--vae-tiling)
+          # sd.cpp's default is physical cores, half the vCPUs on these runners.
+          if [ -n "$IN_THREADS" ]; then threads="$((10#$IN_THREADS))"; else threads="$(nproc)"; fi
+          args+=(-t "$threads")
+          echo "$threads" > threads.txt
+
+          set +e
+          /usr/bin/time -v -o time.txt "$SD/sd-cli" "${args[@]}" -o out.png 2>&1 | tee sd.log
+          rc="${PIPESTATUS[0]}"
+          set -e
+          echo "$rc" > exit.txt
+          exit "$rc"
+
+      - name: Summary
+        if: always()
+        run: |
+          set -uo pipefail
+          cd "${OUT:-/nonexistent}" 2>/dev/null || { echo "No output dir, nothing to summarise" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          na=n/a
+          rc="$(cat exit.txt 2>/dev/null || echo "$na")"
+          if [ -s out.png ] && [ "$rc" = 0 ]; then result="image produced"; else result="failed (exit code $rc)"; fi
+
+          cpu="$(sed -n 's/^cpu: //p' facts.txt 2>/dev/null)"; : "${cpu:=$na}"
+          tpc="$(sed -n 's/^threads_per_core: //p' facts.txt 2>/dev/null)"; : "${tpc:=$na}"
+          cps="$(sed -n 's/^cores_per_socket: //p' facts.txt 2>/dev/null)"; : "${cps:=$na}"
+          sockets="$(sed -n 's/^sockets: //p' facts.txt 2>/dev/null)"; : "${sockets:=$na}"
+          threads_used="$(cat threads.txt 2>/dev/null || echo "$na")"
+          os="$(sed -n 's/^os: //p' facts.txt 2>/dev/null)"; : "${os:=$na}"
+          gccv="$(sed -n 's/^gcc: //p' facts.txt 2>/dev/null)"; : "${gccv:=$na}"
+          sdc="$(sed -n 's/^sd_commit: //p' facts.txt 2>/dev/null)"; : "${sdc:=$na}"
+          nproc_v="$(sed -n 's/^nproc: //p' facts.txt 2>/dev/null)"; : "${nproc_v:=$na}"
+          avx2="$(sed -n 's/^avx2: //p' facts.txt 2>/dev/null)"; : "${avx2:=$na}"
+          avx512="$(sed -n 's/^avx512f: //p' facts.txt 2>/dev/null)"; : "${avx512:=$na}"
+          memtotal="$(awk '/^Mem:/ {printf "%.1f GiB", $2/1024}' facts.txt 2>/dev/null)"; : "${memtotal:=$na}"
+
+          wall="$(sed -n 's/.*Elapsed (wall clock) time[^:]*: //p' time.txt 2>/dev/null)"; : "${wall:=$na}"
+          rss="$(awk -F': ' '/Maximum resident set size/ {printf "%.2f GiB", $2/1048576}' time.txt 2>/dev/null)"; : "${rss:=$na}"
+          minavail="$(awk 'NR==1 || $2<m {m=$2} END {if (NR) printf "%.2f GiB", m/1048576}' mem.log 2>/dev/null)"; : "${minavail:=$na}"
+          maxswap="$(awk '$3>m {m=$3} END {if (NR) printf "%.2f GiB", m/1048576}' mem.log 2>/dev/null)"; : "${maxswap:=$na}"
+          # vmstat si/so are KiB/s sampled every 5 s; skip the since-boot first row.
+          vmsw="$(awk '$1 ~ /^[0-9]+$/ && NR>3 {si+=$7; so+=$8; n++} END {if (n) printf "si %.0f MiB, so %.0f MiB", si*5/1024, so*5/1024}' vmstat.log 2>/dev/null)"; : "${vmsw:=$na}"
+
+          clean="$(tr '\r' '\n' < sd.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
+          grab() { printf '%s\n' "$clean" | grep -iE "$1" | tail -1 | sed -E 's/^\[[A-Z]+ *\] *//' | cut -c1-200; }
+          t_enc="$(grab 'get_learned_condition completed')"; : "${t_enc:=$na}"
+          t_samp="$(grab 'sampling completed')"; : "${t_samp:=$na}"
+          t_vae="$(grab 'decode_first_stage completed')"; : "${t_vae:=$na}"
+          t_step="$(printf '%s\n' "$clean" | grep -oE '[0-9.]+ *(s/it|it/s)' | tail -1)"; : "${t_step:=$na}"
+
+          {
+            echo "## qwen-image-cpu"
+            echo
+            echo "Timings are runner-indicative only: a shared ~4 vCPU runner says little about speed on the real machine, but RAM fit and swap behaviour carry over."
+            echo
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Result | $result |"
+            echo "| Runner | nproc $nproc_v, cores $cps x threads/core $tpc x sockets $sockets, $cpu, avx2 $avx2, avx512f $avx512, MemTotal $memtotal |"
+            echo "| Build | $os, $gccv, sd.cpp ${sdc:0:7} built from source |"
+            echo "| Inputs | diffusion $IN_DIFFUSION, text encoder $IN_TEXT_ENCODER, ${IN_WIDTH}x${IN_HEIGHT}, steps $IN_STEPS, threads $threads_used, swap ${IN_SWAP_GB} GB, mmap $IN_MMAP, fa $IN_FA, vae tiling $IN_VAE_TILING |"
+            echo "| Wall time | $wall |"
+            echo "| Max RSS | $rss |"
+            echo "| Min MemAvailable | $minavail |"
+            echo "| Max swap used | $maxswap |"
+            echo "| vmstat swap traffic | $vmsw |"
+            echo "| Text encoding | $t_enc |"
+            echo "| Sampling | $t_samp |"
+            echo "| Last step speed | $t_step |"
+            echo "| VAE decode | $t_vae |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$result" != "image produced" ]; then
+            {
+              echo
+              echo "Kernel OOM log tail:"
+              echo '```'
+              sudo dmesg 2>/dev/null | grep -iE 'oom|killed process' | tail -n 10 || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
+
+      - name: Upload image artifact
+        id: image
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ runner.temp }}/out/out.png
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qwen-image-cpu-logs
+          path: |
+            ${{ runner.temp }}/out/facts.txt
+            ${{ runner.temp }}/out/sd.log
+            ${{ runner.temp }}/out/mem.log
+            ${{ runner.temp }}/out/vmstat.log
+            ${{ runner.temp }}/out/time.txt
+            ${{ runner.temp }}/out/exit.txt
+          if-no-files-found: warn
+          retention-days: 1
+
+  # Holds the bucket secrets and never runs sd.cpp or touches model files.
+  upload:
+    needs: probe
+    if: needs.probe.result == 'success'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      actions: write   # to delete the image artifact afterwards
+      contents: read
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.probe.outputs.image_artifact_id }}
+          path: ${{ runner.temp }}/image
+
+      # Same BUCKET_* secrets as sec10v_reflection.yml. aws's stderr is swallowed: it would show the bucket and prefix.
+      - name: Upload image to the bucket
+        env:
+          IMG_DIR: ${{ runner.temp }}/image
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1   # MinIO accepts any region unless one is configured
+        run: |
+          set -euo pipefail
+          IMG="$(find "$IMG_DIR" -type f -name '*.png' | head -1)"
+          [ -n "$IMG" ] || { echo "::error::image artifact is empty"; exit 1; }
+          if [ -z "$BUCKET_S3_ENDPOINT" ] || [ -z "$BUCKET_S3_URI" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::bucket upload secrets not set (BUCKET_S3_ENDPOINT, BUCKET_S3_URI, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY)"
+            exit 1
+          fi
+          aws configure set default.s3.addressing_style path   # MinIO needs path-style
+          name="qwen-image-cpu/${GITHUB_RUN_ID}-${IN_DIFFUSION}-${IN_TEXT_ENCODER}-${IN_WIDTH}x${IN_HEIGHT}-${IN_STEPS}steps.png"
+          if err=$(aws s3 cp --endpoint-url "$BUCKET_S3_ENDPOINT" --only-show-errors \
+              --content-type image/png "$IMG" "${BUCKET_S3_URI%/}/${name}" 2>&1 </dev/null); then
+            echo "saved ${name}" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            code=$(printf '%s' "$err" | grep -o 'An error occurred ([A-Za-z]*)' | head -n1 || true)
+            echo "::error::could not save ${name}${code:+ — $code}"
+            exit 1
+          fi
+
+      # The run page is public, so do not leave the image downloadable there.
+      - name: Delete image artifact
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.probe.outputs.image_artifact_id }}
+        run: |
+          [ -n "$ARTIFACT_ID" ] || exit 0
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
