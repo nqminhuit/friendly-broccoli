@@ -18,6 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: node --test vtelex/telex.test.js vtelex/macros.test.js
+      # The runner image ships Google Chrome, so this loads the real extension.
+      - run: node --test vtelex/e2e.test.mjs
 
   release:
     needs: test

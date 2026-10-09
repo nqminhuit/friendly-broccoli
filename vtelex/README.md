@@ -23,15 +23,15 @@ Bump `version` in `manifest.json` and merge to master: `.github/workflows/vtelex
 
 ## Use
 
-- Alt+Space or the toolbar icon toggles it; the badge shows `VI` while on. Change the key at `brave://extensions/shortcuts`.
+- Each site remembers its own mode, starting in English: Alt+Space or the toolbar icon switches the current site between Vietnamese and English, and a `VI`/`EN` label flashes in the page corner. The icon's badge shows the current tab's mode. Change the key at `brave://extensions/shortcuts`.
 - Telex: `s f r x j` tones, `z` clears the tone, `aa ee oo dd` for â ê ô đ, `w` for ă ơ ư (`uow` → ươ, a lone `w` → ư). Pressing a mark key twice undoes it (`ass` → `as`, `ww` → `w`).
 - Marks may come anywhere in the word: `tieengs`, `tieesng` and `tiengse` all give `tiếng`.
 - Tones use the old placement (`hòa`, `thúy`, `khỏe`). For `hoà`, pass `{ modernTone: true }` to `step` in `content.js`.
-- A word that stops being a Vietnamese syllable reverts to the keys typed (`with`, `windows`, `google` survive), but many short English words convert (`this` → `thí`, `is` → `í`, `was` → `ứa`), as in Unikey. Toggle off with Alt+Space for English.
+- A word that stops being a Vietnamese syllable reverts to the keys typed (`with`, `windows`, `google` survive), but many short English words convert (`this` → `thí`, `is` → `í`, `was` → `ứa`), as in Unikey. Switch the site to English for those.
 
 ## Shortcuts
 
-In VI mode, a shortcut word followed by Space, Enter or any punctuation turns into its text: `ko?` → `không?`, `Ko` → `Không`, `KO` → `KHÔNG`. Edit the list by right-clicking the toolbar icon → Options, one `shortcut = text` per line; it starts with a few (`ko`, `đc`, `nc`, `trc`, `ntn`, ...). Shortcuts match the keys as typed, so one like `as` still works even though telex would turn it into `á`. The list lives in that browser only; copy the box to move it.
+In VI mode, a shortcut word followed by Space, Enter or any punctuation turns into its text: `ko?` → `không?`, `Ko` → `Không`, `KO` → `KHÔNG`. Edit the list by right-clicking the toolbar icon → Options, one `shortcut = text` per line; it starts with a few (`ko`, `đc`, `nc`, `trc`, `ntn`, ...). Backspace right after an expansion puts the shortcut back (`không ` → `ko `). Shortcuts match the keys as typed, so one like `as` still works even though telex would turn it into `á`. The list lives in that browser only; copy the box to move it.
 
 Works in plain inputs and textareas and in Lexical (the editor behind Messenger and WhatsApp Web), ProseMirror, Quill, Draft.js and CKEditor 5. It can't work in recent Slate editors, which ignore script-made input events, nor in Google Docs and other canvas editors. Password and email fields are skipped.
 
@@ -39,4 +39,5 @@ Works in plain inputs and textareas and in Lexical (the editor behind Messenger 
 
 ```sh
 node --test vtelex/telex.test.js vtelex/macros.test.js
+node --test vtelex/e2e.test.mjs  # loads the extension into headless Chrome; skips without Chrome
 ```
