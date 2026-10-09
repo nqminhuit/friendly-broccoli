@@ -1,0 +1,43 @@
+name: vtelex
+
+# Tests every vtelex change; on master, publishes vtelex-v<manifest version> once per version.
+on:
+  push:
+    branches: [master]
+    paths: ["vtelex/**", ".github/workflows/vtelex.yml"]
+  pull_request:
+    paths: ["vtelex/**", ".github/workflows/vtelex.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: node --test vtelex/telex.test.js vtelex/macros.test.js
+
+  release:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Publish the manifest version unless it is already released
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r .version vtelex/manifest.json)
+          tag="vtelex-v$version"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "$tag is already released"
+            exit 0
+          fi
+          (cd vtelex && zip -q ../vtelex.zip manifest.json ./*.js ./*.html -x '*.test.js')
+          gh release create "$tag" vtelex.zip --target "$GITHUB_SHA" --title "vtelex $version" \
+            --notes "Unzip and load unpacked in brave://extensions. See vtelex/README.md."
