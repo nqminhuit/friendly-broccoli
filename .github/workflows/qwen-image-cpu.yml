@@ -1,0 +1,324 @@
+name: qwen-image-cpu
+
+on:
+  workflow_dispatch:
+    inputs:
+      diffusion:
+        description: Qwen-Image 2.1 UC diffusion quant
+        type: choice
+        default: Q4_K_M
+        options: [Q4_0, Q4_K_M, Q5_K_M, Q8_0]
+      text_encoder:
+        description: Qwen3-VL-8B-Instruct text encoder quant
+        type: choice
+        default: Q4_K_M
+        options: [Q4_K_M, Q8_0]
+      width:
+        description: Image width (multiple of 32)
+        type: string
+        default: '512'
+      height:
+        description: Image height (multiple of 32)
+        type: string
+        default: '512'
+      steps:
+        description: Sampling steps
+        type: string
+        default: '10'
+      threads:
+        description: CPU threads (empty = sd.cpp default, physical cores)
+        type: string
+        default: ''
+      swap_gb:
+        description: Swap size in GB (0 = swap off, so an OOM kill means it does not fit; 0-16)
+        type: string
+        default: '0'
+      mmap:
+        description: Pass --mmap
+        type: boolean
+        default: false
+      flash_attn:
+        description: Pass --fa
+        type: boolean
+        default: true
+      vae_tiling:
+        description: Pass --vae-tiling
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  IN_DIFFUSION: ${{ inputs.diffusion }}
+  IN_TEXT_ENCODER: ${{ inputs.text_encoder }}
+  IN_WIDTH: ${{ inputs.width }}
+  IN_HEIGHT: ${{ inputs.height }}
+  IN_STEPS: ${{ inputs.steps }}
+  IN_THREADS: ${{ inputs.threads }}
+  IN_SWAP_GB: ${{ inputs.swap_gb }}
+  IN_MMAP: ${{ inputs.mmap }}
+  IN_FA: ${{ inputs.flash_attn }}
+  IN_VAE_TILING: ${{ inputs.vae_tiling }}
+  # Hardcoded and benign: run inputs and logs of a public repo are public.
+  PROMPT: A red lighthouse on a rocky coast at dusk, calm sea, soft warm light
+  SD_URL: https://github.com/leejet/stable-diffusion.cpp/releases/download/master-929-3f8527a/sd-master-3f8527a-bin-Linux-Ubuntu-24.04-x86_64.zip
+  SD_SHA256: 9ad35ed309dbe59f5e66f35edafac9a69e6cc233ea6b9577071feae829159d37
+  HF_UC_BASE: https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/resolve/main
+  HF_LLM_BASE: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main
+  MIN_FREE_GB: '13'
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - name: Validate inputs and record runner facts
+        run: |
+          set -euo pipefail
+          for v in IN_WIDTH IN_HEIGHT IN_STEPS IN_SWAP_GB; do
+            [[ "${!v}" =~ ^[0-9]+$ ]] || { echo "::error::$v must be an integer"; exit 1; }
+          done
+          if [ -n "$IN_THREADS" ]; then
+            [[ "$IN_THREADS" =~ ^[0-9]+$ ]] || { echo "::error::threads must be an integer"; exit 1; }
+          fi
+          (( 10#$IN_WIDTH >= 32 && 10#$IN_WIDTH % 32 == 0 )) || { echo "::error::width must be a multiple of 32"; exit 1; }
+          (( 10#$IN_HEIGHT >= 32 && 10#$IN_HEIGHT % 32 == 0 )) || { echo "::error::height must be a multiple of 32"; exit 1; }
+          (( 10#$IN_STEPS >= 1 )) || { echo "::error::steps must be >= 1"; exit 1; }
+          (( 10#$IN_SWAP_GB <= 16 )) || { echo "::error::swap_gb must be 0-16"; exit 1; }
+
+          OUT="$RUNNER_TEMP/out"
+          mkdir -p "$OUT"
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
+          {
+            echo "nproc: $(nproc)"
+            echo "cpu: $(lscpu | sed -n 's/^Model name:[[:space:]]*//p')"
+            for f in avx avx2 avx512f; do
+              if grep -qw "$f" /proc/cpuinfo; then echo "$f: yes"; else echo "$f: no"; fi
+            done
+            free -m
+            echo "--- swapon"
+            swapon --show
+            echo "--- df"
+            df -h / /mnt
+          } | tee "$OUT/facts.txt"
+
+      - name: Pick models directory
+        run: |
+          set -euo pipefail
+          # The runner's default swapfile lives on /mnt; drop it to free space and get clean swap numbers.
+          sudo swapoff -a
+          sudo rm -f /mnt/swapfile
+          sudo mkdir -p /mnt
+          sudo chown "$USER" /mnt
+          free_gb() { df -BG --output=avail "$1" | tail -1 | tr -dc '0-9'; }
+          best="$RUNNER_TEMP"
+          if [ "$(free_gb /mnt)" -gt "$(free_gb "$RUNNER_TEMP")" ]; then best=/mnt; fi
+          avail="$(free_gb "$best")"
+          echo "Chosen: $best with ${avail} GB free"
+          if [ "$avail" -lt "$MIN_FREE_GB" ]; then
+            echo "::error::Only ${avail} GB free on $best, need at least ${MIN_FREE_GB} GB for the models"
+            exit 1
+          fi
+          mkdir -p "$best/models"
+          echo "MODELS_DIR=$best/models" >> "$GITHUB_ENV"
+
+      - name: Install stable-diffusion.cpp (CPU build)
+        run: |
+          set -euo pipefail
+          zipdir="$RUNNER_TEMP/sd-zip"
+          mkdir -p "$zipdir"
+          curl --fail --location --show-error --retry 3 -o "$zipdir/sd.zip" "$SD_URL"
+          echo "$SD_SHA256  $zipdir/sd.zip" | sha256sum -c -
+          unzip -q "$zipdir/sd.zip" -d "$zipdir/x"
+          cli="$(find "$zipdir/x" -name sd-cli -type f | head -1)"
+          [ -n "$cli" ] || { echo "::error::sd-cli not found in the zip"; exit 1; }
+          # Keep neighbouring ggml CPU variant .so files together with the binary.
+          cp -r "$(dirname "$cli")" "$RUNNER_TEMP/sd"
+          chmod +x "$RUNNER_TEMP/sd/sd-cli"
+          echo "SD=$RUNNER_TEMP/sd" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/sd/sd-cli" --version
+          "$RUNNER_TEMP/sd/sd-cli" --list-devices
+
+      - name: Download models
+        run: |
+          set -euo pipefail
+          fetch() { # url file sha256
+            curl --fail --location --show-error --retry 3 -o "$MODELS_DIR/$2" "$1"
+            echo "$3  $MODELS_DIR/$2" | sha256sum -c -
+          }
+          case "$IN_DIFFUSION" in
+            Q4_0)   dm=qwen-image-2.1-UC-Q4_0.gguf;   dm_sha=13f59f20656efc0aa385d03c1fcac1a9dc2ad6e5ccc0ea9bfe1d6ac636f2c5b9 ;;
+            Q4_K_M) dm=qwen-image-2.1-UC-Q4_K_M.gguf; dm_sha=e79c8a009f2ecbdb6c70fd663d9aea9ee304a0d91f347e4169a756b8ad141b41 ;;
+            Q5_K_M) dm=qwen-image-2.1-UC-Q5_K_M.gguf; dm_sha=af0bf278cf16d204fb31c384dc82fd41dca82d976b15fe9305a60c726fd6f821 ;;
+            Q8_0)   dm=qwen-image-2.1-UC-Q8_0.gguf;   dm_sha=cde456c72ea3ecebfc1be783300e972711d875e0c5f1bed33d42b66b156affa8 ;;
+            *) echo "::error::unknown diffusion quant"; exit 1 ;;
+          esac
+          case "$IN_TEXT_ENCODER" in
+            Q4_K_M) llm=Qwen3VL-8B-Instruct-Q4_K_M.gguf; llm_sha=67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2 ;;
+            Q8_0)   llm=Qwen3VL-8B-Instruct-Q8_0.gguf;   llm_sha=0d264b3941185d00a74f75c4245521dae088ff1efc90ab8d1754e83f5844adb0 ;;
+            *) echo "::error::unknown text encoder quant"; exit 1 ;;
+          esac
+          vae=qwen_image_2.1_vae_bf16.safetensors
+          fetch "$HF_UC_BASE/$dm" "$dm" "$dm_sha"
+          fetch "$HF_LLM_BASE/$llm" "$llm" "$llm_sha"
+          fetch "$HF_UC_BASE/vae/$vae" "$vae" bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9
+          {
+            echo "DM_FILE=$dm"
+            echo "LLM_FILE=$llm"
+            echo "VAE_FILE=$vae"
+          } >> "$GITHUB_ENV"
+          df -h "$MODELS_DIR"
+          # Drop the download page cache so it does not skew memory readings.
+          sync
+          echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+
+      - name: Configure swap
+        run: |
+          set -euo pipefail
+          sudo swapoff -a
+          if [ "$((10#$IN_SWAP_GB))" -gt 0 ]; then
+            n="$((10#$IN_SWAP_GB))"
+            free_gb() { df -BG --output=avail "$1" | tail -1 | tr -dc '0-9'; }
+            swapfile=/mnt/swapfile-test
+            if [ "$(free_gb /mnt)" -lt "$((n + 1))" ]; then
+              swapfile="$MODELS_DIR/swapfile-test"
+              [ "$(free_gb "$MODELS_DIR")" -ge "$((n + 1))" ] || { echo "::error::No filesystem has ${n} GB free for swap"; exit 1; }
+            fi
+            sudo fallocate -l "${n}G" "$swapfile"
+            sudo chmod 600 "$swapfile"
+            sudo mkswap "$swapfile"
+            sudo swapon "$swapfile"
+          fi
+          swapon --show
+          free -m
+
+      - name: Generate image
+        run: |
+          set -euo pipefail
+          cd "$OUT"
+          if [ ! -x /usr/bin/time ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq time
+          fi
+
+          sampler() {
+            while true; do
+              awk -v t="$(date +%s)" '
+                /^MemAvailable:/ {a=$2} /^SwapTotal:/ {st=$2} /^SwapFree:/ {sf=$2}
+                END {print t, a, st - sf}' /proc/meminfo >> mem.log
+              sleep 5
+            done
+          }
+          : > mem.log
+          sampler &
+          sampler_pid=$!
+          vmstat -t 5 > vmstat.log &
+          vmstat_pid=$!
+          trap 'kill "$sampler_pid" "$vmstat_pid" 2>/dev/null || true' EXIT
+
+          args=(
+            --diffusion-model "$MODELS_DIR/$DM_FILE"
+            --llm "$MODELS_DIR/$LLM_FILE"
+            --vae "$MODELS_DIR/$VAE_FILE"
+            -p "$PROMPT"
+            -W "$((10#$IN_WIDTH))" -H "$((10#$IN_HEIGHT))"
+            --steps "$((10#$IN_STEPS))"
+            --cfg-scale 1.0 --sampling-method euler --backend cpu -s 42 -v
+          )
+          [ "$IN_FA" = true ] && args+=(--fa)
+          [ "$IN_MMAP" = true ] && args+=(--mmap)
+          [ "$IN_VAE_TILING" = true ] && args+=(--vae-tiling)
+          [ -n "$IN_THREADS" ] && args+=(-t "$((10#$IN_THREADS))")
+
+          set +e
+          /usr/bin/time -v -o time.txt "$SD/sd-cli" "${args[@]}" -o out.png 2>&1 | tee sd.log
+          rc="${PIPESTATUS[0]}"
+          set -e
+          echo "$rc" > exit.txt
+          exit "$rc"
+
+      - name: Summary
+        if: always()
+        run: |
+          set -uo pipefail
+          cd "$OUT" 2>/dev/null || { echo "No output dir, nothing to summarise" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          na=n/a
+          rc="$(cat exit.txt 2>/dev/null || echo "$na")"
+          if [ -s out.png ] && [ "$rc" = 0 ]; then result="image produced"; else result="failed (exit code $rc)"; fi
+
+          cpu="$(sed -n 's/^cpu: //p' facts.txt 2>/dev/null)"; : "${cpu:=$na}"
+          nproc_v="$(sed -n 's/^nproc: //p' facts.txt 2>/dev/null)"; : "${nproc_v:=$na}"
+          avx2="$(sed -n 's/^avx2: //p' facts.txt 2>/dev/null)"; : "${avx2:=$na}"
+          avx512="$(sed -n 's/^avx512f: //p' facts.txt 2>/dev/null)"; : "${avx512:=$na}"
+          memtotal="$(awk '/^Mem:/ {printf "%.1f GiB", $2/1024}' facts.txt 2>/dev/null)"; : "${memtotal:=$na}"
+
+          wall="$(sed -n 's/.*Elapsed (wall clock) time[^:]*: //p' time.txt 2>/dev/null)"; : "${wall:=$na}"
+          rss="$(awk -F': ' '/Maximum resident set size/ {printf "%.2f GiB", $2/1048576}' time.txt 2>/dev/null)"; : "${rss:=$na}"
+          minavail="$(awk 'NR==1 || $2<m {m=$2} END {if (NR) printf "%.2f GiB", m/1048576}' mem.log 2>/dev/null)"; : "${minavail:=$na}"
+          maxswap="$(awk '$3>m {m=$3} END {if (NR) printf "%.2f GiB", m/1048576}' mem.log 2>/dev/null)"; : "${maxswap:=$na}"
+          # vmstat si/so are KiB/s sampled every 5 s; skip the since-boot first row.
+          vmsw="$(awk '$1 ~ /^[0-9]+$/ && NR>3 {si+=$7; so+=$8; n++} END {if (n) printf "si %.0f MiB, so %.0f MiB", si*5/1024, so*5/1024}' vmstat.log 2>/dev/null)"; : "${vmsw:=$na}"
+
+          clean="$(tr '\r' '\n' < sd.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
+          grab() { printf '%s\n' "$clean" | grep -iE "$1" | tail -1 | sed -E 's/^\[[A-Z]+ *\] *//' | cut -c1-200; }
+          t_enc="$(grab 'get_learned_condition completed')"; : "${t_enc:=$na}"
+          t_samp="$(grab 'sampling completed')"; : "${t_samp:=$na}"
+          t_vae="$(grab 'decode_first_stage completed')"; : "${t_vae:=$na}"
+          t_step="$(printf '%s\n' "$clean" | grep -oE '[0-9.]+ *(s/it|it/s)' | tail -1)"; : "${t_step:=$na}"
+
+          {
+            echo "## qwen-image-cpu"
+            echo
+            echo "Timings are runner-indicative only: a shared ~4 vCPU runner says little about speed on the real machine, but RAM fit and swap behaviour carry over."
+            echo
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Result | $result |"
+            echo "| Runner | nproc $nproc_v, $cpu, avx2 $avx2, avx512f $avx512, MemTotal $memtotal |"
+            echo "| Inputs | diffusion $IN_DIFFUSION, text encoder $IN_TEXT_ENCODER, ${IN_WIDTH}x${IN_HEIGHT}, steps $IN_STEPS, threads ${IN_THREADS:-default}, swap ${IN_SWAP_GB} GB, mmap $IN_MMAP, fa $IN_FA, vae tiling $IN_VAE_TILING |"
+            echo "| Wall time | $wall |"
+            echo "| Max RSS | $rss |"
+            echo "| Min MemAvailable | $minavail |"
+            echo "| Max swap used | $maxswap |"
+            echo "| vmstat swap traffic | $vmsw |"
+            echo "| Text encoding | $t_enc |"
+            echo "| Sampling | $t_samp |"
+            echo "| Last step speed | $t_step |"
+            echo "| VAE decode | $t_vae |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$result" != "image produced" ]; then
+            {
+              echo
+              echo "Kernel OOM log tail:"
+              echo '```'
+              sudo dmesg 2>/dev/null | grep -iE 'oom|killed process' | tail -n 10 || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
+
+      - name: Upload image
+        uses: actions/upload-artifact@v7
+        with:
+          name: qwen-image-cpu-out-${{ inputs.diffusion }}-${{ inputs.width }}x${{ inputs.height }}
+          path: ${{ runner.temp }}/out/out.png
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qwen-image-cpu-logs
+          path: |
+            ${{ runner.temp }}/out/facts.txt
+            ${{ runner.temp }}/out/sd.log
+            ${{ runner.temp }}/out/mem.log
+            ${{ runner.temp }}/out/vmstat.log
+            ${{ runner.temp }}/out/time.txt
+            ${{ runner.temp }}/out/exit.txt
+          if-no-files-found: warn
+          retention-days: 1

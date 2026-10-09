@@ -36,6 +36,8 @@ podman cp "$cid:/" <dest>
 
 **TTS workflows** (`sec10v.yml`, `sec10v_maya1.yml`, `sec10v_test_voices.yml`, `omnivoice.yml`): check out the private repo `nqminhuit/sec10v` (via `SEC10V_ACCESS_TOKEN`) and run its Python TTS scripts on CPU-only torch, uploading mp3 artifacts with 1-day retention. `sec10v.yml` verifies output by building whisper.cpp, transcribing the generated audio, and comparing against the input text with a Levenshtein script, retrying generation once on failure. `omnivoice.yml` additionally triggers on **push to `text/omnivoice.txt`** — editing that file kicks off audiobook generation of its contents; it uses `HF_TOKEN`.
 
+**`qwen-image-cpu.yml`:** dispatch-only CPU-only Qwen-Image 2.1 RAM/speed probe on a 16 GB runner via the pinned sd.cpp CPU build and Q4 GGUF weights; the prompt is hardcoded and benign because run inputs and logs are public; kept for further evaluations.
+
 **One-off utility workflows:** `oci-retry-create.yml` (cron every 4h; loops inside the job retrying OCI free-tier ARM instance creation every 5 min, alternating shapes, and disables itself via `GH_PAT` once the instance exists — comments are in Vietnamese), `seed.yml` (download a URL to an artifact), `se.yml` (Standard Ebooks build), `conversations.yml` (Conversations Android APK).
 
 ## Conventions
