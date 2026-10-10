@@ -70,6 +70,8 @@ on:
           - '_live/TriciaG_cut_ssc115_02_various_128kb.mp3'
           - '_live/thestorygirl_clean9s.mp3'
           - '_live/thestorygirl_cut_cm2_02_mason_128kb.mp3'
+          - '_live/stacea-voice-elegant-06.wav'
+          - '_live/stacea-voice-sweet-12.wav'
       sec10v_ref:
         description: 'nqminhuit/sec10v ref to check out'
         required: false
