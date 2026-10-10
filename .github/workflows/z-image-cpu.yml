@@ -45,6 +45,18 @@ on:
         description: Pass --vae-tiling (cuts VAE decode memory, about 4 GB at 576x1024 otherwise)
         type: boolean
         default: false
+      prompt:
+        description: "Prompt (public: shown in this public repo's run logs, keep it SFW)"
+        type: string
+        default: 'Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
+      semi_realistic:
+        description: Prepend the semi-realistic wording (Z-Image renders plain illustration wording as a photo)
+        type: boolean
+        default: true
+      seed:
+        description: Seed (empty = random each run; reuse a run's seed to reproduce it)
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -63,12 +75,9 @@ jobs:
     env:
       IN_DIFFUSION: ${{ inputs.diffusion }}
       IN_TEXT_ENCODER: ${{ inputs.text_encoder }}
-      # Hardcoded, no prompt input: it shows in this public repo's file and logs, so keep it SFW.
-      PROMPT: 'Polished semi-realistic character illustration in the style of high-end digital concept art, crisp outlines, soft gradient shading, glossy highlights. Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
       DM_BASE: https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main
       LLM_BASE: https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main
     outputs:
-      prompt: ${{ steps.pick.outputs.prompt }}
       dm_url: ${{ steps.pick.outputs.dm_url }}
       dm_file: ${{ steps.pick.outputs.dm_file }}
       dm_sha: ${{ steps.pick.outputs.dm_sha }}
@@ -103,7 +112,6 @@ jobs:
           vae_sha=f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
           vae_gb=1
           {
-            echo "prompt=$PROMPT"
             echo "dm_url=$DM_BASE/$dm"
             echo "dm_file=$dm"
             echo "dm_sha=$dm_sha"
@@ -127,7 +135,7 @@ jobs:
     uses: ./.github/workflows/sd-cpu-probe.yml
     with:
       name: z-image-cpu
-      prompt: ${{ needs.resolve.outputs.prompt }}
+      prompt: ${{ format('{0}{1}', inputs.semi_realistic && 'Polished semi-realistic character illustration in the style of high-end digital concept art, crisp outlines, soft gradient shading, glossy highlights. ' || '', inputs.prompt) }}
       dm_url: ${{ needs.resolve.outputs.dm_url }}
       dm_file: ${{ needs.resolve.outputs.dm_file }}
       dm_sha: ${{ needs.resolve.outputs.dm_sha }}
@@ -150,6 +158,7 @@ jobs:
       flash_attn: ${{ inputs.flash_attn }}
       vae_tiling: ${{ inputs.vae_tiling }}
       labels: ${{ inputs.diffusion }}-${{ inputs.text_encoder }}
+      seed: ${{ inputs.seed }}
     secrets:
       BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
       BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
