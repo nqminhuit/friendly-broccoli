@@ -2,6 +2,7 @@
 book: The Innocence of Father Brown
 author: G. K. Chesterton
 part: The Blue Cross
+voice: _live/stacea-voice-sweet-12.wav
 title: The Blue Cross by G.K. Chesterton | The Priest Who Sees What Others Miss
 thumbnail: reflections/thumbnail.png
 description: |
