@@ -1,30 +1,30 @@
-name: qwen-image-cpu
+name: z-image-cpu
 
 on:
   workflow_dispatch:
     inputs:
       diffusion:
-        description: Qwen-Image 2.1 UC diffusion quant
+        description: Z-Image-Turbo diffusion quant
         type: choice
         default: Q8_0
-        options: [Q4_0, Q4_K_M, Q5_K_M, Q8_0]
+        options: [Q4_K, Q6_K, Q8_0]
       text_encoder:
-        description: Qwen3-VL-8B-Instruct text encoder quant
+        description: Qwen3-4B-Instruct-2507 text encoder quant
         type: choice
-        default: Q4_K_M
+        default: Q8_0
         options: [Q4_K_M, Q8_0]
       width:
         description: Image width (multiple of 32)
         type: string
-        default: '512'
+        default: '576'
       height:
         description: Image height (multiple of 32)
         type: string
-        default: '512'
+        default: '1024'
       steps:
         description: Sampling steps
         type: string
-        default: '10'
+        default: '8'
       threads:
         description: CPU threads (empty = all vCPUs from nproc)
         type: string
@@ -44,14 +44,14 @@ on:
       vae_tiling:
         description: Pass --vae-tiling (cuts VAE decode memory, about 4 GB at 576x1024 otherwise)
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
 
 # One run at a time; queue: max keeps every dispatched run waiting (FIFO, up to 100) instead of cancelling all but the newest.
 concurrency:
-  group: qwen-image-cpu
+  group: z-image-cpu
   queue: max
 
 jobs:
@@ -64,9 +64,9 @@ jobs:
       IN_DIFFUSION: ${{ inputs.diffusion }}
       IN_TEXT_ENCODER: ${{ inputs.text_encoder }}
       # Hardcoded, no prompt input: it shows in this public repo's file and logs, so keep it SFW.
-      PROMPT: 'Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
-      DM_BASE: https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/resolve/main
-      LLM_BASE: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main
+      PROMPT: 'Polished semi-realistic character illustration in the style of high-end digital concept art, crisp outlines, soft gradient shading, glossy highlights. Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
+      DM_BASE: https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main
+      LLM_BASE: https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main
     outputs:
       prompt: ${{ steps.pick.outputs.prompt }}
       dm_url: ${{ steps.pick.outputs.dm_url }}
@@ -87,20 +87,20 @@ jobs:
         run: |
           set -euo pipefail
           case "$IN_DIFFUSION" in
-            Q4_0)   dm=qwen-image-2.1-UC-Q4_0.gguf;   dm_sha=13f59f20656efc0aa385d03c1fcac1a9dc2ad6e5ccc0ea9bfe1d6ac636f2c5b9; dm_gb=4 ;;
-            Q4_K_M) dm=qwen-image-2.1-UC-Q4_K_M.gguf; dm_sha=e79c8a009f2ecbdb6c70fd663d9aea9ee304a0d91f347e4169a756b8ad141b41; dm_gb=5 ;;
-            Q5_K_M) dm=qwen-image-2.1-UC-Q5_K_M.gguf; dm_sha=af0bf278cf16d204fb31c384dc82fd41dca82d976b15fe9305a60c726fd6f821; dm_gb=6 ;;
-            Q8_0)   dm=qwen-image-2.1-UC-Q8_0.gguf;   dm_sha=cde456c72ea3ecebfc1be783300e972711d875e0c5f1bed33d42b66b156affa8; dm_gb=8 ;;
+            Q4_K) dm=z_image_turbo-Q4_K.gguf; dm_sha=14b375ab4f226bc5378f68f37e899ef3c2242b8541e61e2bc1aff40976086fbd; dm_gb=4 ;;
+            Q6_K) dm=z_image_turbo-Q6_K.gguf; dm_sha=319f627beac8059b7546f36a7b4d5097b7f4ee6a1fc37585d0f75ca1d12d01af; dm_gb=6 ;;
+            Q8_0) dm=z_image_turbo-Q8_0.gguf; dm_sha=df1c5baa86d1398c979495a6072dbcee79444fdb884a2445582ba0769c44e9a1; dm_gb=7 ;;
             *) echo "::error::unknown diffusion quant"; exit 1 ;;
           esac
           case "$IN_TEXT_ENCODER" in
-            Q4_K_M) llm=Qwen3VL-8B-Instruct-Q4_K_M.gguf; llm_sha=67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2; llm_gb=5 ;;
-            Q8_0)   llm=Qwen3VL-8B-Instruct-Q8_0.gguf;   llm_sha=0d264b3941185d00a74f75c4245521dae088ff1efc90ab8d1754e83f5844adb0; llm_gb=9 ;;
+            Q4_K_M) llm=Qwen3-4B-Instruct-2507-Q4_K_M.gguf; llm_sha=3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597; llm_gb=3 ;;
+            Q8_0)   llm=Qwen3-4B-Instruct-2507-Q8_0.gguf;   llm_sha=391c1e410fd9f4cf2de2b510273b56a84c19ce18f4fa3bfb3774031dac4ef068; llm_gb=5 ;;
             *) echo "::error::unknown text encoder quant"; exit 1 ;;
           esac
-          vae=qwen_image_2.1_vae_bf16.safetensors
-          vae_url="$DM_BASE/vae/$vae"
-          vae_sha=bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9
+          # FLUX.1-schnell's ae is gated on HF; this is the same AE, ungated.
+          vae=z_image_vae.safetensors
+          vae_url=https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/resolve/main/vae/diffusion_pytorch_model.safetensors
+          vae_sha=f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
           vae_gb=1
           {
             echo "prompt=$PROMPT"
@@ -126,7 +126,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/sd-cpu-probe.yml
     with:
-      name: qwen-image-cpu
+      name: z-image-cpu
       prompt: ${{ needs.resolve.outputs.prompt }}
       dm_url: ${{ needs.resolve.outputs.dm_url }}
       dm_file: ${{ needs.resolve.outputs.dm_file }}
