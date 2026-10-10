@@ -1,9 +1,9 @@
 # A reflection file in this repo turns into a ~10-minute *reflection* video (not a word-for-word
-# reading) of a Standard Ebooks chapter. Pushing reflections/<name>.md to master starts one run
+# reading) on a literary work: a whole book, a chapter or a passage. Pushing reflections/<name>.md to master starts one run
 # per added or changed file (see reflections/README.md for the format); a manual dispatch re-runs
 # one file, optionally with another voice. A commit message with [skip ci] pushes without a run.
 #
-#   prepare_reflection.py reads the file (source, voice, SEO, script and its ![](image) lines) →
+#   prepare_reflection.py reads the file (book, author, part, voice, SEO, script and its ![](image) lines) →
 #   Gemini writes whatever the file leaves out (image prompts only for a file with no image lines,
 #   the SEO only when there is no title) → trigger_workflow.py fans out one sec10v.yml run per
 #   chunk + 1 intro run → reflection_images.py downloads the file's images (or, without image
@@ -443,7 +443,7 @@ jobs:
             echo "no script — the prepare step failed; see its log for the errors"
             exit 0
           fi
-          echo "=== script — ${BOOK_TITLE} / ${CHAPTER_TITLE} ==="
+          echo "=== script — ${BOOK_TITLE}${CHAPTER_TITLE:+ / $CHAPTER_TITLE} ==="
           if [ -s "out/${BASE}.script.md" ]; then
             cat "out/${BASE}.script.md"; echo
           else
@@ -730,7 +730,7 @@ jobs:
           # so the link is printed here instead (and named again by the report step below).
           args=(--video "out/${BASE}.final.mp4"
                 --seo "out/seo/${BASE}.seo.md"
-                --fallback-title "${BOOK_TITLE} — A reflection on ${CHAPTER_TITLE}")
+                --fallback-title "${BOOK_TITLE} — A reflection${CHAPTER_TITLE:+ on $CHAPTER_TITLE}")
           if [ -s "out/pics/${BASE}.thumb.jpg" ]; then args+=(--thumbnail "out/pics/${BASE}.thumb.jpg"); fi
           python scripts/youtube_upload.py "${args[@]}"
 
