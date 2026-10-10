@@ -58,6 +58,16 @@ The rabbit is a symbol of...
 
 **This repo is public.** Write each image `ref` as a name relative to the image bucket (for example `magi-1.jpg`). It is resolved against the `IMAGE_BASE_URL` secret, so the bucket's address never appears here. Never paste a bucket or presigned URL into a file.
 
+## Video effects
+
+Reflection videos use 25 FPS and cycle through fades, dissolves and smooth left/right wipes at image
+changes. Transitions last 1 second; the video fades from black over its first second and to black over
+its final 1.5 seconds. These effects change only the visuals, not narration or chapter timing.
+
+Adjust `VIDEO_FRAMERATE`, `CROSSFADE_SECONDS`, `TRANSITION_STYLE`, `FADE_IN_SECONDS` and
+`FADE_OUT_SECONDS` in `.github/workflows/sec10v_reflection.yml`. Existing videos need a new build to
+pick up the settings.
+
 ## Prompts
 Act as a senior literary critic and write a reflection on the book "" by "" in the style of a YouTube video script under 15 minutes of narration. The reflection should be engaging, insightful, and accessible to a general audience. Do not spoil the ending of the book, but provide enough context to entice viewers to read it. Use a friendly, warm, and conversational tone, as if you are sharing your thoughts with a friend. Include personal anecdotes or experiences related to the book, and highlight its themes, characters, and writing style. Use simple vocabulary and avoid complex literary jargon so that the viewers can easily follow along and understand the reflection. The reflection should be structured in a way that each paragraph can be read aloud clearly and naturally, with appropriate pauses and emphasis. Here is the markdown format for the reflection:
 

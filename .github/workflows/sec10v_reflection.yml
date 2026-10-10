@@ -8,7 +8,7 @@
 #   prepare_reflection.py reads it → reflection_images.py downloads the file's images (a failure
 #   here stops the run before any chunk is dispatched) → trigger_workflow.py fans out one
 #   sec10v.yml run per chunk → import_artifacts_mp3s.py collects the audio → automate_audiobook.py
-#   builds the video, crossfading at each image change → reflection_chapters.py adds YouTube
+#   builds the video with varied image transitions and opening/closing fades → reflection_chapters.py adds YouTube
 #   chapters → the video goes to the bucket, or to YouTube as private when UPLOAD_TO_YOUTUBE is on.
 #   A [Pause] line is 3 s of silence; the video starts with the script's own words.
 #
@@ -79,6 +79,9 @@ env:
   REFLECTION_VOICE: '_live/stacea-voice-ai-07.wav'
   VIDEO_FRAMERATE: '25'           # a smooth crossfade needs more than the audiobook's 5 fps
   CROSSFADE_SECONDS: '1'          # fade into each new section's image
+  TRANSITION_STYLE: 'varied'      # cycle through gentle fades, dissolves and smooth wipes
+  FADE_IN_SECONDS: '1'            # visual fade from black at the opening
+  FADE_OUT_SECONDS: '1.5'         # visual fade to black at the ending
 
 permissions:
   actions: write        # dispatch sec10v.yml runs in this repo and read their artifacts
@@ -444,7 +447,8 @@ jobs:
           # and fail on the torch this runner deliberately doesn't have.
           python scripts/pending_chunks.py
           python scripts/automate_audiobook.py "$BASE" --segment-images out/segment-images.json \
-            --framerate "$VIDEO_FRAMERATE" --crossfade "$CROSSFADE_SECONDS"
+            --framerate "$VIDEO_FRAMERATE" --crossfade "$CROSSFADE_SECONDS" \
+            --transition "$TRANSITION_STYLE" --fade-in "$FADE_IN_SECONDS" --fade-out "$FADE_OUT_SECONDS"
           ls -lh out/*.final.mp4
 
       # whisper-cli for the spot-check below. Restore only, never build: the chunk runs populate
