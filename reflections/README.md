@@ -11,22 +11,35 @@ README never triggers a run.
 
 ```markdown
 ---
-book: Short Fiction
-author: O. Henry
-part: The Gift of the Magi
+book: <book name, required>
+author: <author name, required>
+part: <part name, or chapter, optional>
 voice: _live/maddpren_enhanced_cut_magician_12_maugham_128kb.wav
-title: The Gift of the Magi: what a gift really costs
-thumbnail: magi-thumb.jpg
+title: <youtube seo friendly title, recommended>
+thumbnail: <optional thumbnail image, recommended>
 description: |
-  One dollar and eighty-seven cents...
-  #BookReflection #OHenry
+  <youtube seo friendly description, recommended>
+  <hash tags, recommended>
 ---
-## A Dollar and Eighty-Seven Cents
-![](magi-1.jpg)
+## <heading session opening>
+![](img-1.jpg)
+<!-- image_prompt:
+A crowded Edwardian London railway station...
+Cartoon cinematic, oil painting, vintage Victorian palette.
+Full-HD resolution, 16:9 aspect ratio. No text.
+-->
 Hello, and welcome...
 
-![](magi-2.jpg)
-Della counted it three times...
+## <heading session 1>
+![](img-2.jpg)
+The rabbit is a symbol of...
+
+## <other remaining heading sessions>
+![](img-x.jpg)
+...
+
+## <closing session>
+...
 ```
 
 - **Front matter**, between the two `---` lines:
@@ -45,3 +58,44 @@ Della counted it three times...
 **File names must be unique under `reflections/`.** The video, its chunks and the prompts and SEO saved in the bucket are all named `Reflection.<FileName>` (`gift-of-the-magi.md` becomes `Reflection.GiftOfTheMagi`), so `a/magi.md` and `b/magi.md`, or `the-magi.md` and `the_magi.md`, would overwrite each other. Renaming a file starts a fresh name, without the saved prompts and SEO.
 
 **This repo is public.** Write each image `ref` as a name relative to the image bucket (for example `magi-1.jpg`). It is resolved against the `IMAGE_BASE_URL` secret, so the bucket's address never appears here. Never paste a bucket or presigned URL into a file.
+
+## Prompts
+Act as a senior literary critic and write a reflection on the book "" by "" in the style of a YouTube video script under 15 minutes of narration. The reflection should be engaging, insightful, and accessible to a general audience. Do not spoil the ending of the book, but provide enough context to entice viewers to read it. Use a friendly, warm, and conversational tone, as if you are sharing your thoughts with a friend. Include personal anecdotes or experiences related to the book, and highlight its themes, characters, and writing style. Use simple vocabulary and avoid complex literary jargon so that the viewers can easily follow along and understand the reflection. The reflection should be structured in a way that each paragraph can be read aloud clearly and naturally, with appropriate pauses and emphasis. Here is the markdown format for the reflection:
+
+```markdown
+---
+book: <book name, required>
+author: <author name, required>
+part: <part name, or chapter, optional>
+title: <youtube seo friendly title, recommended>
+thumbnail: <optional thumbnail image, recommended>
+description: |
+  <youtube seo friendly description, recommended>
+  <hash tags, recommended>
+---
+## <heading session opening>
+![](img-1.jpg)
+<!-- image_prompt:
+A crowded Edwardian London railway station...
+Cartoon cinematic, oil painting, vintage Victorian palette.
+Full-HD resolution, 16:9 aspect ratio. No text.
+-->
+Hello, and welcome...
+
+## <heading session 1>
+![](img-2.jpg)
+<!-- image_prompt: ...-->
+The rabbit is a symbol of...
+
+## <other remaining heading sessions>
+![](img-x.jpg)
+<!-- image_prompt: ...-->
+...
+
+## <closing session>
+![](img-x.jpg)
+<!-- image_prompt: ...-->
+...
+```
+
+Each session should also have a prompt for creating an image that visually represents the content of that session. The image prompt should be descriptive and specific, capturing the essence of the reflection and the themes discussed in that section. The image should be consistent with the overall tone and style of the whole reflection, and should enhance the viewer's understanding and engagement with the content. The image prompt should be written in a way that it can be easily understood by an AI image generation tool, and should include details such as colors, composition, and any relevant symbols or motifs.
