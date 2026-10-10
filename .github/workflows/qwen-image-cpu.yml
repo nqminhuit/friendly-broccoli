@@ -34,17 +34,17 @@ on:
         type: string
         default: '0'
       mmap:
-        description: Pass --mmap
+        description: Pass --mmap (lets the kernel drop the text encoder pages after encoding)
         type: boolean
-        default: false
+        default: true
       flash_attn:
         description: Pass --fa
         type: boolean
         default: true
       vae_tiling:
-        description: Pass --vae-tiling
+        description: Pass --vae-tiling (cuts VAE decode memory, about 4 GB at 576x1024 otherwise)
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
