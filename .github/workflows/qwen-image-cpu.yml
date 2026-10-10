@@ -49,6 +49,11 @@ on:
 permissions:
   contents: read
 
+# One run at a time; queue: max keeps every dispatched run waiting (FIFO, up to 100) instead of cancelling all but the newest.
+concurrency:
+  group: qwen-image-cpu
+  queue: max
+
 env:
   IN_DIFFUSION: ${{ inputs.diffusion }}
   IN_TEXT_ENCODER: ${{ inputs.text_encoder }}
