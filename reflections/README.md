@@ -1,7 +1,7 @@
 # Reflection files
 
 Each `reflections/<name>.md` file describes one reflection video: the work it reflects on, the voice,
-the SEO, the script, and the image shown over each paragraph. Pushing an added or changed file to
+the title and description, the script, and the image shown over each paragraph. Pushing an added or changed file to
 `master` starts `.github/workflows/sec10v_reflection.yml` for that file. To re-run a file, or to try
 another voice without a commit, dispatch the workflow with `file: reflections/<name>.md` and, if you
 like, a voice override. Put `[skip ci]` in the commit message to push without starting a run. This
@@ -15,10 +15,10 @@ book: <book name, required>
 author: <author name, required>
 part: <part name, or chapter, optional>
 voice: _live/maddpren_enhanced_cut_magician_12_maugham_128kb.wav
-title: <youtube seo friendly title, recommended>
+title: <youtube seo friendly title, required>
 thumbnail: <optional thumbnail image, recommended>
 description: |
-  <youtube seo friendly description, recommended>
+  <youtube seo friendly description, required>
   <hash tags, recommended>
 ---
 ## <heading session opening>
@@ -43,19 +43,18 @@ The rabbit is a symbol of...
 ```
 
 - **Front matter**, between the two `---` lines:
-  - `book` and `author` (both required) name the work. `part` is optional and names what the reflection covers, such as a chapter or a passage; without it the intro reads "A reflection". Each is a single line. Nothing is fetched: you write the whole script.
+  - `book` and `author` (both required) name the work. `part` is optional and names what the reflection covers, such as a chapter or a passage; it is used in the video's name and description. Each is a single line. Nothing is fetched and no LLM is used: you write the whole file.
   - `voice` is optional and is a file under sec10v's `resources/voices/`.
-  - `title` and `description` are the YouTube SEO. When both are given, Gemini is not asked for them. A `description` needs a `title`.
+  - `title` and `description` (both required) are the YouTube SEO.
   - `thumbnail` is optional. Without it, the first image is the thumbnail.
   - `key: value` takes the rest of the line, so a title may contain `:`. `key: |` takes the following lines indented by at least 2 spaces. Any other key is an error.
-- **Script**: `## Heading` starts a section, and blank lines separate paragraphs.
-- **Images**: a line that is exactly `![](ref)` shows that image from the next paragraph on, until the next image line. The first image line must come before the first paragraph.
+- **Script**: `## Heading` starts a section, and blank lines separate paragraphs. A line that is exactly `[Pause]` is 3 seconds of silence. The video opens with the script's first words: there is no intro.
+- **Images**: a line that is exactly `![](ref)` shows that image from the next paragraph on, until the next image line. Image lines are required, and the first one must come before the first paragraph.
   - Image lines are never read aloud.
   - Every image change starts a new chunk, so avoid very short runs of text under one image (under about 40 words).
   - All images are downloaded before any audio is made, and a missing one fails the run at once.
-  - Without any image lines, the old flow applies: Gemini writes one image prompt per section, and you upload `<BaseName>.<k>.jpg` to the bucket while the run waits.
 
-**File names must be unique under `reflections/`.** The video, its chunks and the prompts and SEO saved in the bucket are all named `Reflection.<FileName>` (`gift-of-the-magi.md` becomes `Reflection.GiftOfTheMagi`), so `a/magi.md` and `b/magi.md`, or `the-magi.md` and `the_magi.md`, would overwrite each other. Renaming a file starts a fresh name, without the saved prompts and SEO.
+**File names must be unique under `reflections/`.** The video and its chunks are all named `Reflection.<FileName>` (`gift-of-the-magi.md` becomes `Reflection.GiftOfTheMagi`), so `a/magi.md` and `b/magi.md`, or `the-magi.md` and `the_magi.md`, would overwrite each other. Renaming a file starts a fresh name.
 
 **This repo is public.** Write each image `ref` as a name relative to the image bucket (for example `magi-1.jpg`). It is resolved against the `IMAGE_BASE_URL` secret, so the bucket's address never appears here. Never paste a bucket or presigned URL into a file.
 

@@ -1,29 +1,22 @@
-# A reflection file in this repo turns into a ~10-minute *reflection* video (not a word-for-word
-# reading) on a literary work: a whole book, a chapter or a passage. Pushing reflections/<name>.md to master starts one run
+# A reflection file in this repo turns into a reflection video (not a word-for-word reading) on a
+# literary work: a whole book, a chapter or a passage. Pushing reflections/<name>.md to master starts one run
 # per added or changed file (see reflections/README.md for the format); a manual dispatch re-runs
 # one file, optionally with another voice. A commit message with [skip ci] pushes without a run.
 #
-#   prepare_reflection.py reads the file (book, author, part, voice, SEO, script and its ![](image) lines) →
-#   Gemini writes whatever the file leaves out (image prompts only for a file with no image lines,
-#   the SEO only when there is no title) → trigger_workflow.py fans out one sec10v.yml run per
-#   chunk + 1 intro run → reflection_images.py downloads the file's images (or, without image
-#   lines, waits for <IMAGE_BASE_URL>/<BaseName>.<k>.jpg) → import_artifacts_mp3s.py collects the
-#   audio → automate_audiobook.py builds the video, crossfading at each image change →
-#   reflection_chapters.py adds YouTube chapters → youtube_upload.py publishes it as private.
+#   You write the whole file: front matter (book, author, title, description; part, voice, thumbnail
+#   optional), the script and its ![](image) lines. No LLM is involved.
+#   prepare_reflection.py reads it → reflection_images.py downloads the file's images (a failure
+#   here stops the run before any chunk is dispatched) → trigger_workflow.py fans out one
+#   sec10v.yml run per chunk → import_artifacts_mp3s.py collects the audio → automate_audiobook.py
+#   builds the video, crossfading at each image change → reflection_chapters.py adds YouTube
+#   chapters → the video goes to the bucket, or to YouTube as private when UPLOAD_TO_YOUTUBE is on.
+#   A [Pause] line is 3 s of silence; the video starts with the script's own words.
 #
 # This repo is public: write image refs as names relative to the bucket (IMAGE_BASE_URL), never as
-# bucket URLs. A file's image that cannot be downloaded fails the run before any chunk is dispatched.
+# bucket URLs.
 # The voice comes from the file's `voice:`; the dispatch's voice input overrides it for voice tests.
-#
-# Without image lines the old flow applies: copy each image prompt out of the 🚨 step's log, draw
-# the images, and upload them as <BaseName>.1.jpg … <BaseName>.<n>.jpg while the TTS runs. A missing
-# image falls back to the previous section's; without image 1 no video is built.
-#
-# Every run saves the prompts and SEO Gemini wrote to the bucket; an uploaded <BaseName>.seo.md or
-# <BaseName>.<k>.prompt.txt replaces Gemini's for that file, and the next run reuses them — so after
-# changing what a section is about (or the number of sections), delete them so Gemini writes new ones.
-# The file's own title and description beat both. YouTube upload is temporarily off
-# (UPLOAD_TO_YOUTUBE); the video goes to the bucket as <BaseName>.<voice>.mp4.
+# YouTube upload is temporarily off (UPLOAD_TO_YOUTUBE); the video goes to the bucket as
+# <BaseName>.<voice>.mp4.
 #
 # Secrets — those of sec10v_chapter.yml (see there for details), plus the four BUCKET_* ones:
 #   IMAGE_BASE_URL        image bucket prefix, no trailing slash; relative image refs resolve against it (required)
@@ -33,7 +26,6 @@
 #   BUCKET_SECRET_ACCESS_KEY  its secret key
 #   SEC10V_ACCESS_TOKEN   also used by sec10v.yml
 #   YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REFRESH_TOKEN
-#   GEMINI_API_KEY        writes the image prompts and the SEO (unused when the file has both)
 #   HF_TOKEN
 name: sec10v reflection
 run-name: ${{ inputs.file || github.event.head_commit.message }}
@@ -84,16 +76,6 @@ env:
   VOICE_FROM_FILE: '(from file)'   # the voice input's default; keep in sync with its options
   # For a file without `voice:`; deliberately not the audiobook's voice, which an empty value would pick.
   REFLECTION_VOICE: '_live/stacea-voice-sweet-12.wav'
-  # Writes the image prompts and SEO; stronger than the audiobook's flash-lite.
-  # List models: curl -H "x-goog-api-key: …" https://generativelanguage.googleapis.com/v1beta/models
-  REFLECTION_MODEL: 'gemini-3.8-flash'
-  # Tried in order after REFLECTION_MODEL; each but the last gets one try and moves on after any failure.
-  # The last one retries 429, 5xx and timeouts; Gemma is last because it has its own rate limits.
-  # The 2.5 models are left out because Google limits them to earlier users.
-  GEMINI_FALLBACK_MODELS: 'gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-26b-a4b-it'
-  # The human drawing up to 5 images is the critical path, hence the long second window.
-  IMAGE_EARLY_WAIT_MINUTES: '20'  # while the chunk runs are synthesizing
-  IMAGE_WAIT_MINUTES: '120'       # second chance, after the audio is collected
   VIDEO_FRAMERATE: '25'           # a smooth crossfade needs more than the audiobook's 5 fps
   CROSSFADE_SECONDS: '1'          # fade into each new section's image
 
@@ -219,21 +201,14 @@ jobs:
       - name: Install Python dependencies
         run: pip install requests
 
-      - name: Prepare the reflection from your file (image prompts and SEO only if missing)
-        timeout-minutes: 90   # safety net only; gemini_client.py enforces its own retry budgets
+      - name: Prepare the reflection from your file
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
           FILE: ${{ matrix.file }}   # via env, never spliced into the script body
           VOICE_OVERRIDE: ${{ inputs.voice }}
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          if [ -z "$IMAGE_BASE_URL" ]; then
-            echo "❌ the IMAGE_BASE_URL secret is not set — the file's image names resolve against the image bucket"
-            exit 1
-          fi
-          args=(--script-file "$GITHUB_WORKSPACE/$FILE" --script-base-url "$IMAGE_BASE_URL" --max-chunks "$MAX_CHUNKS")
+          args=(--script-file "$GITHUB_WORKSPACE/$FILE" --max-chunks "$MAX_CHUNKS")
           if [ -n "$VOICE_OVERRIDE" ] && [ "$VOICE_OVERRIDE" != "$VOICE_FROM_FILE" ]; then args+=(--voice "$VOICE_OVERRIDE"); fi
           python scripts/prepare_reflection.py "${args[@]}"
           # Export the parsed/inferred values for the later steps.
@@ -249,70 +224,8 @@ jobs:
           echo "--- out/text ---"; ls -la out/text
           echo "--- dispatch manifest ---"; python -c "import json; print(len(json.load(open('out/workflow-input.json'))), 'item(s)')"
 
-      # Only what Gemini wrote this run (never the script), so bucket edits survive; the SEO goes up
-      # before the chapters block is added. aws's stderr is swallowed: it would show the bucket and prefix.
-      - name: Save Gemini's outputs to the bucket
-        continue-on-error: true
-        working-directory: sec10v
-        env:
-          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
-          BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: us-east-1   # MinIO accepts any region unless one is configured
-        run: |
-          if [ -z "$BUCKET_S3_ENDPOINT" ] || [ -z "$BUCKET_S3_URI" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
-            echo "⏭️ bucket upload secrets not set (BUCKET_S3_ENDPOINT, BUCKET_S3_URI, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY) — Gemini's outputs are not saved"
-            exit 0
-          fi
-          aws --version
-          aws configure set default.s3.addressing_style path   # MinIO needs path-style
-          # One "<local file>\t<bucket name>" line per file Gemini wrote this run.
-          uploads=$(python - <<'EOF'
-          import json
-          import os
-
-          d = json.load(open("out/chapter.json"))
-          base = d["base_name"]
-          if "generated_files" in d:
-              for name in d["generated_files"]:
-                  if "/" in name or name.endswith(".script.md"):
-                      continue
-                  dirs = ("out/seo", "out/prompts")
-                  file = next((f"{p}/{name}" for p in dirs if os.path.exists(f"{p}/{name}")), f"{dirs[1]}/{name}")
-                  print(f"{file}\t{name}")
-          else:
-              # An older sec10v's chapter.json has no generated_files.
-              models = d.get("models", {})
-              if models.get("script") != "edited":
-                  print(f"out/{base}.script.md\t{base}.script.md")
-              if models.get("prompts") != "bucket":
-                  print(f"out/seo/{base}.seo.md\t{base}.seo.md")
-                  for k in range(1, len(d["sections"]) + 1):
-                      print(f"out/prompts/{base}.{k}.prompt.txt\t{base}.{k}.prompt.txt")
-          EOF
-          )
-          if [ -z "$uploads" ]; then
-            echo "nothing new to save — everything came from the bucket"
-            exit 0
-          fi
-          failed=0
-          while IFS=$'\t' read -r file name; do
-            if [ "${name##*.}" = "md" ]; then type="text/markdown; charset=utf-8"; else type="text/plain; charset=utf-8"; fi
-            # </dev/null so aws can never swallow the rest of the list from stdin.
-            if [ -f "$file" ] && err=$(aws s3 cp --endpoint-url "$BUCKET_S3_ENDPOINT" --only-show-errors \
-                --content-type "$type" "$file" "${BUCKET_S3_URI%/}/${name}" 2>&1 </dev/null); then
-              echo "✅ saved ${name}"
-            else
-              code=$(printf '%s' "${err:-}" | grep -o 'An error occurred ([A-Za-z]*)' | head -n1 || true)
-              echo "❌ could not save ${name}${code:+ — $code}"
-              failed=1
-            fi
-          done <<< "$uploads"
-          if [ "$failed" -ne 0 ]; then exit 1; fi
-
       # YouTube takes an untimed transcript and aligns it to the audio itself, so this is just
-      # the intro plus the chapter text — the exact words the TTS read. Written here, right after
+      # the script text — the exact words the TTS read. Written here, right after
       # the text exists, so it survives a failure anywhere later in the run.
       - name: Write the YouTube transcript
         working-directory: sec10v
@@ -340,106 +253,43 @@ jobs:
             || sudo apt-get install -y --no-install-recommends --fix-missing ffmpeg
           ffmpeg -version | head -n1
 
-      # Single pass, so the prompt step below can mark images already in the bucket. The file's
-      # own images must all download now: failing here costs nothing, failing after ~20 chunk runs does.
-      - name: Pick up images already uploaded
+      # The file's images must all download now: failing here costs nothing, failing after ~20 chunk runs does.
+      # Image refs resolve against IMAGE_BASE_URL (a secret, never printed).
+      - name: Download the images from your file
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
           FILE: ${{ matrix.file }}
           IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
         run: |
-          has_images=$(python -c "import json; print('true' if json.load(open('out/chapter.json')).get('images') else 'false')")
           if [ -z "$IMAGE_BASE_URL" ]; then
-            echo "⏭️ no IMAGE_BASE_URL secret — skipping the image check"
-            exit 0
+            echo "❌ the IMAGE_BASE_URL secret is not set — the file's image names resolve against the image bucket"
+            exit 1
           fi
           set +e
-          python scripts/reflection_images.py --base-url "$IMAGE_BASE_URL" --timeout 0 --poll-interval 20
+          python scripts/reflection_images.py --base-url "$IMAGE_BASE_URL" --timeout 0
           rc=$?
           set -e
-          if [ "$has_images" = "true" ]; then
-            if [ "$rc" -ne 0 ]; then
-              echo "❌ image(s) from $FILE could not be downloaded (exit $rc):"
-              python - <<'EOF'
+          python - <<'EOF'
           import json
           import os
           from urllib.parse import urlsplit
 
-          for image in json.load(open("out/chapter.json"))["images"]:
-              if not os.path.exists(f"out/pics/{image['name']}.jpg"):
-                  # Only the basename: an absolute ref may be a presigned URL carrying a token.
-                  ref = os.path.basename(urlsplit(image["ref"]).path)
-                  print(f"   - {image['name']} ({ref}) — chunk(s) {', '.join(map(str, image['chunks']))}")
+          images = json.load(open("out/chapter.json"))["images"]
+          missing = [i for i in images if not os.path.exists(f"out/pics/{i['name']}.jpg")]
+          print(f"🖼️ images come from your file: {len(images)} image(s), {len(missing)} not downloaded")
+          for image in images:
+              mark = "❌" if image in missing else "✅"
+              # Only the basename: an absolute ref may be a presigned URL carrying a token.
+              ref = os.path.basename(urlsplit(image["ref"]).path)
+              print(f"{mark} {image['name']} ({ref}) — chunk(s) {', '.join(map(str, image['chunks']))}")
           EOF
-              exit 1
-            fi
-          elif [ "$rc" -ne 0 ] && [ "$rc" -ne 10 ]; then
-            exit "$rc"
+          if [ "$rc" -ne 0 ]; then
+            echo "❌ image(s) from $FILE could not be downloaded (exit $rc)"
+            exit 1
           fi
 
-      # The log, not $GITHUB_STEP_SUMMARY: the summary page is kept to the QA table and the
-      # transcript, so the prompts are printed here, first and uncollapsed (no ::group::), because
-      # they are the one time-critical thing on the page; the script gets its own step below.
-      # `if: always()` so a late failure still shows whatever was written. Every conditional here
-      # is if/fi, never `[ … ] && …`: under `bash -e` a trailing false test would fail the step,
-      # and a failed always()-step marks the whole job failed.
-      - name: "🚨 IMAGE PROMPTS READY — copy from this step"
-        if: always()
-        working-directory: sec10v
-        env:
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
-        run: |
-          if [ -z "$BASE" ] || [ ! -f out/chapter.json ]; then
-            echo 'no image prompts — the prepare step failed; see its log for the errors'
-            exit 0
-          fi
-          # IMAGE_BASE_URL is a secret, so anything echoing it shows as ***; the filename is
-          # the part you actually need, and it is not sensitive.
-          if [ -n "$IMAGE_BASE_URL" ]; then target="your image bucket"; else target="your image bucket (set the IMAGE_BASE_URL secret)"; fi
-          TARGET="$target" python - <<'EOF'
-          import json
-          import os
-          import sys
-          from urllib.parse import urlsplit
-
-          d = json.load(open("out/chapter.json"))
-          if d.get("images"):
-              images = d["images"]
-              missing = [i for i in images if not os.path.exists(f"out/pics/{i['name']}.jpg")]
-              if missing:
-                  print(f"🖼️ images come from your file: {len(images)} image(s), {len(missing)} not downloaded")
-              else:
-                  print(f"🖼️ images come from your file: {len(images)} image(s), all downloaded")
-              for image in images:
-                  mark = "❌" if image in missing else "✅"
-                  # Only the basename: an absolute ref may be a presigned URL carrying a token.
-                  ref = os.path.basename(urlsplit(image["ref"]).path)
-                  print(f"{mark} {image['name']} ({ref}) — chunk(s) {', '.join(map(str, image['chunks']))}")
-              sys.exit(0)
-          sections = d["sections"]
-          n = len(sections)
-          for k, section in enumerate(sections, 1):
-              image = section["image"]
-              print(f"=== image {k} of {n} — {section['heading']} ===")
-              prompt = f"out/prompts/{image}.prompt.txt"
-              if os.path.exists(prompt):
-                  print(open(prompt).read().rstrip())
-              else:
-                  print(f"(no {prompt})")
-              if os.path.exists(f"out/pics/{image}.jpg"):
-                  print("✅ already uploaded")
-              else:
-                  print(f"upload to {os.environ['TARGET']} as {image}.jpg (.png, .jpeg and .webp work too)")
-              print()
-          EOF
-          has_images=$(python -c "import json; print('true' if json.load(open('out/chapter.json')).get('images') else 'false')")
-          if [ "$has_images" != "true" ]; then
-            echo "Polling starts as soon as the chunk runs are dispatched and lasts ${IMAGE_EARLY_WAIT_MINUTES} minute(s)."
-            echo "A second window of ${IMAGE_WAIT_MINUTES} minute(s) follows once the audio is collected."
-          fi
-
-      # Separate from the prompts so they are not buried under ~1,500 words of script.
+      # Its own step so the script is easy to find in the log.
       - name: "📝 Reflection script — review it here"
         if: always()
         working-directory: sec10v
@@ -458,8 +308,6 @@ jobs:
           fi
           echo
           echo "To change it, edit $FILE and push (or re-dispatch with it)."
-          echo "If you change what a section is about (or the number of sections), delete the saved"
-          echo "${BASE}.seo.md and ${BASE}.<k>.prompt.txt from the bucket too, so Gemini writes new ones."
 
       # One hub download per chapter instead of one per chunk: the chunk runs restore this
       # same cache key and then run with HF_HUB_OFFLINE=1. Without it they all hit Hugging
@@ -505,11 +353,10 @@ jobs:
       # audio that actually landed: exit 0 = complete, 10 = it rewrote the manifest with the
       # stragglers, anything else = broken. A chunk that hasn't finished in 40 minutes never
       # will — re-dispatching it next round is faster than waiting, and 3 x 40 leaves room in
-      # the job budget for the image wait and the encode.
-      # trigger_workflow.py returns as soon as the runs are dispatched, so the chunks synthesize
-      # on their own runners from here on. Round 1 is dispatched in its own step purely so the
-      # image wait below can slot in between dispatch and collection.
-      - name: Dispatch one sec10v.yml run per chunk (+ intro)
+      # the job budget for the encode.
+      # trigger_workflow.py returns as soon as the runs are dispatched; the collect step below
+      # waits for them. Round 1 is dispatched in its own step so later rounds can re-dispatch.
+      - name: Dispatch one sec10v.yml run per chunk
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
@@ -521,39 +368,6 @@ jobs:
             --ref master \
             --inputs-file out/workflow-input.json \
             --token "${{ secrets.GITHUB_TOKEN }}"
-
-      # Costs nothing: without it the job would spend these minutes idle inside the collector's
-      # poll. The log streams live, so a wrong filename or a corrupt upload shows up now.
-      - name: Wait for the section images (while the chunks synthesize)
-        id: image
-        continue-on-error: true
-        timeout-minutes: 60   # safety net only; reflection_images.py enforces its own deadline
-        working-directory: sec10v
-        env:
-          PYTHONPATH: scripts
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
-        run: |
-          if [ -z "$IMAGE_BASE_URL" ]; then
-            echo "complete=false" >> "$GITHUB_OUTPUT"
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️ no IMAGE_BASE_URL secret — skipping the image wait"
-            exit 0
-          fi
-          wait_minutes=${IMAGE_EARLY_WAIT_MINUTES%%.*}
-          args=(--base-url "$IMAGE_BASE_URL" --timeout "$((${wait_minutes:-0} * 60))" --poll-interval 20)
-          set +e
-          python scripts/reflection_images.py "${args[@]}"
-          rc=$?
-          set -e
-          if [ "$rc" -eq 0 ]; then complete=true; else complete=false; fi
-          if [ -f "out/pics/${BASE}.jpg" ]; then found=true; else found=false; fi
-          echo "complete=$complete" >> "$GITHUB_OUTPUT"
-          echo "found=$found" >> "$GITHUB_OUTPUT"
-          if [ "$complete" = "true" ]; then
-            echo "✅ every section image received — the video will build as soon as the audio lands"
-          else
-            echo "⏳ image(s) still missing (exit $rc) — there is a second window after the audio is collected"
-          fi
 
       - name: Collect MP3s, retry stragglers
         working-directory: sec10v
@@ -618,41 +432,8 @@ jobs:
           done
           echo "--- out/*.mp3 ---"; ls -la out/*.mp3
 
-      # Second chance, for images not up yet during the synthesis window.
-      - name: Wait for the section images (second chance)
-        id: image_retry
-        if: steps.image.outputs.complete != 'true'
-        continue-on-error: true
-        timeout-minutes: 180   # safety net only: reflection_images.py enforces --timeout itself
-        working-directory: sec10v
-        env:
-          PYTHONPATH: scripts
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
-        run: |
-          if [ -z "$IMAGE_BASE_URL" ]; then
-            echo "complete=false" >> "$GITHUB_OUTPUT"
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️ no IMAGE_BASE_URL secret — skipping the video"
-            exit 0
-          fi
-          wait_minutes=${IMAGE_WAIT_MINUTES%%.*}
-          args=(--base-url "$IMAGE_BASE_URL" --timeout "$((${wait_minutes:-0} * 60))" --poll-interval 20)
-          set +e
-          python scripts/reflection_images.py "${args[@]}"
-          rc=$?
-          set -e
-          if [ "$rc" -eq 0 ]; then complete=true; else complete=false; fi
-          if [ -f "out/pics/${BASE}.jpg" ]; then found=true; else found=false; fi
-          echo "complete=$complete" >> "$GITHUB_OUTPUT"
-          echo "found=$found" >> "$GITHUB_OUTPUT"
-          if [ -d out/pics ]; then ls -la out/pics; fi
-          if [ "$found" != "true" ]; then
-            echo "⚠️ image 1 never arrived (exit $rc) — no video will be built"
-          fi
-
       - name: Build the final video
         id: video
-        if: steps.image.outputs.found == 'true' || steps.image_retry.outputs.found == 'true'
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
@@ -787,18 +568,6 @@ jobs:
             echo "These runs failed in the last retry round; rerun this workflow to try again."
             exit 1
           fi
-          if [ -f out/chapter.json ]; then
-            python - <<'EOF'
-          import json
-          import os
-
-          # Section 1 has no fallback; the "image 1 never arrived" line below covers it.
-          for k, section in enumerate(json.load(open("out/chapter.json"))["sections"], 1):
-              if k > 1 and not os.path.exists(f"out/pics/{section['image']}.jpg"):
-                  print(f"⚠️ image {k} ({section['image']}.jpg, “{section['heading']}”) never arrived"
-                        " — the previous section's image was used instead")
-          EOF
-          fi
           if [ "${{ steps.qa.outcome }}" = "failure" ]; then
             echo "⚠️ the final QA flagged something — see the Final QA table in the run summary"
           fi
@@ -808,11 +577,6 @@ jobs:
           fi
           if [ "${{ steps.bucket_video.outcome }}" = "success" ]; then
             echo "🪣 video uploaded to your bucket — the name is in the \"Upload the video to the bucket\" step's log"
-          fi
-          if [ "${{ steps.image.outputs.found }}" != "true" ] && [ "${{ steps.image_retry.outputs.found }}" != "true" ]; then
-            echo "⚠️ image 1 never arrived — no video was built, nothing was uploaded to YouTube."
-            echo "   Upload ${BASE}.1.jpg to the bucket and re-run with the same file: the prompts and SEO"
-            echo "   were saved there (if the BUCKET_* secrets are set)."
           fi
 
       # Last on purpose. $GITHUB_STEP_SUMMARY renders blocks in the order steps append them, so
