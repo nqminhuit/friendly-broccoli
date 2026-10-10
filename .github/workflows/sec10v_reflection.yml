@@ -162,6 +162,11 @@ jobs:
     if: needs.files.outputs.files != '[]'
     name: ${{ matrix.file }}
     runs-on: ubuntu-latest
+    # One run per file at a time: two would fan out duplicate chunk runs and overwrite each other's video.
+    # A newer pending run replaces an older pending one, so the latest push of the file is what builds.
+    concurrency:
+      group: ${{ github.workflow }}-${{ matrix.file }}
+      cancel-in-progress: false
     strategy:
       matrix:
         file: ${{ fromJSON(needs.files.outputs.files) }}
