@@ -45,6 +45,14 @@ on:
         description: Pass --vae-tiling (cuts VAE decode memory, about 4 GB at 576x1024 otherwise)
         type: boolean
         default: true
+      prompt:
+        description: "Prompt (public: shown in this public repo's run logs, keep it SFW)"
+        type: string
+        default: 'Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
+      seed:
+        description: Seed (empty = random each run; reuse a run's seed to reproduce it)
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -63,12 +71,9 @@ jobs:
     env:
       IN_DIFFUSION: ${{ inputs.diffusion }}
       IN_TEXT_ENCODER: ${{ inputs.text_encoder }}
-      # Hardcoded, no prompt input: it shows in this public repo's file and logs, so keep it SFW.
-      PROMPT: 'Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
       DM_BASE: https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/resolve/main
       LLM_BASE: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main
     outputs:
-      prompt: ${{ steps.pick.outputs.prompt }}
       dm_url: ${{ steps.pick.outputs.dm_url }}
       dm_file: ${{ steps.pick.outputs.dm_file }}
       dm_sha: ${{ steps.pick.outputs.dm_sha }}
@@ -103,7 +108,6 @@ jobs:
           vae_sha=bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9
           vae_gb=1
           {
-            echo "prompt=$PROMPT"
             echo "dm_url=$DM_BASE/$dm"
             echo "dm_file=$dm"
             echo "dm_sha=$dm_sha"
@@ -127,7 +131,7 @@ jobs:
     uses: ./.github/workflows/sd-cpu-probe.yml
     with:
       name: qwen-image-cpu
-      prompt: ${{ needs.resolve.outputs.prompt }}
+      prompt: ${{ inputs.prompt }}
       dm_url: ${{ needs.resolve.outputs.dm_url }}
       dm_file: ${{ needs.resolve.outputs.dm_file }}
       dm_sha: ${{ needs.resolve.outputs.dm_sha }}
@@ -150,6 +154,7 @@ jobs:
       flash_attn: ${{ inputs.flash_attn }}
       vae_tiling: ${{ inputs.vae_tiling }}
       labels: ${{ inputs.diffusion }}-${{ inputs.text_encoder }}
+      seed: ${{ inputs.seed }}
     secrets:
       BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
       BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}

@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       prompt:
-        description: Hardcoded prompt from the wrapper (public repo, keep SFW)
+        description: Prompt (public in this repo's run logs and logs artifact, keep SFW)
         type: string
         required: true
       dm_url:
@@ -99,6 +99,10 @@ on:
         description: Quant description for the summary and bucket object name, e.g. Q8_0-Q4_K_M
         type: string
         required: true
+      seed:
+        description: Seed (empty = random each run)
+        type: string
+        default: ''
     secrets:
       BUCKET_S3_ENDPOINT:
         required: false
@@ -137,6 +141,7 @@ env:
   IN_FA: ${{ inputs.flash_attn }}
   IN_VAE_TILING: ${{ inputs.vae_tiling }}
   IN_LABELS: ${{ inputs.labels }}
+  IN_SEED: ${{ inputs.seed }}
   SD_REPO: https://github.com/leejet/stable-diffusion.cpp.git
   SD_COMMIT: 3f8527a46c54ecf4cb4ed6003da8e8982283c73c
   # Upstream's CPU-release flags; part of the build cache key, so editing them rebuilds.
@@ -151,6 +156,7 @@ jobs:
       contents: read
     outputs:
       image_artifact_id: ${{ steps.image.outputs.artifact-id }}
+      seed: ${{ steps.generate.outputs.seed }}
     steps:
       - name: Validate inputs and record runner facts
         run: |
@@ -176,6 +182,14 @@ jobs:
           (( 10#$IN_HEIGHT >= 32 && 10#$IN_HEIGHT % 32 == 0 )) || { echo "::error::height must be a multiple of 32"; exit 1; }
           (( 10#$IN_STEPS >= 1 )) || { echo "::error::steps must be >= 1"; exit 1; }
           (( 10#$IN_SWAP_GB <= 16 )) || { echo "::error::swap_gb must be 0-16"; exit 1; }
+          stripped="${IN_PROMPT//[[:space:]]/}"
+          [ -n "$stripped" ] || { echo "::error::prompt must not be empty"; exit 1; }
+          (( ${#IN_PROMPT} <= 4000 )) || { echo "::error::prompt must be at most 4000 characters"; exit 1; }
+          if [ -n "$IN_SEED" ]; then
+            [[ "$IN_SEED" =~ ^[0-9]+$ ]] || { echo "::error::seed must be an integer"; exit 1; }
+            # Length check first so 10# arithmetic cannot overflow on a huge digit string.
+            (( ${#IN_SEED} <= 10 && 10#$IN_SEED <= 2147483647 )) || { echo "::error::seed must be at most 2147483647"; exit 1; }
+          fi
 
           OUT="$RUNNER_TEMP/out"
           mkdir -p "$OUT"
@@ -320,6 +334,7 @@ jobs:
           free -m
 
       - name: Generate image
+        id: generate
         run: |
           set -euo pipefail
           cd "$OUT"
@@ -343,6 +358,14 @@ jobs:
           vmstat_pid=$!
           trap 'kill "$sampler_pid" "$vmstat_pid" 2>/dev/null || true' EXIT
 
+          if [ -n "$IN_SEED" ]; then
+            seed="$((10#$IN_SEED))"
+          else
+            seed="$(( $(od -An -N4 -tu4 /dev/urandom) & 0x7fffffff ))"
+          fi
+          echo "$seed" > seed.txt
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+
           args=(
             --diffusion-model "$MODELS_DIR/$DM_FILE"
             --llm "$MODELS_DIR/$LLM_FILE"
@@ -350,7 +373,7 @@ jobs:
             -p "$IN_PROMPT"
             -W "$((10#$IN_WIDTH))" -H "$((10#$IN_HEIGHT))"
             --steps "$((10#$IN_STEPS))"
-            --cfg-scale "$IN_CFG" --sampling-method euler --backend cpu -s 42 -v
+            --cfg-scale "$IN_CFG" --sampling-method euler --backend cpu -s "$seed" -v
           )
           [ "$IN_FA" = true ] && args+=(--fa)
           [ "$IN_MMAP" = true ] && args+=(--mmap)
@@ -381,6 +404,7 @@ jobs:
           cps="$(sed -n 's/^cores_per_socket: //p' facts.txt 2>/dev/null)"; : "${cps:=$na}"
           sockets="$(sed -n 's/^sockets: //p' facts.txt 2>/dev/null)"; : "${sockets:=$na}"
           threads_used="$(cat threads.txt 2>/dev/null || echo "$na")"
+          seed_used="$(cat seed.txt 2>/dev/null || echo "$na")"
           os="$(sed -n 's/^os: //p' facts.txt 2>/dev/null)"; : "${os:=$na}"
           gccv="$(sed -n 's/^gcc: //p' facts.txt 2>/dev/null)"; : "${gccv:=$na}"
           sdc="$(sed -n 's/^sd_commit: //p' facts.txt 2>/dev/null)"; : "${sdc:=$na}"
@@ -413,7 +437,7 @@ jobs:
             echo "| Result | $result |"
             echo "| Runner | nproc $nproc_v, cores $cps x threads/core $tpc x sockets $sockets, $cpu, avx2 $avx2, avx512f $avx512, MemTotal $memtotal |"
             echo "| Build | $os, $gccv, sd.cpp ${sdc:0:7} built from source |"
-            echo "| Inputs | quants $IN_LABELS, ${IN_WIDTH}x${IN_HEIGHT}, steps $IN_STEPS, cfg $IN_CFG, threads $threads_used, swap ${IN_SWAP_GB} GB, mmap $IN_MMAP, fa $IN_FA, vae tiling $IN_VAE_TILING |"
+            echo "| Inputs | quants $IN_LABELS, ${IN_WIDTH}x${IN_HEIGHT}, steps $IN_STEPS, seed $seed_used, cfg $IN_CFG, threads $threads_used, swap ${IN_SWAP_GB} GB, mmap $IN_MMAP, fa $IN_FA, vae tiling $IN_VAE_TILING |"
             echo "| Wall time | $wall |"
             echo "| Max RSS | $rss |"
             echo "| Min MemAvailable | $minavail |"
@@ -457,6 +481,7 @@ jobs:
             ${{ runner.temp }}/out/vmstat.log
             ${{ runner.temp }}/out/time.txt
             ${{ runner.temp }}/out/exit.txt
+            ${{ runner.temp }}/out/seed.txt
           if-no-files-found: warn
           retention-days: 1
 
@@ -484,6 +509,7 @@ jobs:
           BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
           AWS_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
+          SEED: ${{ needs.probe.outputs.seed }}
           AWS_DEFAULT_REGION: us-east-1   # MinIO accepts any region unless one is configured
         run: |
           set -euo pipefail
@@ -494,7 +520,8 @@ jobs:
             exit 1
           fi
           aws configure set default.s3.addressing_style path   # MinIO needs path-style
-          name="${IN_NAME}/${GITHUB_RUN_ID}-${IN_LABELS}-${IN_WIDTH}x${IN_HEIGHT}-${IN_STEPS}steps.png"
+          [[ "$SEED" =~ ^[0-9]+$ ]] || { echo "::error::seed output missing or not an integer"; exit 1; }
+          name="${IN_NAME}/${GITHUB_RUN_ID}-${IN_LABELS}-${IN_WIDTH}x${IN_HEIGHT}-${IN_STEPS}steps-seed${SEED}.png"
           if err=$(aws s3 cp --endpoint-url "$BUCKET_S3_ENDPOINT" --only-show-errors \
               --content-type image/png "$IMG" "${BUCKET_S3_URI%/}/${name}" 2>&1 </dev/null); then
             echo "saved ${name}" | tee -a "$GITHUB_STEP_SUMMARY"
