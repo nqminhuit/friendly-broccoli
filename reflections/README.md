@@ -1,6 +1,6 @@
 # Reflection files
 
-Each `reflections/<name>.md` file describes one reflection video: the source chapter, the voice,
+Each `reflections/<name>.md` file describes one reflection video: the work it reflects on, the voice,
 the SEO, the script, and the image shown over each paragraph. Pushing an added or changed file to
 `master` starts `.github/workflows/sec10v_reflection.yml` for that file. To re-run a file, or to try
 another voice without a commit, dispatch the workflow with `file: reflections/<name>.md` and, if you
@@ -11,7 +11,9 @@ README never triggers a run.
 
 ```markdown
 ---
-source: https://github.com/standardebooks/o-henry_short-fiction/blob/master/src/epub/text/the-gift-of-the-magi.xhtml
+book: Short Fiction
+author: O. Henry
+part: The Gift of the Magi
 voice: _live/maddpren_enhanced_cut_magician_12_maugham_128kb.wav
 title: The Gift of the Magi: what a gift really costs
 thumbnail: magi-thumb.jpg
@@ -28,7 +30,7 @@ Della counted it three times...
 ```
 
 - **Front matter**, between the two `---` lines:
-  - `source` (required) is the Standard Ebooks chapter URL copied from GitHub. Add `#<section-id>` to narrate one chapter of a file that holds several.
+  - `book` and `author` (both required) name the work. `part` is optional and names what the reflection covers, such as a chapter or a passage; without it the intro reads "A reflection". Each is a single line. Nothing is fetched: you write the whole script.
   - `voice` is optional and is a file under sec10v's `resources/voices/`.
   - `title` and `description` are the YouTube SEO. When both are given, Gemini is not asked for them. A `description` needs a `title`.
   - `thumbnail` is optional. Without it, the first image is the thumbnail.
@@ -39,5 +41,7 @@ Della counted it three times...
   - Every image change starts a new chunk, so avoid very short runs of text under one image (under about 40 words).
   - All images are downloaded before any audio is made, and a missing one fails the run at once.
   - Without any image lines, the old flow applies: Gemini writes one image prompt per section, and you upload `<BaseName>.<k>.jpg` to the bucket while the run waits.
+
+**File names must be unique under `reflections/`.** The video, its chunks and the prompts and SEO saved in the bucket are all named `Reflection.<FileName>` (`gift-of-the-magi.md` becomes `Reflection.GiftOfTheMagi`), so `a/magi.md` and `b/magi.md`, or `the-magi.md` and `the_magi.md`, would overwrite each other. Renaming a file starts a fresh name, without the saved prompts and SEO.
 
 **This repo is public.** Write each image `ref` as a name relative to the image bucket (for example `magi-1.jpg`). It is resolved against the `IMAGE_BASE_URL` secret, so the bucket's address never appears here. Never paste a bucket or presigned URL into a file.
