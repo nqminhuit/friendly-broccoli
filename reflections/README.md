@@ -60,9 +60,9 @@ The rabbit is a symbol of...
 
 ## Video effects
 
-Reflection videos use **30 FPS with gentle Ken Burns motion by default**: roughly 5% zoom and subtle
-pans, alternating direction between images. Each move spans the image's full narration, continuing
-across audio chunks without restarting. No opt-in flag or changes to your reflection file are needed.
+Reflection videos use **30 FPS with gentle Ken Burns motion by default**: a smooth 24-second
+zoom-in/out cycle capped at 8%, with subtle alternating pans. Sub-pixel motion continues across
+audio chunks without restarting. No AI model, opt-in flag or reflection-file changes are needed.
 
 Fades, dissolves and smooth left/right wipes alternate at image changes. Transitions last 1 second;
 the video fades from black over its first second and to black over its final 1.5 seconds. These effects
