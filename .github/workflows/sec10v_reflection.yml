@@ -64,6 +64,7 @@ on:
           - '_live/thestorygirl_cut_cm2_02_mason_128kb.mp3'
           - '_live/stacea-voice-elegant-06.wav'
           - '_live/stacea-voice-sweet-12.wav'
+          - '_live/stacea-voice-ai-07.wav'
       sec10v_ref:
         description: 'nqminhuit/sec10v ref to check out'
         required: false
@@ -75,7 +76,7 @@ env:
   MAX_CHUNKS: '30'   # each image change in the file is a chunk boundary
   VOICE_FROM_FILE: '(from file)'   # the voice input's default; keep in sync with its options
   # For a file without `voice:`; deliberately not the audiobook's voice, which an empty value would pick.
-  REFLECTION_VOICE: '_live/stacea-voice-sweet-12.wav'
+  REFLECTION_VOICE: '_live/stacea-voice-ai-07.wav'
   VIDEO_FRAMERATE: '25'           # a smooth crossfade needs more than the audiobook's 5 fps
   CROSSFADE_SECONDS: '1'          # fade into each new section's image
 
