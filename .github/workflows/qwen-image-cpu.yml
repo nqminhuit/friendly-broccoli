@@ -6,7 +6,7 @@ on:
       diffusion:
         description: Qwen-Image 2.1 UC diffusion quant
         type: choice
-        default: Q4_K_M
+        default: Q8_0
         options: [Q4_0, Q4_K_M, Q5_K_M, Q8_0]
       text_encoder:
         description: Qwen3-VL-8B-Instruct text encoder quant
@@ -69,6 +69,8 @@ env:
   PROMPT: 'Sitting on a white sofa with arms extended wide, resting hands on the backrest, legs crossed at the knee, polished digital illustration of a woman with a slender, elegant feminine build and balanced proportions. She has long, straight auburn hair, a fair complexion, and a captivating facial expression. She is wearing a bright turquoise blue halter-style mini dress with subtle shimmering textures and black fishnet stockings paired with black high-heeled sandals featuring gold stud accents. The artwork features smooth value transitions, believable volume, and high-quality idealization.'
   SD_REPO: https://github.com/leejet/stable-diffusion.cpp.git
   SD_COMMIT: 3f8527a46c54ecf4cb4ed6003da8e8982283c73c
+  # Upstream's CPU-release flags; part of the build cache key, so editing them rebuilds.
+  SD_CMAKE_FLAGS: -DCMAKE_BUILD_TYPE=Release -DSD_BUILD_SHARED_LIBS=ON -DSD_BUILD_SHARED_GGML_LIB=ON -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH=$ORIGIN
   HF_UC_BASE: https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-GGUF/resolve/main
   HF_LLM_BASE: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main
 
@@ -167,7 +169,23 @@ jobs:
           echo "MODELS_DIR=$best/models" >> "$GITHUB_ENV"
 
       # Upstream ships Linux binaries for Ubuntu 24.04 only, so build the pinned commit here. Same flags as its CPU release.
+      - name: Compute sd.cpp build cache key
+        id: sdkey
+        run: |
+          set -euo pipefail
+          os="$(. /etc/os-release; echo "$ID-$VERSION_ID")"
+          flags="$(printf '%s' "$SD_CMAKE_FLAGS" | sha256sum | cut -c1-12)"
+          echo "key=sd-cpu-$os-$SD_COMMIT-$flags" >> "$GITHUB_OUTPUT"
+
+      - name: Restore sd.cpp build
+        id: sdcache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/sd
+          key: ${{ steps.sdkey.outputs.key }}
+
       - name: Build stable-diffusion.cpp (CPU)
+        if: steps.sdcache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           src="$RUNNER_TEMP/sd-src"
@@ -180,16 +198,26 @@ jobs:
           # The server frontend submodule is skipped: sd-cli does not need it, so neither Node nor pnpm is required.
           git -C "$src" submodule update --init --recursive --depth 1 -- ggml thirdparty/libwebp thirdparty/libwebm
 
-          cmake -S "$src" -B "$src/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DSD_BUILD_SHARED_LIBS=ON -DSD_BUILD_SHARED_GGML_LIB=ON \
-            -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON \
-            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON '-DCMAKE_INSTALL_RPATH=$ORIGIN'
+          read -ra flags <<< "$SD_CMAKE_FLAGS"
+          cmake -S "$src" -B "$src/build" -G Ninja "${flags[@]}"
           cmake --build "$src/build" --target sd-cli -j "$(nproc)"
 
           # bin/ also holds the libggml-cpu-*.so backends that sd-cli loads at run time.
           mkdir -p "$RUNNER_TEMP/sd"
           cp -a "$src/build/bin/." "$RUNNER_TEMP/sd/"
           rm -rf "$src"
+
+      # Saved before any model file is parsed, so a run can't write a tampered build into the cache.
+      - name: Save sd.cpp build
+        if: steps.sdcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/sd
+          key: ${{ steps.sdkey.outputs.key }}
+
+      - name: Check sd-cli
+        run: |
+          set -euo pipefail
           echo "SD=$RUNNER_TEMP/sd" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/sd/sd-cli" --version
           devices="$("$RUNNER_TEMP/sd/sd-cli" --list-devices)"
