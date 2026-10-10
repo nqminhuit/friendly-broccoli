@@ -83,7 +83,7 @@ env:
   MAX_CHUNKS: '30'   # each image change in the file is a chunk boundary
   VOICE_FROM_FILE: '(from file)'   # the voice input's default; keep in sync with its options
   # For a file without `voice:`; deliberately not the audiobook's voice, which an empty value would pick.
-  REFLECTION_VOICE: '_live/maddpren_enhanced_cut_magician_12_maugham_128kb.wav'
+  REFLECTION_VOICE: '_live/stacea-voice-sweet-12.wav'
   # Writes the image prompts and SEO; stronger than the audiobook's flash-lite.
   # List models: curl -H "x-goog-api-key: …" https://generativelanguage.googleapis.com/v1beta/models
   REFLECTION_MODEL: 'gemini-3.8-flash'
