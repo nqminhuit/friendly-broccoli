@@ -267,7 +267,7 @@ jobs:
             exit 1
           fi
           set +e
-          python scripts/reflection_images.py --base-url "$IMAGE_BASE_URL" --timeout 0 --poll-interval 20
+          python scripts/reflection_images.py --base-url "$IMAGE_BASE_URL" --timeout 0
           rc=$?
           set -e
           python - <<'EOF'
@@ -289,7 +289,7 @@ jobs:
             exit 1
           fi
 
-      # Separate from the prompts so they are not buried under ~1,500 words of script.
+      # Its own step so the script is easy to find in the log.
       - name: "📝 Reflection script — review it here"
         if: always()
         working-directory: sec10v
