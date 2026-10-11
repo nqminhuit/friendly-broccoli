@@ -18,11 +18,20 @@ description: |
 <Dedicated thumbnail scene, clear focal point, composition readable at small sizes; full chosen style. Full-HD, 16:9, no text.>
 -->
 ## Opening
-![](book-1.jpg)
+![](book-01.jpg)
 <!-- image_prompt:
 <Scene, composition, colors, symbols; full chosen style. Full-HD, 16:9, no text.>
 -->
 <Narration; spoken spoiler warning first if needed.>
+## Section 1
+![](book-02.jpg)
+<!-- image_prompt:
+...
+-->
+<Narration ...>
+## Other sections
+...
+## Closing
 ```
 
 - Required for new reflections: `book`, `author`, `title`, `description`, `thumbnail`. Only optional keys: `part` (chapter/passage), `voice` (sec10v `resources/voices/` file). Hashtags recommended.
