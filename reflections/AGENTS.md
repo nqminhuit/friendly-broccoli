@@ -1,4 +1,4 @@
-- Read `README.md`; load `write-reflection` for authoring/review.
+- Use `write-reflection` skill for reflection authoring/review.
 - Enforce README metadata, image, naming and spoiler-warning rules; no bucket/presigned URLs or secrets.
 - Preserve existing voices and narration/video defaults unless asked.
 - Do not commit, push, dispatch or publish unless requested. Review private YouTube uploads before publication.
