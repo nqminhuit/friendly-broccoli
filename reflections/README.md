@@ -7,6 +7,13 @@ another voice without a commit, dispatch the workflow with `file: reflections/<n
 like, a voice override. Put `[skip ci]` in the commit message to push without starting a run. This
 README never triggers a run.
 
+The finished video uploads directly to YouTube as **private**, with its title, description, chapters
+and thumbnail. Review it in YouTube Studio before publishing. The video is not uploaded to the
+storage bucket; that bucket still supplies the illustrations through `IMAGE_BASE_URL`.
+
+The workflow needs the repository secrets `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET` and
+`YOUTUBE_REFRESH_TOKEN`, as well as the existing image and chunk-runner secrets.
+
 ## Format
 
 ```markdown
