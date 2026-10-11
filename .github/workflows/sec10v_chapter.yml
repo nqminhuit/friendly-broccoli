@@ -7,7 +7,19 @@
 #   LOG of the "Print the image prompt" step → trigger_workflow.py fans out N chunk runs + 1 intro
 #   run of sec10v.yml → import_artifacts_mp3s.py collects them (retrying stragglers) →
 #   fetch_image.py waits for <IMAGE_BASE_URL>/<BaseName>.jpg → automate_audiobook.py builds
-#   the video → youtube_upload.py publishes it to the channel as a private video.
+#   the video → video_fallback.py uploads it to the channel as a private video.
+#
+# Fallback-only saved-video retries: YouTube is tried first; a successful first upload
+# stores NO bundle/receipt in storage. Only when the VIDEO upload fails is the finished
+# bundle saved to the existing S3-compatible bucket/private video prefix, and the job
+# STILL FAILS visibly so the same chapter is triggered again next day. That retry
+# restores the MATCHING failed-upload bundle and retries only YouTube — no Gemini/image
+# waits/TTS/cache warm/audio collection/FFmpeg/repeated QA. Changed source/voice/settings/
+# refs or fresh=true bypass reuse; images replaced under the SAME ref need fresh too.
+# A stored success receipt suppresses duplicates; ambiguous prior completion stops for
+# manual review. Thumbnail failure alone is not a failed video upload.
+# Requires sec10v scripts/video_fallback.py at the selected sec10v_ref (two-repo
+# dependency: merge/select that helper before using these workflows).
 #
 # So: dispatch, open the run page, copy the prompt out of that step's log, generate the image,
 # upload it to the bucket under the BaseName. That happens while the TTS runs, so it costs no
@@ -34,11 +46,18 @@
 #   SEC10V_ACCESS_TOKEN  also used by sec10v.yml
 #   YOUTUBE_CLIENT_ID    OAuth client of a Google Cloud project with the YouTube Data API v3
 #   YOUTUBE_CLIENT_SECRET  enabled, plus a refresh token for that client scoped
-#   YOUTUBE_REFRESH_TOKEN  https://www.googleapis.com/auth/youtube.upload. videos.insert costs
-#                        1600 of the project's default 10,000 daily quota units (~6 chapters/day),
-#                        and an unaudited client has its uploads force-locked to private anyway.
+#   YOUTUBE_REFRESH_TOKEN  https://www.googleapis.com/auth/youtube.upload. Current official
+#                        docs default to 100 videos.insert calls/day, but actual Cloud
+#                        project/channel limits vary, and an unaudited client has its uploads
+#                        force-locked to private anyway.
 #   GEMINI_API_KEY       Google Gemini API key used to generate the image prompt and SEO
 #   HF_TOKEN
+#   BUCKET_S3_ENDPOINT, BUCKET_S3_URI, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY
+#                        existing S3-compatible bucket/private video prefix for FAILED-upload
+#                        bundles only (read/write; deletion optional — cleanup after the success
+#                        receipt is best-effort). The prefix must actually deny anonymous read;
+#                        the helper verifies on saving only (prefix name/ACL alone is not enough)
+#                        and normal runs write nothing to storage. No credentials/URLs in logs.
 name: sec10v chapter
 run-name: ${{ inputs.se_url }}
 
@@ -74,7 +93,7 @@ on:
         type: string
         default: ''
       fresh:
-        description: 'Start fresh: ignore this chapter''s artifacts from earlier runs and re-synthesize every chunk (and the prompt/SEO)'
+        description: 'Start fresh: ignore this chapter''s artifacts from earlier runs and re-synthesize every chunk (and the prompt/SEO). Fresh also bypasses a saved failed-upload video and rebuilds from scratch — check the channel first, as an ambiguous prior completion can create a duplicate upload.'
         required: false
         type: boolean
         default: false
@@ -129,6 +148,10 @@ permissions:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    # Same source URL runs serially so two retry jobs cannot duplicate a stored upload.
+    concurrency:
+      group: ${{ github.workflow }}-${{ inputs.se_url }}
+      cancel-in-progress: false
     steps:
       - name: Checkout this repo
         uses: actions/checkout@v7
@@ -222,6 +245,35 @@ jobs:
           python scripts/transcript.py
           echo "::endgroup::"
 
+      # Retry-only: restores a MATCHING bundle saved by a prior failed YouTube upload and
+      # retries only the upload — no TTS/Gemini/images/FFmpeg/QA. Miss means render normally.
+      # Runs before reuse_audio rewrites the manifest or any expensive work starts.
+      - name: Restore a video from a failed upload
+        id: fallback
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+          SE_URL: ${{ inputs.se_url }}
+          IMAGE_URL: ${{ inputs.image_url }}
+          FRESH: ${{ inputs.fresh }}
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
+          BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          BUCKET_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
+        run: |
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "❌ AWS CLI is required for the failed-upload lookup"
+            exit 1
+          fi
+          if [ ! -f scripts/video_fallback.py ]; then
+            echo "❌ selected sec10v ref lacks scripts/video_fallback.py — use a newer sec10v_ref"
+            exit 1
+          fi
+          args=(restore --kind chapter --source-id "$SE_URL" --workflow-file "$GITHUB_WORKSPACE/.github/workflows/sec10v_chapter.yml" --out-dir out)
+          if [ -n "$IMAGE_URL" ]; then args+=(--image-ref "$IMAGE_URL"); fi
+          if [ "$FRESH" = "true" ]; then args+=(--force); fi
+          python scripts/video_fallback.py "${args[@]}"
+
       # A run that died after the audio (no image, a broken encode, a timeout) left its MP3s in
       # an artifact named after the BaseName. Fetch them instead of spending another 40 minutes
       # of runners recreating them. Opportunistic: no artifact, an expired one or a network
@@ -234,7 +286,7 @@ jobs:
       # That is the escape hatch for a previous run whose MP3s are bad rather than absent — a
       # truncated chunk that still passed its own QA, a voice change, an edited chapter text.
       - name: Reuse audio from a previous run of this chapter
-        if: ${{ !inputs.fresh }}
+        if: ${{ !inputs.fresh && steps.fallback.outputs.status == 'miss' }}
         continue-on-error: true
         working-directory: sec10v
         env:
@@ -249,6 +301,7 @@ jobs:
       # are genuinely missing, and reports what the rest of the run still has to do.
       - name: Decide what still needs doing
         id: tts
+        if: ${{ steps.fallback.outputs.status == 'miss' }}
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
@@ -281,6 +334,7 @@ jobs:
       # image already uploaded to the bucket generate SEO only, even when image_url is left blank.
       - name: Detect existing background image
         id: image_available
+        if: ${{ steps.fallback.outputs.status == 'miss' }}
         working-directory: sec10v
         env:
           IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
@@ -314,7 +368,7 @@ jobs:
       # retries (three for timeouts) with a fixed two-minute delay.
       - name: Generate image prompt and SEO with Gemini
         id: creative
-        if: steps.tts.outputs.creative != 'true'
+        if: ${{ steps.fallback.outputs.status == 'miss' && steps.tts.outputs.creative != 'true' }}
         timeout-minutes: 45   # safety net only; the loop below enforces its own retry budgets
         working-directory: sec10v
         env:
@@ -530,7 +584,7 @@ jobs:
 
       - name: Check Gemini outputs
         id: creative_check
-        if: steps.tts.outputs.creative != 'true'
+        if: ${{ steps.fallback.outputs.status == 'miss' && steps.tts.outputs.creative != 'true' }}
         working-directory: sec10v
         env:
           IMAGE_AVAILABLE: ${{ steps.image_available.outputs.found }}
@@ -550,7 +604,7 @@ jobs:
       # test would fail the step, and a failed always()-step marks the whole job failed.
       - name: "🚨 IMAGE PROMPT READY — copy from this step"
         # Pointless when the caller already has an image — there is nothing left to draw.
-        if: always() && steps.image_available.outputs.found != 'true'
+        if: ${{ always() && steps.fallback.outputs.status == 'miss' && steps.image_available.outputs.found != 'true' }}
         working-directory: sec10v
         env:
           IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
@@ -578,6 +632,7 @@ jobs:
 
       # Needed by the video build at the end (and it is cheap here, while the human is drawing).
       - name: Install ffmpeg
+        if: ${{ steps.fallback.outputs.status == 'miss' }}
         run: |
           if command -v ffmpeg >/dev/null 2>&1; then
             ffmpeg -version | head -n1
@@ -598,7 +653,7 @@ jobs:
       # sec10v.yml — both hash the requirements file that pins chatterbox-tts.
       - name: Restore the Chatterbox weights cache
         id: hf_cache
-        if: steps.tts.outputs.needs_tts == 'true'
+        if: ${{ steps.fallback.outputs.status == 'miss' && steps.tts.outputs.needs_tts == 'true' }}
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/huggingface
@@ -607,7 +662,7 @@ jobs:
             ${{ runner.os }}-hf-chatterbox-
 
       - name: Warm the Chatterbox weights cache
-        if: steps.tts.outputs.needs_tts == 'true' && steps.hf_cache.outputs.cache-hit != 'true'
+        if: ${{ steps.fallback.outputs.status == 'miss' && steps.tts.outputs.needs_tts == 'true' && steps.hf_cache.outputs.cache-hit != 'true' }}
         working-directory: sec10v
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -624,7 +679,7 @@ jobs:
           du -sh ~/.cache/huggingface
 
       - name: Save the Chatterbox weights cache
-        if: steps.tts.outputs.needs_tts == 'true' && steps.hf_cache.outputs.cache-hit != 'true'
+        if: ${{ steps.fallback.outputs.status == 'miss' && steps.tts.outputs.needs_tts == 'true' && steps.hf_cache.outputs.cache-hit != 'true' }}
         continue-on-error: true   # a concurrent run may have reserved the same key already
         uses: actions/cache/save@v6
         with:
@@ -642,7 +697,7 @@ jobs:
       # on their own runners from here on. Round 1 is dispatched in its own step purely so the
       # image wait below can slot in between dispatch and collection.
       - name: Dispatch one sec10v.yml run per chunk (+ intro)
-        if: steps.tts.outputs.needs_tts == 'true'
+        if: ${{ steps.fallback.outputs.status == 'miss' && steps.tts.outputs.needs_tts == 'true' }}
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
@@ -660,6 +715,7 @@ jobs:
       # wrong filename or a corrupt upload shows up now instead of an hour from now.
       - name: Wait for the background image (while the chunks synthesize)
         id: image
+        if: ${{ steps.fallback.outputs.status == 'miss' }}
         continue-on-error: true
         timeout-minutes: 60   # safety net only; fetch_image.py enforces its own deadline
         working-directory: sec10v
@@ -691,7 +747,7 @@ jobs:
           fi
 
       - name: Collect MP3s, retry stragglers
-        if: steps.tts.outputs.needs_tts == 'true'
+        if: ${{ steps.fallback.outputs.status == 'miss' && steps.tts.outputs.needs_tts == 'true' }}
         working-directory: sec10v
         timeout-minutes: 200   # bounds the polling loop below; the job cap is 330
         env:
@@ -797,7 +853,7 @@ jobs:
       # short-circuits on an existing out/pics/{base}.jpg, but skipping the step is cheaper still.
       - name: Wait for the background image (second chance)
         id: image_retry
-        if: steps.image.outputs.found != 'true'
+        if: ${{ steps.fallback.outputs.status == 'miss' && steps.image.outputs.found != 'true' }}
         continue-on-error: true
         timeout-minutes: 180   # safety net only: fetch_image.py enforces --timeout itself
         working-directory: sec10v
@@ -838,7 +894,7 @@ jobs:
 
       - name: Build the final video
         id: video
-        if: steps.image.outputs.found == 'true' || steps.image_retry.outputs.found == 'true'
+        if: ${{ steps.fallback.outputs.status == 'miss' && (steps.image.outputs.found == 'true' || steps.image_retry.outputs.found == 'true') }}
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
@@ -907,41 +963,85 @@ jobs:
           PYTHONPATH: scripts
           PYTHONUNBUFFERED: '1'
         run: |
+          # Save the table so a later upload-only retry can republish it without re-running QA.
+          set +e
           python scripts/verify_final.py \
             --whisper-cli "${{ github.workspace }}/whisper.cpp/build/bin/whisper-cli" \
             --model "${{ github.workspace }}/whisper.cpp/models/ggml-small.en.bin" \
-            --summary "$GITHUB_STEP_SUMMARY"
+            --summary "out/${BASE}.qa.md"
+          rc=$?
+          set -e
+          if [ -s "out/${BASE}.qa.md" ]; then cat "out/${BASE}.qa.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          exit "$rc"
+
+      # Upload-only retry path: the restored bundle already has its QA results, so republish
+      # its saved table instead of re-running ffprobe/whisper/TTS.
+      - name: Restore the saved QA summary
+        if: ${{ steps.fallback.outputs.status == 'restored' }}
+        working-directory: sec10v
+        run: |
+          qa="out/${BASE}.qa.md"
+          if [ -s "$qa" ]; then
+            cat "$qa" >> "$GITHUB_STEP_SUMMARY"
+            echo "restored saved QA summary"
+          else
+            echo "no saved QA summary to restore"
+          fi
 
       # The deliverable, and it never lands as an artifact: the MP4 goes straight from the runner
       # to the channel as a *private* video, with the SEO title and description already applied,
       # so there is nothing to download and nothing to retype. privacyStatus is a constant in
       # youtube_upload.py, not an input — review the video in Studio and publish it from there.
-      #
-      # No artifact fallback on purpose. A failure here fails the job, and a re-run reuses this
-      # run's audio artifact (reuse_audio.py), so the retry costs the encode, not the TTS.
+      # A failure here fails the job; a retry restores the saved bundle and retries only the upload.
       - name: Upload video to YouTube
         id: youtube
-        if: steps.video.outcome == 'success'
+        if: ${{ steps.video.outcome == 'success' || steps.fallback.outputs.status == 'restored' }}
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
+          BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          BUCKET_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
         run: |
           # No --summary: the run page carries the QA table and the transcript and nothing else,
           # so the link is printed here instead (and named again by the report step below).
-          python scripts/youtube_upload.py \
-            --video "out/${BASE}.final.mp4" \
+          # First success writes nothing to storage; a failed VIDEO upload saves the bundle
+          # and still exits nonzero so the job visibly fails.
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "❌ AWS CLI is required for the failed-upload save"
+            exit 1
+          fi
+          if [ ! -f scripts/video_fallback.py ]; then
+            echo "❌ selected sec10v ref lacks scripts/video_fallback.py — use a newer sec10v_ref"
+            exit 1
+          fi
+          python scripts/video_fallback.py upload --video "out/${BASE}.final.mp4" \
             --seo "out/seo/${BASE}.seo.md" \
-            --fallback-title "${BOOK_TITLE} — ${CHAPTER_TITLE}"
+            --fallback-title "${BOOK_TITLE} — ${CHAPTER_TITLE}" \
+            --out-dir out
 
       # Fail loudly *after* the upload, so a finished video is never lost to a late failure.
       - name: Report chunk, prompt and video status
         working-directory: sec10v
         env:
           IMAGE_AVAILABLE: ${{ steps.image_available.outputs.found }}
+          FALLBACK_STATUS: ${{ steps.fallback.outputs.status }}
         run: |
+          if [ "$FALLBACK_STATUS" = "restored" ]; then
+            echo "♻️ restored a saved video from a failed upload — no synthesis or render ran"
+            if [ "${{ steps.youtube.outcome }}" = "success" ]; then
+              echo "📺 uploaded to YouTube as private — the link is in the upload step's log"
+            fi
+            exit 0
+          fi
+          if [ "$FALLBACK_STATUS" = "uploaded" ]; then
+            echo "✅ video already uploaded (existing receipt) — no new video needed"
+            exit 0
+          fi
           if [ -f out/run_ids.json ]; then
             remaining=$(python -c "import json; d=json.load(open('out/run_ids.json')); print(len(d)); [print(' -', e['out_subdir'], e['run_id']) for e in d]")
           else
@@ -982,7 +1082,13 @@ jobs:
       - name: Publish the transcript to the summary
         if: always()
         working-directory: sec10v
+        env:
+          FALLBACK_STATUS: ${{ steps.fallback.outputs.status }}
         run: |
+          if [ "$FALLBACK_STATUS" = "uploaded" ]; then
+            echo "✅ video already uploaded — no new transcript to subtitle"
+            exit 0
+          fi
           transcript="out/${BASE}.transcript.txt"
           if [ -s "$transcript" ]; then
             {
