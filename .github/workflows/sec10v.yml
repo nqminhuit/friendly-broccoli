@@ -293,6 +293,20 @@ jobs:
             fi
           fi
 
+      - name: Write audio reuse identity
+        working-directory: sec10v
+        env:
+          TTS_TEXT: ${{ github.event.inputs.tts_text }}
+          VOICE: ${{ github.event.inputs.voice }}
+          AUDIO_RATE: ${{ github.event.inputs.audio_rate }}
+          OUTPUT_NAME: ${{ github.event.inputs.output_name }}
+        run: |
+          args=(--audio "out/$OUTPUT_NAME.mp3")
+          if [ -n "$VOICE" ]; then args+=(--voice "$VOICE"); fi
+          if [ -n "$AUDIO_RATE" ]; then args+=(--audio-rate "$AUDIO_RATE"); fi
+          python scripts/audio_identity.py "${args[@]}"
+          ls -la "out/$OUTPUT_NAME.audio.json"
+
       - name: List generated files
         working-directory: sec10v
         run: |
@@ -303,6 +317,14 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           path: sec10v/out/*.mp3
+          if-no-files-found: error
+          retention-days: 1
+          archive: false
+
+      - name: Upload audio identity sidecar
+        uses: actions/upload-artifact@v7
+        with:
+          path: sec10v/out/${{ inputs.output_name }}.audio.json
           if-no-files-found: error
           retention-days: 1
           archive: false

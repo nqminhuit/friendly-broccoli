@@ -15,8 +15,14 @@
 #
 # The run uploads no artifacts. The summary page holds exactly two things, in this order: the
 # Final QA table, and the transcript to paste into YouTube as the subtitle track. Audio for a
-# re-run comes from the per-chunk .mp3 artifacts sec10v.yml uploads (1 day) — see the disabled
-# "Upload chapter artifact" step below for what that costs.
+# re-run comes from the per-chunk .mp3 artifacts sec10v.yml uploads (1 day), each paired with
+# its .audio.json identity sidecar — see the disabled "Upload chapter artifact" step below for
+# what that costs.
+#
+# The narrator voice is a dispatch input (default _live/thestorygirl_sentimentalsongbook_05_moore_128kb.mp3).
+# Reuse is identity-safe: default- or other-voice audio is reused only when its sidecar matches
+# the chunk text, voice, rate, reference and audio digests. Old artifacts without a sidecar are
+# unverifiable and regenerated once.
 #
 # Secrets needed — Settings → Secrets and variables → Actions → Secrets:
 #   IMAGE_BASE_URL       prefix you upload images to, no trailing slash. GET
@@ -72,6 +78,29 @@ on:
         required: false
         type: boolean
         default: false
+      voice:
+        description: 'Narrator voice (path relative to sec10v resources/voices/)'
+        required: false
+        type: choice
+        default: '_live/thestorygirl_sentimentalsongbook_05_moore_128kb.mp3'
+        options:
+          - '_live/thestorygirl_sentimentalsongbook_05_moore_128kb.mp3'
+          - '_live/maddpren_enhanced_cut_magician_12_maugham_128kb.wav'
+          - '_live/maddpren_enhance_cut_magician_12_maugham_128kb.mp3'
+          - '_live/DianeAlailima_bedtimestories_36_anonymous_128kb.cleaned.mp3'
+          - '_live/DianeAlailima_cut_wondergarden_122_olcott_128kb.mp3'
+          - '_live/DianeAlailima_wondergarden_121_olcott_128kb.cleaned.mp3'
+          - '_live/DianeAlailima_wondergarden_122_olcott_128kb.cleaned.mp3'
+          - '_live/HannahC_cut_girlsofstcyprians_09_brazil_128kb.mp3'
+          - '_live/LesWilLang_cut_ladyofthearoostook_02_howells_128kb.mp3'
+          - '_live/Rapunzelina_cut_essaysonart_34_goethe_128kb.mp3'
+          - '_live/TriciaG_cut_bobbyswolf_31_pansy_128kb.mp3'
+          - '_live/TriciaG_cut_ssc115_02_various_128kb.mp3'
+          - '_live/thestorygirl_clean9s.mp3'
+          - '_live/thestorygirl_cut_cm2_02_mason_128kb.mp3'
+          - '_live/stacea-voice-elegant-06.wav'
+          - '_live/stacea-voice-sweet-12.wav'
+          - '_live/stacea-voice-ai-07.wav'
       sec10v_ref:
         description: 'nqminhuit/sec10v ref to check out'
         required: false
@@ -114,6 +143,7 @@ jobs:
           CHAPTER_TITLE_OVERRIDE: ${{ inputs.chapter_title }}
           IMAGE_URL: ${{ inputs.image_url }}
           FRESH: ${{ inputs.fresh }}
+          VOICE: ${{ inputs.voice }}
           SEC10V_REF: ${{ inputs.sec10v_ref }}
         run: |
           image_url_supplied=false
@@ -122,12 +152,14 @@ jobs:
             echo "### Workflow Inputs"
             echo "- Chapter URL: \`$SE_URL\`"
             echo "- Chapter title override: \`${CHAPTER_TITLE_OVERRIDE:-(derived)}\`"
+            echo "- Narrator voice: \`$VOICE\`"
             echo "- Image URL supplied: \`$image_url_supplied\`"
             echo "- Fresh: \`$FRESH\`"
             echo "- sec10v ref: \`$SEC10V_REF\`"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Chapter URL: $SE_URL"
           echo "Chapter title override: ${CHAPTER_TITLE_OVERRIDE:-(derived)}"
+          echo "Narrator voice: $VOICE"
           echo "Image URL supplied: $image_url_supplied"
           echo "Fresh: $FRESH"
           echo "sec10v ref: $SEC10V_REF"
@@ -158,17 +190,22 @@ jobs:
           SE_URL: ${{ inputs.se_url }}   # via env, never spliced into the script body
           # Not CHAPTER_TITLE: that name is exported below from what prepare_chapter.py derived.
           CHAPTER_TITLE_OVERRIDE: ${{ inputs.chapter_title }}
+          VOICE_SELECTED: ${{ inputs.voice }}
         run: |
           args=(--url "$SE_URL" --max-chunks "$MAX_CHUNKS")
           if [ -n "$CHAPTER_TITLE_OVERRIDE" ]; then args+=(--chapter-title "$CHAPTER_TITLE_OVERRIDE"); fi
+          voice_input="$VOICE_SELECTED"
+          if [ -z "$voice_input" ]; then voice_input=$(python -c "from audio_identity import DEFAULT_VOICE; print(DEFAULT_VOICE)"); fi
+          args+=(--voice "$voice_input")
           python scripts/prepare_chapter.py "${args[@]}"
+          echo "Narrator voice: $voice_input"
           # Export the parsed/inferred values for the later steps.
           python - <<'EOF' >> "$GITHUB_ENV"
           import json
           d = json.load(open("out/chapter.json"))
           for env, key in (("BASE", "base_name"), ("BOOK_TITLE", "book_title"),
                            ("CHAPTER_TITLE", "chapter_title"),
-                           ("AUTHOR", "author")):
+                           ("AUTHOR", "author"), ("VOICE", "voice")):
               assert "\n" not in d[key]
               print(f"{env}={d[key]}")
           EOF
@@ -188,7 +225,9 @@ jobs:
       # A run that died after the audio (no image, a broken encode, a timeout) left its MP3s in
       # an artifact named after the BaseName. Fetch them instead of spending another 40 minutes
       # of runners recreating them. Opportunistic: no artifact, an expired one or a network
-      # failure all just mean "synthesize from scratch".
+      # failure all just mean "synthesize from scratch". Strict reuse pairs each MP3 with its
+      # .audio.json identity sidecar from the same run and reuses it only on matching text,
+      # voice, rate, reference and audio digests; audio without identity is regenerated once.
       #
       # `fresh` skips it outright: nothing on disk means pending_chunks.py finds every chunk
       # missing, so all the audio is re-synthesized and Gemini rewrites the prompt and the SEO.
@@ -723,6 +762,8 @@ jobs:
       #     makes partial reuse after an upstream edit safe (without it, `fresh: true` is the
       #     escape hatch for audio that is wrong rather than absent);
       #   - the prompt and the SEO, whose recovery lets a re-run skip the Gemini call.
+      # If it comes back, include the per-chunk *.audio.json identity sidecars alongside the
+      # *.mp3 paths — without them strict reuse cannot verify the audio and regenerates it.
       # Keep the two comments below if it comes back — both record a real failure.
       #
       # Uploaded BEFORE the image wait on purpose: a job cancelled by timeout-minutes skips even
@@ -742,6 +783,7 @@ jobs:
       #       sec10v/out/text/
       #       sec10v/out/*.transcript.txt
       #       sec10v/out/*.mp3
+      #       sec10v/out/*.audio.json
       #       sec10v/out/prompts/
       #       sec10v/out/seo/
       #       sec10v/out/chapter.json
