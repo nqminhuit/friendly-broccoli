@@ -9,10 +9,14 @@ Replace placeholders; repeat the section block for themes and closing.
 book: <book>
 author: <author>
 title: <SEO title>
+thumbnail: <SEO title>-thumbnail.jpg
 description: |
   <SEO description>
   <hashtags>
 ---
+<!-- thumbnail_prompt:
+<Dedicated thumbnail scene, clear focal point, composition readable at small sizes; full chosen style. Full-HD, 16:9, no text.>
+-->
 ## Opening
 ![](book-1.jpg)
 <!-- image_prompt:
@@ -21,7 +25,8 @@ description: |
 <Narration; spoken spoiler warning first if needed.>
 ```
 
-- Required: `book`, `author`, `title`, `description`. Only optional keys: `part` (chapter/passage), `voice` (sec10v `resources/voices/` file), `thumbnail` (defaults to first image). Hashtags and thumbnail recommended.
+- Required for new reflections: `book`, `author`, `title`, `description`, `thumbnail`. Only optional keys: `part` (chapter/passage), `voice` (sec10v `resources/voices/` file). Hashtags recommended.
+- `thumbnail` must name a dedicated image, separate from the first image and all other section images. Add a `thumbnail_prompt` comment after the front matter and before the first section; do not add a narration image line or section for it. The pipeline still accepts legacy files without `thumbnail`; new reflections must specify one explicitly.
 - `book`, `author`, `part` are single-line. `key: value` consumes the rest of the line, including `:`; `key: |` takes following lines indented at least two spaces.
 - `## Heading` starts a section; blank lines separate paragraphs. Standalone `[Pause]` = 3 seconds. Narration starts immediately, without a generated intro; keep it under 15 minutes including pauses.
 - Each section needs a standalone `![](ref)` before its paragraphs and an `image_prompt` comment. First image precedes narration; it persists until the next image and is never spoken. Each change starts a chunk; avoid fewer than about 40 words/image.
