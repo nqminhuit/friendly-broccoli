@@ -60,9 +60,14 @@ The rabbit is a symbol of...
 
 ## Video effects
 
-Reflection videos use 25 FPS and cycle through fades, dissolves and smooth left/right wipes at image
-changes. Transitions last 1 second; the video fades from black over its first second and to black over
-its final 1.5 seconds. These effects change only the visuals, not narration or chapter timing.
+Reflection videos use **30 FPS with gentle Ken Burns motion by default**, capped at 8% zoom.
+Each image gets a deterministic 24/28/22/26-second rhythm, a horizontal/vertical/diagonal pan and
+a zoom-in-first or zoom-out-first start. Sub-pixel motion continues across audio chunks without
+restarting. No AI model, opt-in flag or reflection-file changes are needed.
+
+Fades, dissolves and smooth left/right wipes alternate at image changes. Transitions last 1 second;
+the video fades from black over its first second and to black over its final 1.5 seconds. These effects
+change only the visuals, not narration or chapter timing.
 
 Adjust `VIDEO_FRAMERATE`, `CROSSFADE_SECONDS`, `TRANSITION_STYLE`, `FADE_IN_SECONDS` and
 `FADE_OUT_SECONDS` in `.github/workflows/sec10v_reflection.yml`. Existing videos need a new build to
