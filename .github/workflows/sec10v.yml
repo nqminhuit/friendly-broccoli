@@ -186,9 +186,11 @@ jobs:
           TTS_TEXT: ${{ github.event.inputs.tts_text }}
           AUDIO_RATE: ${{ github.event.inputs.audio_rate }}
           VOICE: ${{ github.event.inputs.voice }}
+          OUTPUT_NAME: ${{ github.event.inputs.output_name }}
         run: |
           args=(--tts "$TTS_TEXT" --audio-rate "$AUDIO_RATE")
           if [ -n "$VOICE" ]; then args+=(--voice "$VOICE"); fi
+          if [[ "$OUTPUT_NAME" == "Reflection" || "$OUTPUT_NAME" == Reflection.* ]]; then args+=(--reflection); fi
           python scripts/audiobook.py "${args[@]}"
           if [ -f "out/audiobook.mp3" ]; then
             echo "✅ TTS audio file generated successfully"
@@ -241,10 +243,12 @@ jobs:
           TTS_TEXT: ${{ github.event.inputs.tts_text }}
           AUDIO_RATE: ${{ github.event.inputs.audio_rate }}
           VOICE: ${{ github.event.inputs.voice }}
+          OUTPUT_NAME: ${{ github.event.inputs.output_name }}
         run: |
             echo "🔁 Retry triggered due to verification failure"
             args=(--tts "$TTS_TEXT" --audio-rate "$AUDIO_RATE")
             if [ -n "$VOICE" ]; then args+=(--voice "$VOICE"); fi
+            if [[ "$OUTPUT_NAME" == "Reflection" || "$OUTPUT_NAME" == Reflection.* ]]; then args+=(--reflection); fi
             python scripts/audiobook.py "${args[@]}"
 
             if [ ! -f "out/audiobook.mp3" ]; then

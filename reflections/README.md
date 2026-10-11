@@ -73,6 +73,13 @@ Adjust `VIDEO_FRAMERATE`, `CROSSFADE_SECONDS`, `TRANSITION_STYLE`, `FADE_IN_SECO
 `FADE_OUT_SECONDS` in `.github/workflows/sec10v_reflection.yml`. Existing videos need a new build to
 pick up the settings.
 
+## Narration
+
+Reflection narration uses the approved Warmer setting (exaggeration 0.65, cfg_weight 0.35) for
+reflection chunks only. Ordinary audiobooks keep their 0.4/0.5 values unchanged, and the chosen
+voice is unchanged. The setting applies on both initial synthesis and retry in
+`.github/workflows/sec10v.yml`. Existing audio is unchanged until regenerated.
+
 ## Prompts
 Act as a senior literary critic and write a reflection on the book "" by "" in the style of a YouTube video script under 15 minutes of narration. The reflection should be engaging, insightful, and accessible to a general audience. Do not spoil the ending of the book, but provide enough context to entice viewers to read it. Use a friendly, warm, and conversational tone, as if you are sharing your thoughts with a friend. Include personal anecdotes or experiences related to the book, and highlight its themes, characters, and writing style. Use simple vocabulary and avoid complex literary jargon so that the viewers can easily follow along and understand the reflection. The reflection should be structured in a way that each paragraph can be read aloud clearly and naturally, with appropriate pauses and emphasis. Here is the markdown format for the reflection:
 
