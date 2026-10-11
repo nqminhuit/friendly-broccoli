@@ -19,8 +19,6 @@ description: |
 
 ![](reflections/img1.png)
 
-[Pause]
-
 Have you ever met someone who seemed completely ordinary, only to discover they understood more than everyone around them?
 
 We often associate intelligence with confidence, impressive words, and important-looking people.
