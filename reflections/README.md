@@ -50,8 +50,9 @@ description: |
 
 # Pipeline
 
-- `.github/workflows/sec10v_reflection.yml`: reflection changes pushed to `master` trigger builds; README/AGENTS are excluded. `[skip ci]` suppresses runs. Manual dispatch: `file: reflections/<name>.md`, optional voice override.
+- `.github/workflows/sec10v_reflection.yml`: reflection changes pushed to `master` trigger builds; README/AGENTS are excluded. `[skip ci]` suppresses runs. Manual dispatch: `file: reflections/<name>.md`, optional voice override and `fresh` (rebuild from scratch, bypassing a saved failed-upload video).
 - Videos upload directly to YouTube as **private**, not to the image bucket. Review video, metadata, chapters and thumbnail in YouTube Studio before publishing.
-- Secrets: `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN`, plus existing image/chunk-runner secrets.
+- Failed-upload retries only: YouTube is tried first and a first success stores nothing. Only a failed VIDEO upload saves the finished bundle to the existing `BUCKET_*` private video prefix, and the job still fails visibly — trigger the same file again next day to retry only the upload (no TTS/images/FFmpeg/QA). Changed source/voice/settings/refs or `fresh` bypass reuse; images replaced under the same ref need `fresh`. A stored receipt suppresses duplicates; ambiguous completion stops for manual review. The prefix must deny anonymous read (name/ACL alone is not enough). Needs `sec10v` `scripts/video_fallback.py` at the selected ref.
+- Secrets: `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN`, plus existing image/chunk-runner secrets and `BUCKET_S3_ENDPOINT`, `BUCKET_S3_URI`, `BUCKET_ACCESS_KEY_ID`, `BUCKET_SECRET_ACCESS_KEY` (failed-upload bundles only; deletion optional).
 - Automatic visual-only defaults: 30 FPS, Ken Burns (8% max zoom), varied 1-second transitions, 1-second fade-in, 1.5-second fade-out. Controls in the reflection workflow: `VIDEO_FRAMERATE`, `CROSSFADE_SECONDS`, `TRANSITION_STYLE`, `FADE_IN_SECONDS`, `FADE_OUT_SECONDS`; rebuild to apply changes.
 - `.github/workflows/sec10v.yml`: reflection Warmer narration uses `exaggeration=0.65`, `cfg_weight=0.35` on synthesis/retry; audiobooks retain 0.4/0.5. Regenerate audio to apply changes.
