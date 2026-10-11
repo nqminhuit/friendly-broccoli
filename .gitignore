@@ -10,6 +10,8 @@
 # outright under `persist-credentials: false`, reporting the step as failed after it had already
 # written the prompt and the SEO correctly.
 opencode.json
-.opencode/
+# Version project skills without tracking other OpenCode runtime files.
+.opencode/*
+!.opencode/skills/
 sec10v/
 whisper.cpp/

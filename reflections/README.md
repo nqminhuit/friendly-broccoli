@@ -1,18 +1,10 @@
 # Reflection files
 
-Each `reflections/<name>.md` file describes one reflection video: the work it reflects on, the voice,
-the title and description, the script, and the image shown over each paragraph. Pushing an added or changed file to
-`master` starts `.github/workflows/sec10v_reflection.yml` for that file. To re-run a file, or to try
-another voice without a commit, dispatch the workflow with `file: reflections/<name>.md` and, if you
-like, a voice override. Put `[skip ci]` in the commit message to push without starting a run. This
-README never triggers a run.
+Each `reflections/<name>.md` file describes one reflection video: the work it reflects on, the voice, the title and description, the script, and the image shown over each paragraph. Pushing an added or changed file to `master` starts `.github/workflows/sec10v_reflection.yml` for that file. To re-run a file, or to try another voice without a commit, dispatch the workflow with `file: reflections/<name>.md` and, if you like, a voice override. Put `[skip ci]` in the commit message to push without starting a run.
 
-The finished video uploads directly to YouTube as **private**, with its title, description, chapters
-and thumbnail. Review it in YouTube Studio before publishing. The video is not uploaded to the
-storage bucket; that bucket still supplies the illustrations through `IMAGE_BASE_URL`.
+The finished video uploads directly to YouTube as **private**, with its title, description, chapters and thumbnail. Review it in YouTube Studio before publishing. The video is not uploaded to the storage bucket; that bucket still supplies the illustrations through `IMAGE_BASE_URL`.
 
-The workflow needs the repository secrets `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET` and
-`YOUTUBE_REFRESH_TOKEN`, as well as the existing image and chunk-runner secrets.
+The workflow needs the repository secrets `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET` and `YOUTUBE_REFRESH_TOKEN`, as well as the existing image and chunk-runner secrets.
 
 ## Format
 
@@ -56,6 +48,7 @@ The rabbit is a symbol of...
   - `thumbnail` is optional. Without it, the first image is the thumbnail.
   - `key: value` takes the rest of the line, so a title may contain `:`. `key: |` takes the following lines indented by at least 2 spaces. Any other key is an error.
 - **Script**: `## Heading` starts a section, and blank lines separate paragraphs. A line that is exactly `[Pause]` is 3 seconds of silence. The video opens with the script's first words: there is no intro.
+- **Spoilers**: Reflections may be spoiler-free or spoiler-inclusive. Spoilers, including the ending, are allowed when requested or needed for the agreed reflection scope. For spoiler-inclusive reflections, give a clear spoken warning in the opening narration before any spoilers, stating whether the ending will be discussed. Do not reveal twists in titles, descriptions, thumbnails, or images shown before the warning.
 - **Images**: a line that is exactly `![](ref)` shows that image from the next paragraph on, until the next image line. Image lines are required, and the first one must come before the first paragraph.
   - Image lines are never read aloud.
   - Every image change starts a new chunk, so avoid very short runs of text under one image (under about 40 words).
@@ -67,28 +60,18 @@ The rabbit is a symbol of...
 
 ## Video effects
 
-Reflection videos use **30 FPS with gentle Ken Burns motion by default**, capped at 8% zoom.
-Each image gets a deterministic 24/28/22/26-second rhythm, a horizontal/vertical/diagonal pan and
-a zoom-in-first or zoom-out-first start. Sub-pixel motion continues across audio chunks without
-restarting. No AI model, opt-in flag or reflection-file changes are needed.
+Reflection videos use **30 FPS with gentle Ken Burns motion by default**, capped at 8% zoom. Each image gets a deterministic 24/28/22/26-second rhythm, a horizontal/vertical/diagonal pan and a zoom-in-first or zoom-out-first start. Sub-pixel motion continues across audio chunks without restarting. No AI model, opt-in flag or reflection-file changes are needed.
 
-Fades, dissolves and smooth left/right wipes alternate at image changes. Transitions last 1 second;
-the video fades from black over its first second and to black over its final 1.5 seconds. These effects
-change only the visuals, not narration or chapter timing.
+Fades, dissolves and smooth left/right wipes alternate at image changes. Transitions last 1 second; the video fades from black over its first second and to black over its final 1.5 seconds. These effects change only the visuals, not narration or chapter timing.
 
-Adjust `VIDEO_FRAMERATE`, `CROSSFADE_SECONDS`, `TRANSITION_STYLE`, `FADE_IN_SECONDS` and
-`FADE_OUT_SECONDS` in `.github/workflows/sec10v_reflection.yml`. Existing videos need a new build to
-pick up the settings.
+Adjust `VIDEO_FRAMERATE`, `CROSSFADE_SECONDS`, `TRANSITION_STYLE`, `FADE_IN_SECONDS` and `FADE_OUT_SECONDS` in `.github/workflows/sec10v_reflection.yml`. Existing videos need a new build to pick up the settings.
 
 ## Narration
 
-Reflection narration uses the approved Warmer setting (exaggeration 0.65, cfg_weight 0.35) for
-reflection chunks only. Ordinary audiobooks keep their 0.4/0.5 values unchanged, and the chosen
-voice is unchanged. The setting applies on both initial synthesis and retry in
-`.github/workflows/sec10v.yml`. Existing audio is unchanged until regenerated.
+Reflection narration uses the approved Warmer setting (exaggeration 0.65, cfg_weight 0.35) for reflection chunks only. Ordinary audiobooks keep their 0.4/0.5 values unchanged, and the chosen voice is unchanged. The setting applies on both initial synthesis and retry in `.github/workflows/sec10v.yml`. Existing audio is unchanged until regenerated.
 
 ## Prompts
-Act as a senior literary critic and write a reflection on the book "" by "" in the style of a YouTube video script under 15 minutes of narration. The reflection should be engaging, insightful, and accessible to a general audience. Do not spoil the ending of the book, but provide enough context to entice viewers to read it. Use a friendly, warm, and conversational tone, as if you are sharing your thoughts with a friend. Include personal anecdotes or experiences related to the book, and highlight its themes, characters, and writing style. Use simple vocabulary and avoid complex literary jargon so that the viewers can easily follow along and understand the reflection. The reflection should be structured in a way that each paragraph can be read aloud clearly and naturally, with appropriate pauses and emphasis. Here is the markdown format for the reflection:
+Act as a senior literary critic and write a reflection on the book "" by "" in the style of a YouTube video script under 15 minutes of narration. The reflection should be engaging, insightful, and accessible to a general audience. Match spoiler handling to the requested scope: spoilers, including the ending, are allowed when requested or needed for the agreed reflection scope. If the reflection contains spoilers, give a clear spoken warning in the opening narration before any spoilers, stating whether the ending will be discussed. Provide enough context to entice viewers to read the book. Use a friendly, warm, and conversational tone, as if you are sharing your thoughts with a friend. Include personal anecdotes or experiences related to the book, and highlight its themes, characters, and writing style. Use simple vocabulary and avoid complex literary jargon so that the viewers can easily follow along and understand the reflection. The reflection should be structured in a way that each paragraph can be read aloud clearly and naturally, with appropriate pauses and emphasis. Here is the markdown format for the reflection:
 
 ```markdown
 ---
