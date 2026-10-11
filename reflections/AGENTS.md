@@ -1,9 +1,4 @@
-- Use `reflections/README.md` as the source of truth for format and workflow.
-- When writing, revising, or reviewing a reflection, load the `write-reflection` skill from `.opencode/skills/write-reflection/SKILL.md` for the procedure, template, and checklist.
-- Require `book`, `author`, `title`, and `description` in front matter. Only `part`, `voice`, and `thumbnail` are optional; do not add other keys.
-- Keep narration under 15 minutes.
-- Spoilers, including the ending, are allowed when requested or needed for the agreed reflection scope. For spoiler-inclusive reflections, give a clear spoken warning in the opening narration before any spoilers, stating whether the ending will be discussed.
-- Put the first standalone `![](ref)` image line before narration. Use only bucket-relative names for images and thumbnails; never expose bucket URLs, presigned URLs, credentials, or secret values in this public repository.
-- Keep generated `Reflection.<FileName>` names unique across subdirectories and punctuation variants. Renaming starts a fresh video name.
-- Preserve existing voices and approved narration/video defaults unless asked.
-- Do not commit, push, dispatch workflows, or publish unless requested. Reflection pushes to `master` start builds unless the commit includes `[skip ci]`; `README.md` and `AGENTS.md` are excluded. Uploads are private and must be reviewed in YouTube Studio before publication.
+- Read `README.md`; load `write-reflection` for authoring/review.
+- Enforce README metadata, image, naming and spoiler-warning rules; no bucket/presigned URLs or secrets.
+- Preserve existing voices and narration/video defaults unless asked.
+- Do not commit, push, dispatch or publish unless requested. Review private YouTube uploads before publication.

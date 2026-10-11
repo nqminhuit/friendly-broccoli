@@ -1,112 +1,43 @@
-# Reflection files
+One `reflections/<name>.md` per video. Supply all metadata, narration and images; the pipeline generates no scripts or images.
 
-Each `reflections/<name>.md` file describes one reflection video: the work it reflects on, the voice, the title and description, the script, and the image shown over each paragraph. Pushing an added or changed file to `master` starts `.github/workflows/sec10v_reflection.yml` for that file. To re-run a file, or to try another voice without a commit, dispatch the workflow with `file: reflections/<name>.md` and, if you like, a voice override. Put `[skip ci]` in the commit message to push without starting a run.
+# Format
 
-The finished video uploads directly to YouTube as **private**, with its title, description, chapters and thumbnail. Review it in YouTube Studio before publishing. The video is not uploaded to the storage bucket; that bucket still supplies the illustrations through `IMAGE_BASE_URL`.
-
-The workflow needs the repository secrets `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET` and `YOUTUBE_REFRESH_TOKEN`, as well as the existing image and chunk-runner secrets.
-
-## Format
+Replace placeholders; repeat the section block for themes and closing.
 
 ```markdown
 ---
-book: <book name, required>
-author: <author name, required>
-part: <part name, or chapter, optional>
-voice: _live/maddpren_enhanced_cut_magician_12_maugham_128kb.wav
-title: <youtube seo friendly title, required>
-thumbnail: <optional thumbnail image, recommended>
+book: <book>
+author: <author>
+title: <SEO title>
 description: |
-  <youtube seo friendly description, required>
-  <hash tags, recommended>
+  <SEO description>
+  <hashtags>
 ---
-## <heading session opening>
-![](img-1.jpg)
+## Opening
+![](book-1.jpg)
 <!-- image_prompt:
-A crowded Edwardian London railway station...
-Cartoon cinematic, oil painting, vintage Victorian palette.
-Full-HD resolution, 16:9 aspect ratio. No text.
+<Scene, composition, colors, symbols; full chosen style. Full-HD, 16:9, no text.>
 -->
-Hello, and welcome...
-
-## <heading session 1>
-![](img-2.jpg)
-The rabbit is a symbol of...
-
-## <other remaining heading sessions>
-![](img-x.jpg)
-...
-
-## <closing session>
-...
+<Narration; spoken spoiler warning first if needed.>
 ```
 
-- **Front matter**, between the two `---` lines:
-  - `book` and `author` (both required) name the work. `part` is optional and names what the reflection covers, such as a chapter or a passage; it is used in the video's name and description. Each is a single line. Nothing is fetched and no LLM is used: you write the whole file.
-  - `voice` is optional and is a file under sec10v's `resources/voices/`.
-  - `title` and `description` (both required) are the YouTube SEO.
-  - `thumbnail` is optional. Without it, the first image is the thumbnail.
-  - `key: value` takes the rest of the line, so a title may contain `:`. `key: |` takes the following lines indented by at least 2 spaces. Any other key is an error.
-- **Script**: `## Heading` starts a section, and blank lines separate paragraphs. A line that is exactly `[Pause]` is 3 seconds of silence. The video opens with the script's first words: there is no intro.
-- **Spoilers**: Reflections may be spoiler-free or spoiler-inclusive. Spoilers, including the ending, are allowed when requested or needed for the agreed reflection scope. For spoiler-inclusive reflections, give a clear spoken warning in the opening narration before any spoilers, stating whether the ending will be discussed. Do not reveal twists in titles, descriptions, thumbnails, or images shown before the warning.
-- **Images**: a line that is exactly `![](ref)` shows that image from the next paragraph on, until the next image line. Image lines are required, and the first one must come before the first paragraph.
-  - Image lines are never read aloud.
-  - Every image change starts a new chunk, so avoid very short runs of text under one image (under about 40 words).
-  - All images are downloaded before any audio is made, and a missing one fails the run at once.
+- Required: `book`, `author`, `title`, `description`. Only optional keys: `part` (chapter/passage), `voice` (sec10v `resources/voices/` file), `thumbnail` (defaults to first image). Hashtags and thumbnail recommended.
+- `book`, `author`, `part` are single-line. `key: value` consumes the rest of the line, including `:`; `key: |` takes following lines indented at least two spaces.
+- `## Heading` starts a section; blank lines separate paragraphs. Standalone `[Pause]` = 3 seconds. Narration starts immediately, without a generated intro; keep it under 15 minutes including pauses.
+- Each section needs a standalone `![](ref)` before its paragraphs and an `image_prompt` comment. First image precedes narration; it persists until the next image and is never spoken. Each change starts a chunk; avoid fewer than about 40 words/image.
+- Use bucket-relative image/thumbnail names, resolved via `IMAGE_BASE_URL`. This repo is public: no bucket/presigned URLs or credentials. All images download before audio; a missing image fails the build. Prompts do not create images.
+- Generated `Reflection.<FileName>` names must be unique across subdirectories and punctuation variants: `gift-of-the-magi.md` becomes `Reflection.GiftOfTheMagi`; `the-magi.md` and `the_magi.md` collide. Renaming starts a fresh name.
 
-**File names must be unique under `reflections/`.** The video and its chunks are all named `Reflection.<FileName>` (`gift-of-the-magi.md` becomes `Reflection.GiftOfTheMagi`), so `a/magi.md` and `b/magi.md`, or `the-magi.md` and `the_magi.md`, would overwrite each other. Renaming a file starts a fresh name.
+# Spoilers and visuals
 
-**This repo is public.** Write each image `ref` as a name relative to the image bucket (for example `magi-1.jpg`). It is resolved against the `IMAGE_BASE_URL` secret, so the bucket's address never appears here. Never paste a bucket or presigned URL into a file.
+- Spoilers, including endings, are allowed when requested or needed for the agreed scope. Warn aloud in the opening before any spoilers; say whether the ending is discussed. No twists in metadata, thumbnails or pre-warning images.
+- Default: semi-realistic cinematic oil painting, natural proportions, restrained expressive faces. Match lighting, palette, clothing and setting to the book's era/mood, not a universal Victorian aesthetic.
+- Override when requested or better suited to the work; cartoonish styles suit satire, whimsy, fables or children's literature. Keep each video's images/thumbnail consistent; different books may differ. Every prompt must specify the full style, scene, composition, colors/symbols, Full-HD, 16:9 and no text.
 
-## Video effects
+# Pipeline
 
-Reflection videos use **30 FPS with gentle Ken Burns motion by default**, capped at 8% zoom. Each image gets a deterministic 24/28/22/26-second rhythm, a horizontal/vertical/diagonal pan and a zoom-in-first or zoom-out-first start. Sub-pixel motion continues across audio chunks without restarting. No AI model, opt-in flag or reflection-file changes are needed.
-
-Fades, dissolves and smooth left/right wipes alternate at image changes. Transitions last 1 second; the video fades from black over its first second and to black over its final 1.5 seconds. These effects change only the visuals, not narration or chapter timing.
-
-Adjust `VIDEO_FRAMERATE`, `CROSSFADE_SECONDS`, `TRANSITION_STYLE`, `FADE_IN_SECONDS` and `FADE_OUT_SECONDS` in `.github/workflows/sec10v_reflection.yml`. Existing videos need a new build to pick up the settings.
-
-## Narration
-
-Reflection narration uses the approved Warmer setting (exaggeration 0.65, cfg_weight 0.35) for reflection chunks only. Ordinary audiobooks keep their 0.4/0.5 values unchanged, and the chosen voice is unchanged. The setting applies on both initial synthesis and retry in `.github/workflows/sec10v.yml`. Existing audio is unchanged until regenerated.
-
-## Prompts
-Act as a senior literary critic and write a reflection on the book "" by "" in the style of a YouTube video script under 15 minutes of narration. The reflection should be engaging, insightful, and accessible to a general audience. Match spoiler handling to the requested scope: spoilers, including the ending, are allowed when requested or needed for the agreed reflection scope. If the reflection contains spoilers, give a clear spoken warning in the opening narration before any spoilers, stating whether the ending will be discussed. Provide enough context to entice viewers to read the book. Use a friendly, warm, and conversational tone, as if you are sharing your thoughts with a friend. Include personal anecdotes or experiences related to the book, and highlight its themes, characters, and writing style. Use simple vocabulary and avoid complex literary jargon so that the viewers can easily follow along and understand the reflection. The reflection should be structured in a way that each paragraph can be read aloud clearly and naturally, with appropriate pauses and emphasis. Here is the markdown format for the reflection:
-
-```markdown
----
-book: <book name, required>
-author: <author name, required>
-part: <part name, or chapter, optional>
-title: <youtube seo friendly title, recommended>
-thumbnail: <optional thumbnail image, recommended>
-description: |
-  <youtube seo friendly description, recommended>
-  <hash tags, recommended>
----
-## <heading session opening>
-![](img-1.jpg)
-<!-- image_prompt:
-A crowded Edwardian London railway station...
-Cartoon cinematic, oil painting, vintage Victorian palette.
-Full-HD resolution, 16:9 aspect ratio. No text.
--->
-Hello, and welcome...
-
-## <heading session 1>
-![](img-2.jpg)
-<!-- image_prompt: ...-->
-The rabbit is a symbol of...
-
-## <other remaining heading sessions>
-![](img-x.jpg)
-<!-- image_prompt: ...-->
-...
-
-## <closing session>
-![](img-x.jpg)
-<!-- image_prompt: ...-->
-...
-```
-
-Each session should also have a prompt for creating an image that visually represents the content of that session. The image prompt should be descriptive and specific, capturing the essence of the reflection and the themes discussed in that section. The image should be consistent with the overall tone and style of the whole reflection, and should enhance the viewer's understanding and engagement with the content. The image prompt should be written in a way that it can be easily understood by an AI image generation tool, and should include details such as colors, composition, and any relevant symbols or motifs.
+- `.github/workflows/sec10v_reflection.yml`: reflection changes pushed to `master` trigger builds; README/AGENTS are excluded. `[skip ci]` suppresses runs. Manual dispatch: `file: reflections/<name>.md`, optional voice override.
+- Videos upload directly to YouTube as **private**, not to the image bucket. Review video, metadata, chapters and thumbnail in YouTube Studio before publishing.
+- Secrets: `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN`, plus existing image/chunk-runner secrets.
+- Automatic visual-only defaults: 30 FPS, Ken Burns (8% max zoom), varied 1-second transitions, 1-second fade-in, 1.5-second fade-out. Controls in the reflection workflow: `VIDEO_FRAMERATE`, `CROSSFADE_SECONDS`, `TRANSITION_STYLE`, `FADE_IN_SECONDS`, `FADE_OUT_SECONDS`; rebuild to apply changes.
+- `.github/workflows/sec10v.yml`: reflection Warmer narration uses `exaggeration=0.65`, `cfg_weight=0.35` on synthesis/retry; audiobooks retain 0.4/0.5. Regenerate audio to apply changes.
