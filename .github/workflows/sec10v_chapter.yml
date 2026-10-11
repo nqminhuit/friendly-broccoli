@@ -334,7 +334,7 @@ jobs:
           chapter_title = os.environ["CHAPTER_TITLE"]
           author = os.environ["AUTHOR"]
           chapter_text = Path(f"out/text/{base}.txt").read_text()
-          seo_skill = Path(".github/skills/audiobook-youtube-seo/SKILL.md").read_text()
+          seo_skill = Path(".opencode/skills/audiobook-youtube-seo/SKILL.md").read_text()
 
           if os.environ["IMAGE_AVAILABLE"] == "true":
               prompt = f"""You are generating production files for a narrated Standard Ebooks chapter.
@@ -359,7 +359,7 @@ jobs:
               BaseName: {base}
               """
           else:
-              image_skill = Path(".github/skills/image-prompt-generator/SKILL.md").read_text()
+              image_skill = Path(".opencode/skills/image-prompt-generator/SKILL.md").read_text()
               prompt = f"""You are generating production files for a narrated Standard Ebooks chapter.
               Return ONLY a JSON object with exactly these two string fields:
               {{"image_prompt": "...", "seo_markdown": "..."}}
@@ -564,7 +564,7 @@ jobs:
             cat "$prompt"; echo
           else
             echo "Gemini produced no prompt — write one from"
-            echo ".github/skills/image-prompt-generator/SKILL.md. Chapter opening:"
+            echo ".opencode/skills/image-prompt-generator/SKILL.md. Chapter opening:"
             head -c 1200 "out/text/${BASE}.txt"; echo
           fi
           echo
