@@ -39,7 +39,7 @@ description: |
 - `book`, `author`, `part` are single-line. `key: value` consumes the rest of the line, including `:`; `key: |` takes following lines indented at least two spaces.
 - `## Heading` starts a section; blank lines separate paragraphs. Standalone `[Pause]` = 3 seconds. Narration starts immediately, without a generated intro; keep it under 15 minutes including pauses.
 - Each section needs a standalone `![](ref)` before its paragraphs and an `image_prompt` comment. First image precedes narration; it persists until the next image and is never spoken. Each change starts a chunk; avoid fewer than about 40 words/image.
-- Use bucket-relative image/thumbnail names, resolved via `IMAGE_BASE_URL`. This repo is public: no bucket/presigned URLs or credentials. All images download before audio; a missing image fails the build. Prompts do not create images.
+- Use bucket-relative image/thumbnail names, resolved via `IMAGE_BASE_URL`. This repo is public: no bucket/presigned URLs or credentials. All required section images plus the named thumbnail must arrive to build: an early 20-minute wait runs while the chunks synthesize, then a 60-minute second window after audio collection; a timeout skips the build/upload with a warning. Prompts do not create images.
 - Generated `Reflection.<FileName>` names must be unique across subdirectories and punctuation variants: `gift-of-the-magi.md` becomes `Reflection.GiftOfTheMagi`; `the-magi.md` and `the_magi.md` collide. Renaming starts a fresh name.
 
 # Spoilers and visuals

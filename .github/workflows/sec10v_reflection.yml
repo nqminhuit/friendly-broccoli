@@ -5,11 +5,14 @@
 #
 #   You write the whole file: front matter (book, author, title, description; part, voice, thumbnail
 #   optional), the script and its ![](image) lines. No LLM is involved.
-#   prepare_reflection.py reads it → reflection_images.py downloads the file's images (a failure
-#   here stops the run before any chunk is dispatched) → trigger_workflow.py fans out one
-#   sec10v.yml run per chunk → import_artifacts_mp3s.py collects the audio → automate_audiobook.py
-#   builds the video with gentle Ken Burns motion, varied transitions and fades → reflection_chapters.py adds YouTube
+#   prepare_reflection.py reads it → the required image names are listed (a configuration
+#   failure here stops the run before any chunk is dispatched) → trigger_workflow.py fans out one
+#   sec10v.yml run per chunk → reflection_images.py waits for the file's images while the chunks
+#   synthesize (a second window follows the audio collection) → import_artifacts_mp3s.py collects
+#   the audio → automate_audiobook.py builds the video with gentle Ken Burns motion, varied
+#   transitions and fades (only when every required image arrived) → reflection_chapters.py adds YouTube
 #   chapters → the video goes straight to YouTube as private.
+#   A missing image skips the build/upload with a warning; upload the images then rerun.
 #   A [Pause] line is 3 s of silence; the video starts with the script's own words.
 #
 # This repo is public: write image refs as names relative to the bucket (IMAGE_BASE_URL), never as
@@ -69,6 +72,8 @@ on:
         default: 'master'
 
 env:
+  IMAGE_EARLY_WAIT_MINUTES: '20'   # while the chunk runs synthesize — free, otherwise idle in collection
+  IMAGE_WAIT_MINUTES: '60'         # second chance, after the audio is collected
   MAX_CHUNKS: '30'   # each image change in the file is a chunk boundary
   VOICE_FROM_FILE: '(from file)'   # the voice input's default; keep in sync with its options
   # For a file without `voice:`; deliberately not the audiobook's voice, which an empty value would pick.
@@ -254,9 +259,9 @@ jobs:
             || sudo apt-get install -y --no-install-recommends --fix-missing ffmpeg
           ffmpeg -version | head -n1
 
-      # The file's images must all download now: failing here costs nothing, failing after ~20 chunk runs does.
+      # The file's image names are listed here; the uploads arrive later, while the chunks synthesize.
       # Image refs resolve against IMAGE_BASE_URL (a secret, never printed).
-      - name: Download the images from your file
+      - name: Check the image configuration from your file
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
@@ -267,28 +272,60 @@ jobs:
             echo "❌ the IMAGE_BASE_URL secret is not set — the file's image names resolve against the image bucket"
             exit 1
           fi
-          set +e
-          python scripts/reflection_images.py --base-url "$IMAGE_BASE_URL" --timeout 0
-          rc=$?
-          set -e
           python - <<'EOF'
           import json
           import os
           from urllib.parse import urlsplit
 
-          images = json.load(open("out/chapter.json"))["images"]
-          missing = [i for i in images if not os.path.exists(f"out/pics/{i['name']}.jpg")]
-          print(f"🖼️ images come from your file: {len(images)} image(s), {len(missing)} not downloaded")
+          def safe_ref(ref):
+              # Relative bucket names may be shown; absolute URLs show basenames only, without query.
+              parts = urlsplit(ref)
+              if parts.scheme in ("http", "https"):
+                  return os.path.basename(parts.path)
+              return ref.split("?", 1)[0].split("#", 1)[0]
+
+          # Fixed message: a malformed secret must never leak back into the log.
+          try:
+              parts = urlsplit(os.environ.get("IMAGE_BASE_URL", "").strip())
+              valid_url = parts.scheme in ("http", "https") and bool(parts.hostname)
+          except ValueError:
+              valid_url = False
+          if not valid_url:
+              raise SystemExit("❌ IMAGE_BASE_URL must be an http(s) URL with a hostname")
+
+          with open("out/chapter.json") as f:
+              chapter = json.load(f)
+          if not isinstance(chapter, dict):
+              raise SystemExit("❌ out/chapter.json is not a chapter mapping")
+          base = chapter.get("base_name")
+          if not isinstance(base, str) or not base:
+              raise SystemExit("❌ out/chapter.json has no base_name")
+          images = chapter.get("images")
+          if not isinstance(images, list) or not images:
+              raise SystemExit("❌ no images in out/chapter.json — the prepare step produced no manifest")
+          for entry in images:
+              chunks = entry.get("chunks") if isinstance(entry, dict) else None
+              if (not isinstance(entry, dict)
+                      or not isinstance(entry.get("name"), str) or not entry["name"]
+                      or not isinstance(entry.get("ref"), str) or not entry["ref"]
+                      or not isinstance(chunks, list) or not chunks
+                      or not all(isinstance(c, int) for c in chunks)):
+                  raise SystemExit("❌ out/chapter.json images must list entries with a name, a ref and chunk numbers")
+          thumbnail = chapter.get("thumbnail")
+          if thumbnail is not None and not (isinstance(thumbnail, str) and thumbnail):
+              raise SystemExit("❌ out/chapter.json thumbnail must be an image ref or null")
+          print(f"🖼️ images come from your file: {len(images)} image(s) to upload while the chunks synthesize")
           for image in images:
-              mark = "❌" if image in missing else "✅"
-              # Only the basename: an absolute ref may be a presigned URL carrying a token.
-              ref = os.path.basename(urlsplit(image["ref"]).path)
-              print(f"{mark} {image['name']} ({ref}) — chunk(s) {', '.join(map(str, image['chunks']))}")
+              print(f"• {image['name']} ({safe_ref(image['ref'])}) — chunk(s) {', '.join(map(str, image['chunks']))}")
+          # A named thumbnail only: without one the video thumbnail is generated from image 1.
+          if isinstance(thumbnail, str) and thumbnail:
+              print(f"• thumbnail ({safe_ref(thumbnail)})")
+          with open("out/workflow-input.json") as f:
+              items = json.load(f)
+          if not isinstance(items, list) or not items:
+              raise SystemExit("❌ empty dispatch manifest out/workflow-input.json")
+          print(f"dispatch manifest: {len(items)} item(s)")
           EOF
-          if [ "$rc" -ne 0 ]; then
-            echo "❌ image(s) from $FILE could not be downloaded (exit $rc)"
-            exit 1
-          fi
 
       # Its own step so the script is easy to find in the log.
       - name: "📝 Reflection script — review it here"
@@ -370,6 +407,42 @@ jobs:
             --inputs-file out/workflow-input.json \
             --token "${{ secrets.GITHUB_TOKEN }}"
 
+      # Costs nothing: without it the job would spend these minutes idle inside the collector's
+      # poll. Existing downloads stay in out/pics, so only missing refs are fetched.
+      - name: Wait for the reflection images (while the chunks synthesize)
+        id: image
+        timeout-minutes: 60   # safety net only; reflection_images.py enforces its own deadline
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+        run: |
+          wait_minutes=${IMAGE_EARLY_WAIT_MINUTES%%.*}
+          if [ "${wait_minutes:-0}" -eq 0 ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "⏭️ skipping the early image wait (IMAGE_EARLY_WAIT_MINUTES=0)"
+            exit 0
+          fi
+          if [ -z "$IMAGE_BASE_URL" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "⏭️ no IMAGE_BASE_URL secret — skipping the early image wait"
+            exit 0
+          fi
+          set +e
+          python scripts/reflection_images.py --base-url "$IMAGE_BASE_URL" --timeout "$((wait_minutes * 60))" --poll-interval 20
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "✅ every required image arrived — the video will build as soon as the audio lands"
+          elif [ "$rc" -eq 10 ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "⏳ image(s) still missing — audio collection proceeds and there is a second chance after it"
+          else
+            echo "❌ reflection_images.py failed (exit $rc)"
+            exit "$rc"
+          fi
+
       - name: Collect MP3s, retry stragglers
         working-directory: sec10v
         timeout-minutes: 200   # bounds the polling loop below; the job cap is 330
@@ -433,8 +506,46 @@ jobs:
           done
           echo "--- out/*.mp3 ---"; ls -la out/*.mp3
 
+      # Second chance, for when the images were not up yet during the synthesis window.
+      # Existing downloads stay in out/pics, so only missing refs are fetched.
+      - name: Wait for the reflection images (second chance)
+        id: image_retry
+        if: steps.image.outputs.found != 'true'
+        timeout-minutes: 180   # safety net only; reflection_images.py enforces --timeout itself
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+        run: |
+          wait_minutes=${IMAGE_WAIT_MINUTES%%.*}
+          if [ "${wait_minutes:-0}" -eq 0 ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "⏭️ image wait disabled (IMAGE_WAIT_MINUTES=0)"
+            exit 0
+          fi
+          if [ -z "$IMAGE_BASE_URL" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "⏭️ no IMAGE_BASE_URL secret — skipping the video"
+            exit 0
+          fi
+          set +e
+          python scripts/reflection_images.py --base-url "$IMAGE_BASE_URL" --timeout "$((wait_minutes * 60))" --poll-interval 20
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            ls -la out/pics
+          elif [ "$rc" -eq 10 ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ image(s) still missing after the second window — no video was built"
+          else
+            echo "❌ reflection_images.py failed (exit $rc)"
+            exit "$rc"
+          fi
+
       - name: Build the final video
         id: video
+        if: steps.image.outputs.found == 'true' || steps.image_retry.outputs.found == 'true'
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
@@ -527,6 +638,9 @@ jobs:
       # Fail loudly *after* the upload, so a finished video is never lost to a late failure.
       - name: Report chunk, image and video status
         working-directory: sec10v
+        env:
+          IMAGE_FOUND: ${{ steps.image.outputs.found }}
+          IMAGE_RETRY_FOUND: ${{ steps.image_retry.outputs.found }}
         run: |
           if [ -f out/run_ids.json ]; then
             remaining=$(python -c "import json; d=json.load(open('out/run_ids.json')); print(len(d)); [print(' -', e['out_subdir'], e['run_id']) for e in d]")
@@ -544,6 +658,47 @@ jobs:
           # This run uploads no artifacts at all; the channel is where the output went.
           if [ "${{ steps.youtube.outcome }}" = "success" ]; then
             echo "📺 uploaded to YouTube as private — the link is in the upload step's log"
+          fi
+          if [ "$IMAGE_FOUND" != "true" ] && [ "$IMAGE_RETRY_FOUND" != "true" ]; then
+            echo "⚠️ no video was built or uploaded — required image(s) never arrived."
+          python - <<'EOF'
+          import json
+          import os
+          from urllib.parse import urlsplit
+
+          def safe_ref(ref):
+              parts = urlsplit(ref)
+              if parts.scheme in ("http", "https"):
+                  return os.path.basename(parts.path)
+              return ref.split("?", 1)[0].split("#", 1)[0]
+
+          chapter = json.load(open("out/chapter.json"))
+          images = chapter.get("images") or []
+          missing = [i for i in images if not (isinstance(i, dict) and isinstance(i.get("name"), str) and i["name"]
+              and os.path.isfile(f"out/pics/{i['name']}.jpg") and os.path.getsize(f"out/pics/{i['name']}.jpg") > 0)]
+          for image in missing:
+              name = image.get("name", "?") if isinstance(image, dict) else "?"
+              ref = image.get("ref", "") if isinstance(image, dict) else ""
+              if isinstance(ref, str) and ref:
+                  print(f"❌ missing {name}.jpg ({safe_ref(ref)})")
+              else:
+                  print(f"❌ missing {name}.jpg")
+          # Named thumbnail only: without one the thumbnail is generated from image 1,
+          # so there is nothing to report. A reused ref reuses that section image.
+          thumbnail = chapter.get("thumbnail")
+          if isinstance(thumbnail, str) and thumbnail:
+              refs = {e["name"]: e["ref"] for e in images
+                      if isinstance(e, dict) and isinstance(e.get("name"), str) and isinstance(e.get("ref"), str)}
+              reused = next((name for name, ref in refs.items() if ref == thumbnail), None)
+              if reused is None:
+                  base = chapter.get("base_name")
+                  raw = f"{base}.thumbnail" if isinstance(base, str) and base else None
+              else:
+                  raw = reused
+              if raw is None or not (os.path.isfile(f"out/pics/{raw}.jpg") and os.path.getsize(f"out/pics/{raw}.jpg") > 0):
+                  print(f"❌ missing thumbnail ({safe_ref(thumbnail)})")
+          EOF
+            echo "Upload the image(s) above to your image bucket, then rerun this workflow to rebuild."
           fi
 
       # Last on purpose. $GITHUB_STEP_SUMMARY renders blocks in the order steps append them, so
