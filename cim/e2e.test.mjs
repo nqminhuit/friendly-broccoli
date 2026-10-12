@@ -504,7 +504,7 @@ test('new run loads schema defaults validates and pins the exact returned run', 
     await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value='hi'; document.querySelector('#dispatch-inputs input[name=count]').value='not-a-number'; document.querySelector('#dispatch-form').requestSubmit()`);
     await waitFor(`document.querySelector('#dispatch-status').textContent.includes('Fix the highlighted')`);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), postBase);
-    await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value='hi'+String.fromCharCode(10)+'there'; document.querySelector('#dispatch-inputs input[name=count]').value='2'; window.confirm=()=>true; document.querySelector('#dispatch-form').requestSubmit(); document.querySelector('#dispatch-form').requestSubmit()`);
+    await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value='hi'+String.fromCharCode(10)+'there'; document.querySelector('#dispatch-inputs input[name=count]').value='2'; window.confirm=()=>{throw new Error('should not confirm')}; document.querySelector('#dispatch-form').requestSubmit(); document.querySelector('#dispatch-form').requestSubmit()`);
     await waitFor(`document.querySelector('#dispatch-result').textContent.includes('Open run 77')`);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), postBase + 1);
     assert.equal(await evaluate(`JSON.parse(globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).at(-1).body).inputs.greeting`), 'hi\nthere');
@@ -512,7 +512,19 @@ test('new run loads schema defaults validates and pins the exact returned run', 
     assert.equal(await evaluate(`document.querySelector('#dispatch-result a').href`), 'https://github.com/acme/app/actions/runs/77');
     await waitFor(`document.querySelector('#run-list').textContent.includes('Dispatched CI')`);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Dispatched CI')`), true);
-    await evaluate(`document.querySelector('#dispatch-close').click()`);
+    const fire = (type, x, y) => `document.querySelector('#dispatch-dialog').dispatchEvent(new PointerEvent('${type}',{bubbles:true,clientX:${x},clientY:${y}}))`;
+    const click = (x, y) => `document.querySelector('#dispatch-dialog').dispatchEvent(new MouseEvent('click',{bubbles:true,clientX:${x},clientY:${y}}))`;
+    const inPadding = `(()=>{const r=document.querySelector('#dispatch-dialog').getBoundingClientRect(); return [r.left+5, r.top+5]})()`;
+    const [px, py] = await evaluate(inPadding);
+    // Press and release in the padding: target is the dialog but inside its box.
+    await evaluate(`${fire('pointerdown', px, py)}; ${click(px, py)}`);
+    assert.equal(await evaluate(`document.querySelector('#dispatch-dialog').open`), true);
+    // Press inside the box, release outside (drag-select): stays open.
+    await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:${px},clientY:${py}})); ${click(2, 2)}`);
+    assert.equal(await evaluate(`document.querySelector('#dispatch-dialog').open`), true);
+    // Press and release on the backdrop closes it.
+    await evaluate(`${fire('pointerdown', 2, 2)}; ${click(2, 2)}`);
+    assert.equal(await evaluate(`document.querySelector('#dispatch-dialog').open`), false);
 });
 
 test('stale workflow loads never restore and non-dispatchable workflows cannot start', { skip: !CHROME && 'Chrome not found' }, async () => {
