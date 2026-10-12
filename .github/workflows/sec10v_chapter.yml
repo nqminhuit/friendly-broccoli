@@ -15,11 +15,13 @@
 # STILL FAILS visibly so the same chapter is triggered again next day. That retry
 # restores the MATCHING failed-upload bundle and retries only YouTube — no Gemini/image
 # waits/TTS/cache warm/audio collection/FFmpeg/repeated QA. Changed source/voice/settings/
-# refs or fresh=true bypass reuse; images replaced under the SAME ref need fresh too.
+# refs or fresh=true bypass reuse; images replaced under the SAME ref need fresh too. Motion,
+# frame rate and fades are part of that identity, so changing the profile rebuilds the video.
 # A stored success receipt suppresses duplicates; ambiguous prior completion stops for
 # manual review. Thumbnail failure alone is not a failed video upload.
 # Requires sec10v scripts/video_fallback.py at the selected sec10v_ref (two-repo
 # dependency: merge/select that helper before using these workflows).
+# Optional motion also requires the #90 renderer support in sec10v; it costs extra render time.
 #
 # So: dispatch, open the run page, copy the prompt out of that step's log, generate the image,
 # upload it to the bucket under the BaseName. That happens while the TTS runs, so it costs no
@@ -97,6 +99,11 @@ on:
         required: false
         type: boolean
         default: false
+      motion:
+        description: 'Opt in to Ken Burns motion, 30 fps and 1s/1.5s fades; increases render time and requires sec10v #90 support'
+        required: false
+        type: boolean
+        default: false
       voice:
         description: 'Narrator voice (path relative to sec10v resources/voices/)'
         required: false
@@ -135,6 +142,10 @@ env:
   MAX_CHUNKS: '60'              # ~20 chunks take 41-81 min; more than this can't be collected in 200
   GEMINI_MODEL: 'gemini-3.5-flash-lite'       # tried first for the image prompt and SEO
   GEMINI_FALLBACK_MODEL: 'gemma-4-26b-a4b-it' # used only after GEMINI_MODEL returns HTTP 429
+  VIDEO_MOTION: ${{ inputs.motion && 'ken-burns' || 'static' }}
+  VIDEO_FRAMERATE: ${{ inputs.motion && '30' || '5' }}
+  FADE_IN_SECONDS: ${{ inputs.motion && '1' || '0' }}
+  FADE_OUT_SECONDS: ${{ inputs.motion && '1.5' || '0' }}
   # Empty on purpose: no music beds, just the TTS. An empty INTRO_AUDIO drops the music from
   # the spoken intro (book title + chapter title) and an empty OUTRO_AUDIO skips the outro
   # segment entirely. Name a file in sec10v resources/music/ to bring either back.
@@ -166,6 +177,7 @@ jobs:
           CHAPTER_TITLE_OVERRIDE: ${{ inputs.chapter_title }}
           IMAGE_URL: ${{ inputs.image_url }}
           FRESH: ${{ inputs.fresh }}
+          MOTION_ENABLED: ${{ inputs.motion }}
           VOICE: ${{ inputs.voice }}
           SEC10V_REF: ${{ inputs.sec10v_ref }}
         run: |
@@ -178,6 +190,8 @@ jobs:
             echo "- Narrator voice: \`$VOICE\`"
             echo "- Image URL supplied: \`$image_url_supplied\`"
             echo "- Fresh: \`$FRESH\`"
+            echo "- Motion enabled: \`$MOTION_ENABLED\`"
+            echo "- Rendering profile: \`$VIDEO_MOTION\`, \`${VIDEO_FRAMERATE} fps\`, fades \`${FADE_IN_SECONDS}s/${FADE_OUT_SECONDS}s\`"
             echo "- sec10v ref: \`$SEC10V_REF\`"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Chapter URL: $SE_URL"
@@ -185,6 +199,8 @@ jobs:
           echo "Narrator voice: $VOICE"
           echo "Image URL supplied: $image_url_supplied"
           echo "Fresh: $FRESH"
+          echo "Motion enabled: $MOTION_ENABLED"
+          echo "Rendering profile: $VIDEO_MOTION, ${VIDEO_FRAMERATE} fps, fades ${FADE_IN_SECONDS}s/${FADE_OUT_SECONDS}s"
           echo "sec10v ref: $SEC10V_REF"
 
       - name: Checkout nqminhuit/sec10v
@@ -205,6 +221,32 @@ jobs:
       # (automate_audiobook.py is stdlib-only and skips TTS entirely when the MP3s exist.)
       - name: Install Python dependencies
         run: pip install requests
+
+      # Keep old sec10v refs usable for the default static profile. Motion is gated before
+      # restore or any expensive work so an unsupported renderer cannot waste a run.
+      - name: Check motion renderer support
+        if: ${{ inputs.motion }}
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+        run: |
+          if ! python - <<'PY'
+          try:
+              import automate_audiobook
+              import video_fallback
+              supported = (
+                  getattr(automate_audiobook, "CHAPTER_MOTION_VERSION", 0) >= 1
+                  and "VIDEO_MOTION" in getattr(video_fallback, "SETTING_ENV_VARS", ())
+              )
+          except Exception:
+              supported = False
+          if not supported:
+              raise SystemExit(1)
+          PY
+          then
+            echo "❌ Motion requires a newer sec10v_ref containing #90 renderer and retry-identity support."
+            exit 1
+          fi
 
       - name: Prepare chapter text, chunks, intro and dispatch manifest
         working-directory: sec10v
@@ -256,6 +298,10 @@ jobs:
           SE_URL: ${{ inputs.se_url }}
           IMAGE_URL: ${{ inputs.image_url }}
           FRESH: ${{ inputs.fresh }}
+          VIDEO_MOTION: ${{ env.VIDEO_MOTION }}
+          VIDEO_FRAMERATE: ${{ env.VIDEO_FRAMERATE }}
+          FADE_IN_SECONDS: ${{ env.FADE_IN_SECONDS }}
+          FADE_OUT_SECONDS: ${{ env.FADE_OUT_SECONDS }}
           BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
           BUCKET_S3_URI: ${{ secrets.BUCKET_S3_URI }}
           BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
@@ -919,6 +965,9 @@ jobs:
             args+=(--outro-audio "$OUTRO_AUDIO")
           else
             echo "⚠️ resources/music/$OUTRO_AUDIO was asked for but is not there — no outro segment"
+          fi
+          if [ "$VIDEO_MOTION" = "ken-burns" ]; then
+            args+=(--ken-burns --framerate "$VIDEO_FRAMERATE" --fade-in "$FADE_IN_SECONDS" --fade-out "$FADE_OUT_SECONDS")
           fi
           python scripts/automate_audiobook.py "${args[@]}"
           ls -lh out/*.final.mp4
