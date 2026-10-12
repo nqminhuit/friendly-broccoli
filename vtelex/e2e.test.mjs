@@ -136,6 +136,11 @@ it('toggling switches the site to Vietnamese and flashes the mode', async () => 
 });
 
 for (const selector of FIELDS) {
+    it(`${selector}: repeated mark escape with late marks and shortcuts`, async () => {
+        await evaluate(page, `(e => { e.value = ''; e.textContent = ''; })(document.querySelector('${selector}'))`);
+        assert.equal(await type(selector, 'dataa Dataa DATAA genee homoo, tieengs ko?'), 'data Data DATA gene homo, tiếng không?');
+    });
+
     it(`${selector}: telex, shortcuts and Backspace undo`, async () => {
         await evaluate(page, `(e => { e.value = ''; e.textContent = ''; })(document.querySelector('${selector}'))`);
         assert.equal(await type(selector, 'tieengs ko?'), 'tiếng không?');
