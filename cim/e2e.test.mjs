@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CHROME = [process.env.CHROME, '/opt/google/chrome/chrome', '/usr/bin/google-chrome'].find((item) => item && fs.existsSync(item));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-let chrome, ws, profile, pageSession, extensionId, nextId = 0;
+let chrome, ws, profile, pageSession, workerSession, extensionId, nextId = 0;
 const pending = new Map();
 
 function send(method, params = {}, sessionId) {
@@ -22,6 +22,21 @@ async function evaluate(expression) {
     const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, pageSession);
     if (result.result.exceptionDetails) throw new Error(result.result.exceptionDetails.exception.description);
     return result.result.result.value;
+}
+async function evaluateWorker(expression) {
+    const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, workerSession);
+    if (result.result.exceptionDetails) throw new Error(result.result.exceptionDetails.exception.description);
+    return result.result.result.value;
+}
+// Safe platform diagnostics for failures: versions and context counts only, never PATs.
+async function platformInfo() {
+    try {
+        const ua = await evaluate(`navigator.userAgent`);
+        const contexts = await evaluate(`chrome.runtime.getContexts({contextTypes:['TAB'], documentUrls:[chrome.runtime.getURL('dashboard.html')]}).then(list=>list.length).catch(error=>String(error && error.message || error))`);
+        let product = 'unknown';
+        try { product = (await send('Browser.getVersion')).result.product; } catch { /* Keep ua fallback. */ }
+        return `node=${process.version} chrome=${product} ua=${ua} dashboardContexts=${contexts} extension=${extensionId}`;
+    } catch (error) { return `diagnostic failed: ${error.message}`; }
 }
 const runtimeErrors = [];
 async function waitFor(expression, timeout = 7000) {
@@ -158,6 +173,16 @@ before(async () => {
     })()`;
     await send('Page.addScriptToEvaluateOnNewDocument', { source: mock }, pageSession);
     await send('Page.navigate', { url: `chrome-extension://${extensionId}/dashboard.html` }, pageSession);
+    try {
+        for (let attempt = 0; attempt < 20 && !workerSession; attempt++) {
+            const targets = (await send('Target.getTargets')).result.targetInfos || [];
+            const worker = targets.find((entry) => entry.type === 'service_worker' && String(entry.url || '').startsWith(`chrome-extension://${extensionId}/`));
+            if (worker) {
+                workerSession = (await send('Target.attachToTarget', { targetId: worker.targetId, flatten: true })).result.sessionId;
+                await send('Runtime.enable', {}, workerSession);
+            } else await sleep(200);
+        }
+    } catch { workerSession = null; }
 });
 
 after(async () => {
@@ -187,8 +212,6 @@ test('profiles route their own PATs, filter identity, paginate without rewind, a
     assert.equal(await evaluate(`document.querySelector('#profile-id').value === '' && document.querySelector('#settings-message').textContent.includes('personal access token')`), true);
     assert.equal(await evaluate(`globalThis.__cimRequests.length`), firstAuthCount);
     await evaluate(`document.querySelector('#settings-close').click()`);
-    const dashboardUrls = await evaluate(`chrome.tabs.query({url:chrome.runtime.getURL('dashboard.html')}).then(tabs=>tabs.map(tab=>tab.url))`);
-    assert.ok(dashboardUrls.includes(`chrome-extension://${extensionId}/dashboard.html`));
     assert.equal(await evaluate(`chrome.storage.session.get(null).then(x=>Object.values(x).includes('e2e-token'))`), true);
     assert.equal(await evaluate(`chrome.storage.local.get(null).then(x=>Object.entries(x).filter(([k])=>k.startsWith('cimProfile:')).every(([,v])=>!v.token))`), true);
     assert.equal(await evaluate(`document.querySelectorAll('#run-list a').length`), 1);
@@ -254,6 +277,23 @@ test('profiles route their own PATs, filter identity, paginate without rewind, a
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange'))`);
     await waitFor(`globalThis.__cimRequests.length > ${hiddenCount}`);
     assert.equal(await evaluate(`globalThis.__cimRequests.every(x=>x.url.startsWith('https://api.github.com/') && ['Bearer e2e-token','Bearer work-pat','Bearer expired-pat'].includes(x.auth))`), true);
+});
+
+// Browser tests share one dashboard page: later tests reuse the Personal/Work
+// profiles and rotated PATs created above. Toolbar discovery stays independent
+// of that profile state and never reads tab URLs.
+test('toolbar discovers only its own dashboard context and reuses the open page', { skip: !CHROME && 'Chrome not found' }, async () => {
+    const contexts = await evaluate(`chrome.runtime.getContexts({contextTypes:['TAB'], documentUrls:[chrome.runtime.getURL('dashboard.html')]}).then(list=>list.filter(entry=>entry.documentUrl===chrome.runtime.getURL('dashboard.html') && Number.isInteger(entry.tabId) && Number.isInteger(entry.windowId)).map(entry=>({tabId:entry.tabId, windowId:entry.windowId, documentUrl:entry.documentUrl})))`);
+    assert.ok(contexts.length >= 1, `expected own dashboard context (${await platformInfo()})`);
+    assert.ok(contexts.every((entry) => entry.documentUrl === `chrome-extension://${extensionId}/dashboard.html`), await platformInfo());
+    if (!workerSession) return;
+    const before = await evaluateWorker(`chrome.runtime.getContexts({contextTypes:['TAB'], documentUrls:[chrome.runtime.getURL('dashboard.html')]}).then(list=>list.filter(entry=>Number.isInteger(entry.tabId)).length)`);
+    const first = await evaluateWorker(`openDashboard().then(tab=>tab.id)`);
+    const second = await evaluateWorker(`openDashboard().then(tab=>tab.id)`);
+    assert.equal(second, first, await platformInfo());
+    const after = await evaluateWorker(`chrome.runtime.getContexts({contextTypes:['TAB'], documentUrls:[chrome.runtime.getURL('dashboard.html')]}).then(list=>list.filter(entry=>Number.isInteger(entry.tabId)).length)`);
+    assert.equal(after, before, await platformInfo());
+    assert.ok(contexts.some((entry) => entry.tabId === first), await platformInfo());
 });
 
 test('expanded details stay text-safe and a failed-only rerun waits for a fresh attempt', { skip: !CHROME && 'Chrome not found' }, async () => {

@@ -10,6 +10,8 @@ Load the repository's `cim/` directory directly, or download `cim.zip` from the 
 2. Choose **Load unpacked** and select the directory containing `manifest.json`.
 3. Click the cim toolbar icon to open or focus its dashboard.
 
+Requires Chrome 116 or newer: the toolbar finds its open dashboard with `runtime.getContexts`, so no `tabs` permission is needed.
+
 To upgrade, replace the extracted files, reload the extension and reload the dashboard. The first release is published only after the feature branch is merged to master and CI passes.
 
 ## Configure account profiles

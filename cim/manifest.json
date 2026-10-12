@@ -6,5 +6,6 @@
   "permissions": ["storage"],
   "host_permissions": ["https://api.github.com/*"],
   "action": { "default_title": "Open CI Management" },
+  "minimum_chrome_version": "116",
   "background": { "service_worker": "background.js" }
 }

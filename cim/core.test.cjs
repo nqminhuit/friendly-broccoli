@@ -336,24 +336,116 @@ test('poll cadence budgets eligible reads only and respects the earliest account
     assert.equal(nextPollAt(now, 0, false, []), 0);
 });
 
-test('toolbar reuses only the dashboard tab, restores focus, and coalesces clicks', async () => {
-    const calls = []; let resolveQuery, tabUrl = 'https://example.com';
-    const session = { async get() { return { dashboardTabId: 8 }; }, async set(value) { calls.push(['store', value]); } };
+function toolbarChrome({ contexts, stored, created = { id: 11, windowId: 2 }, failFocusOnce = false }) {
+    const calls = [];
+    let focusFailed = false;
+    const session = { async get() { return { dashboardTabId: stored }; }, async set(value) { calls.push(['store', value]); } };
     const chrome = {
-        runtime: { getURL: (path) => `chrome-extension://id/${path}` },
-        storage: { session }, action: { onClicked: { addListener(fn) { chrome.handler = fn; } } },
-        tabs: { async get(id) { calls.push(['get', id]); return { id, url: tabUrl, windowId: 2 }; }, query() { return new Promise((resolve) => { resolveQuery = resolve; }); }, async create(value) { calls.push(['create', value]); return { id: 11, windowId: 2, url: value.url }; }, async update(...args) { calls.push(['tab-update', ...args]); } },
-        windows: { async update(...args) { calls.push(['window-update', ...args]); } }
+        runtime: {
+            getURL: (name) => `chrome-extension://id/${name}`,
+            async getContexts(filter) { calls.push(['getContexts', filter]); return typeof contexts === 'function' ? contexts() : contexts; }
+        },
+        storage: { session },
+        action: { onClicked: { addListener(fn) { chrome.handler = fn; } } },
+        tabs: {
+            async create(value) { calls.push(['create', value]); return { ...created, url: value.url }; },
+            async update(...args) {
+                calls.push(['tab-update', ...args]);
+                if (failFocusOnce && !focusFailed) { focusFailed = true; throw new Error('tab closed'); }
+            },
+            async get() { throw new Error('tabs.get must not be used for dashboard discovery'); },
+            async query() { throw new Error('tabs.query must not be used for dashboard discovery'); }
+        },
+        windows: {
+            async update(...args) {
+                calls.push(['window-update', ...args]);
+                if (failFocusOnce && !focusFailed) { focusFailed = true; throw new Error('tab closed'); }
+            }
+        }
     };
     const context = { chrome, module: { exports: {} } };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8'), context);
-    const first = context.module.exports.openDashboard(), second = context.module.exports.openDashboard();
-    await new Promise((resolve) => setImmediate(resolve)); resolveQuery([]);
-    await Promise.all([first, second]);
-    assert.equal(calls.filter(([name]) => name === 'create').length, 1);
+    return { calls, openDashboard: context.module.exports.openDashboard };
+}
+
+test('toolbar reuses its own dashboard context without reading tab URLs', async () => {
+    const dashboardUrl = 'chrome-extension://id/dashboard.html';
+    const { calls, openDashboard } = toolbarChrome({
+        stored: 8,
+        contexts: [{ documentUrl: dashboardUrl, tabId: 8, windowId: 2, frameId: 0 }]
+    });
+    const tab = await openDashboard();
+    assert.equal(tab.id, 8);
+    const filter = calls.find(([name]) => name === 'getContexts')[1];
+    assert.equal(filter.contextTypes[0], 'TAB');
+    assert.equal(filter.documentUrls[0], dashboardUrl);
+    assert.ok(calls.some(([name, value]) => name === 'store' && value.dashboardTabId === 8));
     assert.ok(calls.some(([name]) => name === 'window-update'));
-    tabUrl = 'chrome-extension://id/dashboard.html';
-    await context.module.exports.openDashboard();
+    assert.ok(calls.some(([name]) => name === 'tab-update'));
+    assert.equal(calls.filter(([name]) => name === 'create').length, 0);
+});
+
+test('toolbar ignores stale stored tabs and foreign contexts, then creates when none remain', async () => {
+    const dashboardUrl = 'chrome-extension://id/dashboard.html';
+    const foreign = toolbarChrome({
+        stored: 8,
+        contexts: [
+            { documentUrl: 'chrome-extension://other/dashboard.html', tabId: 8, windowId: 2, frameId: 0 },
+            { documentUrl: dashboardUrl, tabId: 9, windowId: 2, frameId: 7 },
+            { documentUrl: dashboardUrl, tabId: undefined, windowId: 2, frameId: 0 },
+            { documentUrl: dashboardUrl, tabId: 9, windowId: 2, frameId: 0 }
+        ],
+        created: { id: 11, windowId: 2 }
+    });
+    const reused = await foreign.openDashboard();
+    assert.equal(reused.id, 9);
+    assert.ok(foreign.calls.some(([name, value]) => name === 'store' && value.dashboardTabId === 9));
+    assert.equal(foreign.calls.filter(([name]) => name === 'create').length, 0);
+
+    const empty = toolbarChrome({ stored: 8, contexts: [], created: { id: 12, windowId: 3 } });
+    const created = await empty.openDashboard();
+    assert.equal(created.id, 12);
+    assert.ok(empty.calls.some(([name, value]) => name === 'store' && value.dashboardTabId === 12));
+    assert.ok(empty.calls.some(([name, value]) => name === 'create' && value.url === dashboardUrl));
+});
+
+test('toolbar prefers the stored dashboard among live contexts and coalesces rapid clicks', async () => {
+    const dashboardUrl = 'chrome-extension://id/dashboard.html';
+    const { calls, openDashboard } = toolbarChrome({
+        stored: 9,
+        contexts: [
+            { documentUrl: dashboardUrl, tabId: 7, windowId: 2, frameId: 0 },
+            { documentUrl: dashboardUrl, tabId: 9, windowId: 2, frameId: 0 }
+        ],
+        created: { id: 11, windowId: 2 }
+    });
+    assert.equal((await openDashboard()).id, 9);
+
+    let release;
+    const gated = toolbarChrome({ stored: undefined, contexts: new Promise((resolve) => { release = resolve; }), created: { id: 14, windowId: 2 } });
+    const first = gated.openDashboard(), second = gated.openDashboard();
+    release([]);
+    const [one, two] = await Promise.all([first, second]);
+    assert.equal(one.id, 14);
+    assert.equal(two.id, 14);
+    assert.equal(gated.calls.filter(([name]) => name === 'create').length, 1);
+    assert.equal(calls.filter(([name]) => name === 'create').length, 0);
+});
+
+test('toolbar recovers when the discovered dashboard closes before focus', async () => {
+    const dashboardUrl = 'chrome-extension://id/dashboard.html';
+    let listed = 0;
+    const { calls, openDashboard } = toolbarChrome({
+        stored: 8,
+        contexts: () => (++listed === 1
+            ? [{ documentUrl: dashboardUrl, tabId: 8, windowId: 2, frameId: 0 }]
+            : []),
+        created: { id: 15, windowId: 4 },
+        failFocusOnce: true
+    });
+    const tab = await openDashboard();
+    assert.equal(tab.id, 15);
+    assert.ok(calls.some(([name, value]) => name === 'store' && value.dashboardTabId === 15));
     assert.equal(calls.filter(([name]) => name === 'create').length, 1);
 });
 
