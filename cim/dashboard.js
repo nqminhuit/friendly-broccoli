@@ -31,7 +31,17 @@
 
     function setFeedback(message, kind = '') { const target = $('feedback'); target.textContent = message; target.className = `feedback ${kind}`; target.hidden = !message; }
     function setSettingsMessage(message, kind = '') { const target = $('settings-message'); target.textContent = message; target.className = `settings-message ${kind}`; }
-    function reportStorageError(message) { setFeedback(message, 'error'); $('monitor-label').textContent = 'Settings storage error'; }
+    const MONITOR_OK = 'Monitoring while open';
+    // Healthy state shows only a dot (text kept for title and screen readers); actionable states keep visible text.
+    function setMonitorLabel(label, healthy) {
+        const element = $('monitor-label');
+        const dot = document.createElement('span'); dot.className = 'monitor-dot'; dot.setAttribute('aria-hidden', 'true');
+        const words = document.createElement('span'); words.className = healthy ? 'visually-hidden' : 'monitor-text'; words.textContent = label;
+        element.replaceChildren(dot, words);
+        element.classList.toggle('healthy', healthy);
+        if (healthy) element.title = label; else element.removeAttribute('title');
+    }
+    function reportStorageError(message) { setFeedback(message, 'error'); setMonitorLabel('Settings storage error', false); }
     function currentProfiles() { return state.profiles.filter((profile) => profile.token && profile.repos.length); }
     function matchesStatus(run, statusFilter, hidden) {
         const completed = run.status === COMPLETED;
@@ -519,7 +529,8 @@
         const rateLimited = clients.some(({ client }) => client.retryAt > Date.now());
         const eligible = clients.some((entry) => !entry.client.authInvalid && entry.client.retryAt <= Date.now() && [...entry.repos].some((repo) => !entry.suspendedRepos.has(repo)));
         const allRepos = clients.reduce((count, entry) => count + entry.repos.size, 0);
-        $('monitor-label').textContent = !enabled ? 'Monitoring paused' : needsToken === clients.length ? 'Paused · update token' : gatedRepos === allRepos && allRepos > 0 ? 'Paused · check repository access' : !eligible && rateLimited ? 'Rate limited · waiting' : !eligible && needsToken ? 'Paused · update token or check access' : 'Monitoring while open';
+        const monitorText = !enabled ? 'Monitoring paused' : needsToken === clients.length ? 'Paused · update token' : gatedRepos === allRepos && allRepos > 0 ? 'Paused · check repository access' : !eligible && rateLimited ? 'Rate limited · waiting' : !eligible && needsToken ? 'Paused · update token or check access' : MONITOR_OK;
+        setMonitorLabel(monitorText, monitorText === MONITOR_OK);
     }
     function syncProfileUI() {
         const select = $('profile-select'); select.replaceChildren(new Option('Select a saved profile…', ''), ...state.profiles.map((profile) => new Option(`${profile.name} · ${profile.repos.length} repositories`, profile.id)));
