@@ -26,6 +26,17 @@
         return { repos, errors };
     }
 
+    function createSnapshotLoader(load, apply) {
+        let version = 0;
+        return async function loadLatest() {
+            const current = ++version;
+            const snapshot = await load();
+            if (current !== version) return false;
+            await apply(snapshot);
+            return true;
+        };
+    }
+
     class SettingsStore {
         constructor(storage, { createId = () => globalThis.crypto.randomUUID() } = {}) {
             this.storage = storage;
@@ -36,18 +47,22 @@
             if (this.migration) return this.migration;
             this.migration = (async () => {
                 const local = await this.storage.local.get(null);
+                const session = await this.storage.session.get(null);
                 const profiles = Object.keys(local || {}).filter((key) => key.startsWith(PROFILE_PREFIX));
                 if (profiles.length) {
                     if (LEGACY_KEYS.some((key) => key in local)) await this.storage.local.remove(LEGACY_KEYS);
+                    if ('token' in (session || {})) await this.storage.session.remove('token');
                     return;
                 }
-                if (!LEGACY_KEYS.some((key) => key in (local || {}))) return;
+                if (!LEGACY_KEYS.some((key) => key in (local || {})) && !('token' in (session || {}))) return;
                 const id = 'default';
                 const record = { id, name: 'Personal', repos: Array.isArray(local.repositories) ? local.repositories : [], rememberToken: local.rememberToken === true };
-                if (record.rememberToken && local.token) record.token = local.token;
-                if (local.token) await this.storage.session.set({ [TOKEN_PREFIX + id]: local.token });
+                const token = session.token || (record.rememberToken ? local.token : '') || '';
+                if (record.rememberToken && token) record.token = token;
+                if (token) await this.storage.session.set({ [TOKEN_PREFIX + id]: token });
                 await this.storage.local.set({ [PROFILE_PREFIX + id]: record });
                 await this.storage.local.remove(LEGACY_KEYS);
+                if ('token' in (session || {})) await this.storage.session.remove('token');
             })();
             try { await this.migration; } catch (error) { this.migration = null; throw error; }
         }
@@ -95,5 +110,5 @@
             await Promise.all([this.storage.local.remove(PROFILE_PREFIX + id), this.storage.session.remove(TOKEN_PREFIX + id)]);
         }
     }
-    return { parseRepositories, SettingsStore, PROFILE_PREFIX, TOKEN_PREFIX, LEGACY_KEYS };
+    return { parseRepositories, createSnapshotLoader, SettingsStore, PROFILE_PREFIX, TOKEN_PREFIX, LEGACY_KEYS };
 });

@@ -3,15 +3,28 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
-const { parseRepositories, SettingsStore } = require('./settings.js');
+const { parseRepositories, createSnapshotLoader, SettingsStore } = require('./settings.js');
 const { API_VERSION, GitHubClient, ApiError, paginationLinks } = require('./api.js');
-const { ForegroundMonitor } = require('./monitor.js');
+const { ForegroundMonitor, nextPollAt } = require('./monitor.js');
 
 test('repository input trims, deduplicates case-insensitively, and rejects unsafe syntax', () => {
     assert.deepEqual(parseRepositories(' octo/one\nOCTO/ONE\n team/repo-name \nhttps://github.com/a/b\n../bad\nowner/repo?x'), {
         repos: ['octo/one', 'team/repo-name'],
         errors: ['Line 4: enter owner/repository only (no URL, query, or path).', 'Line 5: enter owner/repository only (no URL, query, or path).', 'Line 6: enter owner/repository only (no URL, query, or path).']
     });
+});
+
+test('older storage snapshots cannot apply after a newer profile load', async () => {
+    const pending = [];
+    const applied = [];
+    const loadLatest = createSnapshotLoader(() => new Promise((resolve) => pending.push(resolve)), (value) => applied.push(value));
+    const stale = loadLatest();
+    const fresh = loadLatest();
+    pending[1]([{ id: 'fresh' }]);
+    assert.equal(await fresh, true);
+    pending[0]([{ id: 'deleted-profile' }]);
+    assert.equal(await stale, false);
+    assert.deepEqual(applied, [[{ id: 'fresh' }]]);
 });
 
 function storageArea(initial = {}) {
@@ -53,6 +66,29 @@ test('legacy single profile migrates once and removes old PAT keys', async () =>
     assert.equal(local.values['cimProfile:default'].token, 'legacy');
     await store.load();
     assert.equal(Object.keys(local.values).filter((key) => key.startsWith('cimProfile:')).length, 1);
+});
+
+test('legacy session PAT wins and both stores discard obsolete credentials', async () => {
+    const local = storageArea({ repositories: ['a/b'], rememberToken: false, token: 'remembered-fallback' });
+    const session = storageArea({ token: 'session-only' });
+    const store = new SettingsStore({ local, session });
+    const [profile] = await store.load();
+    assert.equal(profile.token, 'session-only');
+    assert.equal(session.values['cimToken:default'], 'session-only');
+    assert.equal(session.values.token, undefined);
+    assert.equal(local.values.token, undefined);
+    assert.equal(local.values['cimProfile:default'].token, undefined);
+    const rememberedLocal = storageArea({ repositories: ['a/b'], rememberToken: true, token: 'remembered' });
+    const cleanSession = storageArea();
+    const [remembered] = await new SettingsStore({ local: rememberedLocal, session: cleanSession }).load();
+    assert.equal(remembered.token, 'remembered');
+    assert.equal(cleanSession.values['cimToken:default'], 'remembered');
+    assert.equal(rememberedLocal.values.token, undefined);
+    const existingLocal = storageArea({ 'cimProfile:one': { id: 'one', name: 'One', repos: [], rememberToken: false }, token: 'orphan' });
+    const existingSession = storageArea({ token: 'orphan-session' });
+    await new SettingsStore({ local: existingLocal, session: existingSession }).load();
+    assert.equal(existingLocal.values['cimProfile:one'].token, undefined);
+    assert.equal(existingSession.values.token, undefined);
 });
 
 function response(status, data, headers = {}) {
@@ -205,6 +241,22 @@ test('monitor accepts scheduler cooldowns and stops timers when every profile ne
     monitor.stop();
     const idle = new ForegroundMonitor({ cycle: () => ({ runs: [], continueMonitoring: false }), setTimer: timers.setTimer, clearTimer: timers.clearTimer, now: timers.now });
     await idle.start(); assert.equal(timers.timers.size, 0); assert.equal(calls, 1); idle.stop();
+});
+
+test('explicit cooldown wakes before idle cadence and is not stretched to base cadence', async () => {
+    const timers = fakeTimers();
+    const monitor = new ForegroundMonitor({ cycle: () => ({ runs: [], nextAt: 12000, continueMonitoring: true }), setTimer: timers.setTimer, clearTimer: timers.clearTimer, now: timers.now });
+    await monitor.start();
+    assert.equal([...timers.timers.values()][0].at, 12000);
+    monitor.stop();
+});
+
+test('poll cadence budgets eligible reads only and respects the earliest account cooldown', () => {
+    const now = 1000;
+    assert.equal(nextPollAt(now, 1, false, []), now + 30000);
+    assert.equal(nextPollAt(now, 1, false, [now + 12000]), now + 12000);
+    assert.equal(nextPollAt(now, 0, false, [now + 12000]), now + 12000);
+    assert.equal(nextPollAt(now, 0, false, []), 0);
 });
 
 test('toolbar reuses only the dashboard tab, restores focus, and coalesces clicks', async () => {

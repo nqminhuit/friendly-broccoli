@@ -5,6 +5,11 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
     const ACTIVE = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 
+    function nextPollAt(now, eligibleRequests, active, cooldowns) {
+        const cadenceAt = eligibleRequests ? now + Math.max(active ? 10000 : 30000, Math.max(10000, eligibleRequests * 2000)) : 0;
+        return cadenceAt && cooldowns.length ? Math.min(cadenceAt, ...cooldowns) : cadenceAt || (cooldowns.length ? Math.min(...cooldowns) : 0);
+    }
+
     class ForegroundMonitor {
         constructor({ cycle, onCycle = () => {}, isVisible = () => true, setTimer = (...args) => globalThis.setTimeout(...args), clearTimer = (id) => globalThis.clearTimeout(id), now = () => Date.now(), fastMs = 10000, idleMs = 30000 }) {
             this.cycle = cycle;
@@ -54,8 +59,9 @@
                 this.onCycle(null, result);
                 if (result?.continueMonitoring === false) return;
                 const active = (result?.runs || []).some((run) => ACTIVE.has(run.status));
-                const next = Math.max(this.now() + (active ? this.fastMs : this.idleMs), result?.nextAt || result?.retryAt || 0);
-                this.timer = this.setTimer(() => { this.timer = null; void this.refresh(); }, Math.max(0, next - this.now()));
+                const explicitNext = Number(result?.nextAt || result?.retryAt || 0);
+                const next = explicitNext > 0 ? Math.max(this.now() + 1000, explicitNext) : this.now() + (active ? this.fastMs : this.idleMs);
+                this.timer = this.setTimer(() => { this.timer = null; void this.refresh(); }, Math.max(1000, next - this.now()));
             }).catch((error) => {
                 if (generation !== this.generation || controller.signal.aborted) return;
                 this.onCycle(error);
@@ -67,5 +73,5 @@
             return this.running;
         }
     }
-    return { ACTIVE, ForegroundMonitor };
+    return { ACTIVE, nextPollAt, ForegroundMonitor };
 });

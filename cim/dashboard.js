@@ -5,7 +5,7 @@
     const KEY_SEPARATOR = '\u0000';
     const COMPLETED = 'completed';
     const CANCELLED = 'cancelled';
-    const state = { profiles: [], selected: '', profileFilter: ALL, runs: new Map(), latestLinks: new Map(), historyLinks: new Map(), historyStarted: new Set(), errors: new Map(), clients: new Map(), operations: new Set(), loading: false, initialLoading: false, epoch: 0, saveBusy: false, settingsBusy: false };
+    const state = { profiles: [], selected: '', editingId: null, profileFilter: ALL, runs: new Map(), latestLinks: new Map(), historyLinks: new Map(), historyStarted: new Set(), errors: new Map(), clients: new Map(), operations: new Set(), loading: false, initialLoading: false, epoch: 0, settingsBusy: false, writeBusy: false };
     const profileKey = (id, repo) => `${id}${KEY_SEPARATOR}${repo.toLocaleLowerCase('en-US')}`;
     const runKey = (id, repo, run) => `${profileKey(id, repo)}${KEY_SEPARATOR}${run.id}`;
     const repoKey = (repo) => repo.toLocaleLowerCase('en-US');
@@ -26,7 +26,7 @@
 
     function setFeedback(message, kind = '') { const target = $('feedback'); target.textContent = message; target.className = `feedback ${kind}`; target.hidden = !message; }
     function setSettingsMessage(message, kind = '') { const target = $('settings-message'); target.textContent = message; target.className = `settings-message ${kind}`; }
-    function selectedProfile() { return state.profiles.find((profile) => profile.id === state.selected); }
+    function reportStorageError(message) { setFeedback(message, 'error'); $('monitor-label').textContent = 'Settings storage error'; }
     function currentProfiles() { return state.profiles.filter((profile) => profile.token && profile.repos.length); }
     function statusOf(run) {
         if (run.status === COMPLETED) {
@@ -64,6 +64,7 @@
         $('history-note').textContent = profiles.flatMap((profile) => profile.repos.map((repo) => `${profile.name} · ${repo}: ${repoLoads.get(profileKey(profile.id, repo)) || 0} loaded`)).join(' · ') + '. Latest 30 per repository load first; use Load older runs to browse further.';
         const errors = $('repo-errors'); errors.replaceChildren();
         for (const [key, message] of state.errors) { const [id, repo] = key.split(KEY_SEPARATOR); const profile = state.profiles.find((item) => item.id === id); if (profile) text(errors, 'div', `${profile.name} · ${repo}: ${message}`, 'repo-error'); }
+        updateFilterOptions();
         const search = $('search').value.trim().toLocaleLowerCase(); const profileFilter = $('profile-filter').value; const repoFilter = $('repo-filter').value; const workflowFilter = $('workflow-filter').value; const branchFilter = $('branch-filter').value; const statusFilter = $('status-filter').value;
         const list = $('run-list'); list.replaceChildren();
         if (!entries.length && state.initialLoading) text(list, 'div', 'Loading workflow runs…', 'history-note');
@@ -94,10 +95,9 @@
         const selectedEntries = [...state.historyLinks.entries()].filter(([key, url]) => url && (profileFilter === ALL || key.startsWith(`${profileFilter}${KEY_SEPARATOR}`)));
         $('older').disabled = !selectedEntries.length || state.loading;
         $('older').textContent = state.loading ? 'Loading…' : 'Load older runs';
-        updateFilterOptions();
     }
     function updateFilterOptions() {
-        const filter = (id, values, label) => { const select = $(id), prior = select.value; select.replaceChildren(new Option(`All ${label}`, ALL), ...[...values].sort().map((value) => new Option(value, value))); if ([...select.options].some((option) => option.value === prior)) select.value = prior; };
+        const filter = (id, values, label) => { const select = $(id), prior = select.value; select.replaceChildren(new Option(`All ${label}`, ALL), ...[...new Set(values)].sort().map((value) => new Option(value, value))); if ([...select.options].some((option) => option.value === prior)) select.value = prior; };
         const visible = [...state.runs.values()].filter((item) => $('profile-filter').value === ALL || item.profileId === $('profile-filter').value);
         filter('repo-filter', visible.map(({ repo }) => repo), 'repositories');
         filter('workflow-filter', visible.map(({ run }) => run.name || run.display_title || 'Workflow run'), 'workflows');
@@ -120,12 +120,13 @@
         const latestRuns = [];
         for (const profile of profiles) {
             if (signal.aborted || cycleEpoch !== state.epoch) break;
-            const entry = clientFor(profile); expectedRequests += profile.repos.length;
+            const entry = clientFor(profile);
             for (const repo of reposFor(profile)) {
                 if (signal.aborted || cycleEpoch !== state.epoch) break;
                 const key = profileKey(profile.id, repo);
-                if (entry.client.authInvalid || entry.suspendedRepos.has(repoKey(repo))) continue;
+                if (entry.client.authInvalid || entry.client.retryAt > Date.now() || entry.suspendedRepos.has(repoKey(repo))) continue;
                 const [owner, name] = repo.split('/');
+                expectedRequests++;
                 try {
                     const value = await entry.client.listRuns(owner, name, { signal });
                     if (signal.aborted || cycleEpoch !== state.epoch || state.clients.get(profile.id) !== entry) continue;
@@ -144,9 +145,8 @@
         const now = Date.now();
         const eligibleNow = profiles.some((profile) => { const entry = state.clients.get(profile.id); return entry && !entry.client.authInvalid && entry.client.retryAt <= now && profile.repos.some((repo) => !entry.suspendedRepos.has(repoKey(repo))); });
         const cooldowns = profiles.map((profile) => state.clients.get(profile.id)?.client).filter((client) => client && !client.authInvalid && client.retryAt > now).map((client) => client.retryAt);
-        const requestBudget = Math.max(10000, expectedRequests * 2000);
         const active = latestRuns.some((run) => activeStates.has(run.status));
-        const nextAt = eligibleNow ? now + Math.max(active ? 10000 : 30000, requestBudget) : cooldowns.length ? Math.min(...cooldowns) : 0;
+        const nextAt = CimMonitor.nextPollAt(now, expectedRequests, active, cooldowns);
         return { results, runs: latestRuns, nextAt, continueMonitoring: eligibleNow || cooldowns.length > 0 };
     }
     function updateMonitorLabel() {
@@ -156,15 +156,19 @@
         const gatedRepos = clients.reduce((count, entry) => count + entry.suspendedRepos.size, 0);
         const rateLimited = clients.some(({ client }) => client.retryAt > Date.now());
         const eligible = clients.some((entry) => !entry.client.authInvalid && entry.client.retryAt <= Date.now() && [...entry.repos].some((repo) => !entry.suspendedRepos.has(repo)));
-        $('monitor-label').textContent = !enabled ? 'Monitoring paused' : needsToken === clients.length ? 'Paused · update token' : needsToken ? 'Some profiles need a token' : gatedRepos && gatedRepos === clients.reduce((count, entry) => count + entry.repos.size, 0) ? 'Paused · check repository access' : rateLimited && !eligible ? 'Rate limited · waiting' : 'Monitoring while open';
+        const allRepos = clients.reduce((count, entry) => count + entry.repos.size, 0);
+        $('monitor-label').textContent = !enabled ? 'Monitoring paused' : needsToken === clients.length ? 'Paused · update token' : gatedRepos === allRepos && allRepos > 0 ? 'Paused · check repository access' : !eligible && rateLimited ? 'Rate limited · waiting' : !eligible && needsToken ? 'Paused · update token or check access' : 'Monitoring while open';
     }
     function syncProfileUI() {
-        const select = $('profile-select'); select.replaceChildren(...state.profiles.map((profile) => new Option(`${profile.name} · ${profile.repos.length} repositories`, profile.id)));
+        const select = $('profile-select'); select.replaceChildren(new Option('Select a saved profile…', ''), ...state.profiles.map((profile) => new Option(`${profile.name} · ${profile.repos.length} repositories`, profile.id)));
         if (!state.profiles.some((profile) => profile.id === state.selected)) state.selected = state.profiles[0]?.id || '';
-        select.value = state.selected; $('profile-delete').disabled = !state.profiles.length; $('forget-token').disabled = !selectedProfile()?.token;
+        select.value = state.editingId === null ? '' : state.editingId;
+        $('profile-delete').disabled = !state.editingId || !selectedProfileForEdit(); $('forget-token').disabled = !state.editingId || !selectedProfileForEdit()?.token;
     }
+    function selectedProfileForEdit() { return state.profiles.find((profile) => profile.id === state.editingId); }
     function openSettings() {
-        syncProfileUI(); const profile = selectedProfile();
+        if (!state.profiles.some((profile) => profile.id === state.editingId)) state.editingId = state.profiles.some((profile) => profile.id === state.selected) ? state.selected : null;
+        syncProfileUI(); const profile = selectedProfileForEdit();
         $('profile-id').value = profile?.id || ''; $('profile-name').value = profile?.name || ''; $('repositories').value = profile?.repos.join('\n') || ''; $('remember').checked = profile?.rememberToken === true; $('token').value = '';
         $('forget-token').disabled = !profile?.token; $('profile-delete').disabled = !profile; $('settings-mode').textContent = profile ? 'Edit connection' : 'New connection';
         setSettingsMessage('Blank PAT keeps only this profile’s existing token.', ''); if (!$('settings-dialog').open) $('settings-dialog').showModal();
@@ -172,41 +176,52 @@
     function validateForm() {
         const parsed = CimSettings.parseRepositories($('repositories').value); if (parsed.errors.length) throw new Error(parsed.errors.join('\n'));
         if (!parsed.repos.length) throw new Error('Add at least one repository.');
-        const token = $('token').value.trim() || selectedProfile()?.token || '';
+        const token = $('token').value.trim() || (state.editingId ? selectedProfileForEdit()?.token : '') || '';
         if (!token) throw new Error('Enter a personal access token.');
         return { repos: parsed.repos, token };
     }
     async function testAccess() {
         if (state.settingsBusy) return;
-        const button = $('test-access'); state.settingsBusy = true; button.disabled = true; const currentId = $('profile-id').value || state.selected || 'pending'; const op = operation(currentId); state.testOperation = op;
+        const targetId = state.editingId; const profile = targetId ? state.profiles.find((item) => item.id === targetId) : null; state.settingsBusy = true; setEditorBusy(true); const op = operation(targetId || 'pending'); state.testOperation = op;
         try {
-            const proposed = validateForm(); const temporary = new CimApi.GitHubClient(); temporary.reset(proposed.token); const messages = [];
+            const proposed = validateForm(); const client = profile?.token === proposed.token ? clientFor(profile).client : new CimApi.GitHubClient(); if (client !== (profile && state.clients.get(profile.id)?.client)) client.reset(proposed.token); const messages = [];
             for (const repo of proposed.repos) {
                 if (op.controller.signal.aborted || document.visibilityState !== 'visible') break;
                 const [owner, name] = repo.split('/');
-                try { await temporary.testRepo(owner, name, op.controller.signal); messages.push(`${repo}: access confirmed`); }
+                try { await client.testRepo(owner, name, op.controller.signal); if (!op.controller.signal.aborted && profile?.token === proposed.token && state.clients.get(profile.id)?.client === client) state.clients.get(profile.id).suspendedRepos.delete(repoKey(repo)); messages.push(`${repo}: access confirmed`); }
                 catch (error) {
                     if (error.kind === CANCELLED) break;
-                    const configured = selectedProfile(); const activeClient = !op.controller.signal.aborted && currentId === configured?.id && configured.token === proposed.token ? state.clients.get(currentId) : null;
-                    if (activeClient && error.kind === 'auth') activeClient.client.authInvalid = true;
-                    if (activeClient && (error.kind === 'permission' || error.kind === 'not-found')) activeClient.suspendedRepos.add(repoKey(repo));
-                    if (activeClient && error.kind === 'rate-limit') activeClient.client.retryAt = Math.max(activeClient.client.retryAt, error.retryAt);
                     messages.push(`${repo}: ${error.message}`);
                 }
             }
             if (!op.controller.signal.aborted) setSettingsMessage(messages.join('\n') || 'Access test cancelled while the dashboard was hidden.', messages.every((message) => message.endsWith('access confirmed')) ? 'success' : 'error');
         } catch (error) { if (!op.controller.signal.aborted) setSettingsMessage(error.message, 'error'); }
-        finally { done(op); if (state.testOperation === op) state.testOperation = null; state.settingsBusy = false; button.disabled = false; updateMonitorLabel(); }
+        finally { done(op); if (state.testOperation === op) state.testOperation = null; state.settingsBusy = false; setEditorBusy(false); updateMonitorLabel(); }
+    }
+    function setEditorBusy(busy) {
+        for (const id of ['profile-select', 'profile-new', 'profile-name', 'repositories', 'token', 'remember', 'forget-token', 'profile-delete', 'save-settings', 'test-access']) $(id).disabled = busy;
+        if (!busy) syncProfileUI();
     }
     async function saveProfile(event) {
-        event.preventDefault(); if (state.saveBusy) return; state.testOperation?.controller.abort();
-        state.saveBusy = true; const button = $('save-settings'); button.disabled = true;
+        event.preventDefault(); if (state.writeBusy || state.settingsBusy) return; state.testOperation?.controller.abort();
+        const targetId = state.editingId; const name = $('profile-name').value; const rememberToken = $('remember').checked; const tokenInput = $('token').value; const repositories = $('repositories').value; setEditorBusy(true);
         try {
-            const proposed = validateForm();
-            const saved = await store.saveProfile({ id: $('profile-id').value || undefined, name: $('profile-name').value, repos: proposed.repos, rememberToken: $('remember').checked, tokenInput: $('token').value });
-            $('token').value = ''; await applySettings(await store.load()); state.selected = saved.id; syncProfileUI(); $('settings-dialog').close(); setFeedback('Connection saved. GitHub Actions requests are read-only.', '');
+            const proposedRepos = CimSettings.parseRepositories(repositories); if (proposedRepos.errors.length) throw new Error(proposedRepos.errors.join('\n'));
+            if (!proposedRepos.repos.length) throw new Error('Add at least one repository.');
+            if (!tokenInput.trim() && !targetId) throw new Error('Enter a personal access token.');
+            const saved = await runWrite(() => store.saveProfile({ id: targetId || undefined, name, repos: proposedRepos.repos, rememberToken, tokenInput }));
+            $('token').value = ''; state.selected = saved.id; state.editingId = saved.id; syncProfileUI(); $('settings-dialog').close(); setFeedback('Connection saved. GitHub Actions requests are read-only.', '');
         } catch (error) { setSettingsMessage(error.message, 'error'); }
-        finally { state.saveBusy = false; button.disabled = false; }
+        finally { setEditorBusy(false); }
+    }
+    async function runWrite(write) {
+        if (state.writeBusy) throw new Error('A settings change is already in progress.');
+        state.writeBusy = true;
+        try { return await write(); }
+        finally {
+            state.writeBusy = false;
+            try { await loadSettings(); } catch { setSettingsMessage('Settings could not be reloaded after the storage change.', 'error'); reportStorageError('Settings could not be reloaded after the storage change.'); }
+        }
     }
     async function applySettings(profiles) {
         const incoming = new Map(profiles.map((profile) => [profile.id, profile])); const previous = new Map(state.profiles.map((profile) => [profile.id, profile]));
@@ -236,7 +251,7 @@
         state.initialLoading = profiles.some((profile) => profile.token && profile.repos.length) && document.visibilityState === 'visible'; render(); syncProfileUI(); updateMonitorLabel();
         if (currentProfiles().length) void monitor.start();
     }
-    async function loadSettings() { const profiles = await store.load(); await applySettings(profiles); }
+    const loadSettings = CimSettings.createSnapshotLoader(() => store.load(), applySettings);
     async function loadOlder() {
         if (state.loading) return;
         state.loading = true; render(); const selected = $('profile-filter').value; const targets = [...state.historyLinks.entries()].filter(([key, url]) => url && (selected === ALL || key.startsWith(`${selected}${KEY_SEPARATOR}`))); const errors = []; const epoch = state.epoch;
@@ -253,18 +268,26 @@
         if (errors.length) setFeedback(errors.join('\n'), 'error');
     }
     async function deleteProfile() {
-        const profile = selectedProfile(); if (!profile || !confirm(`Remove ${profile.name} and its saved connection settings?`)) return;
-        await store.deleteProfile(profile.id); await loadSettings(); $('profile-id').value = ''; $('token').value = ''; setSettingsMessage('Profile removed.', 'success');
+        const targetId = state.editingId; const profile = state.profiles.find((item) => item.id === targetId); if (!profile || state.writeBusy || state.settingsBusy || !confirm(`Remove ${profile.name} and its saved connection settings?`)) return;
+        setEditorBusy(true);
+        const keepOpen = $('settings-dialog').open;
+        try { await runWrite(() => store.deleteProfile(targetId)); $('token').value = ''; state.editingId = state.profiles.some((item) => item.id === state.selected) ? state.selected : null; if (keepOpen) openSettings(); else state.editingId = null; setSettingsMessage('Profile removed.', 'success'); }
+        catch { setSettingsMessage('Could not remove profile from browser storage.', 'error'); reportStorageError('Could not remove profile from browser storage.'); }
+        finally { setEditorBusy(false); }
     }
     async function forgetToken() {
-        const profile = selectedProfile(); if (!profile) return;
-        await store.forgetToken(profile.id); $('token').value = ''; $('remember').checked = false; await loadSettings(); $('profile-id').value = profile.id; setSettingsMessage('Token removed from session and device storage. Profile and repositories remain.', 'success');
+        const targetId = state.editingId; const profile = state.profiles.find((item) => item.id === targetId); if (!profile || state.writeBusy || state.settingsBusy) return;
+        setEditorBusy(true);
+        const keepOpen = $('settings-dialog').open;
+        try { await runWrite(() => store.forgetToken(targetId)); $('token').value = ''; $('remember').checked = false; state.editingId = targetId; if (keepOpen) openSettings(); setSettingsMessage('Token removed from session and device storage. Profile and repositories remain.', 'success'); }
+        catch { setSettingsMessage('Could not remove token from browser storage.', 'error'); reportStorageError('Could not remove token from browser storage.'); }
+        finally { setEditorBusy(false); }
     }
     $('settings-open').addEventListener('click', openSettings); $('setup-open').addEventListener('click', openSettings);
     $('settings-close').addEventListener('click', () => { state.testOperation?.controller.abort(); $('settings-dialog').close(); }); $('settings-form').addEventListener('submit', saveProfile);
     $('test-access').addEventListener('click', testAccess); $('forget-token').addEventListener('click', forgetToken); $('profile-delete').addEventListener('click', deleteProfile);
-    $('profile-select').addEventListener('change', () => { state.testOperation?.controller.abort(); state.selected = $('profile-select').value; openSettings(); });
-    $('profile-new').addEventListener('click', () => { state.testOperation?.controller.abort(); state.selected = ''; openSettings(); $('profile-id').value = ''; $('profile-name').value = ''; $('repositories').value = ''; $('token').value = ''; $('remember').checked = false; });
+    $('profile-select').addEventListener('change', () => { state.testOperation?.controller.abort(); if (!$('profile-select').value) { $('profile-new').click(); return; } state.selected = $('profile-select').value; state.editingId = state.selected || null; openSettings(); });
+    $('profile-new').addEventListener('click', () => { state.testOperation?.controller.abort(); state.editingId = null; syncProfileUI(); $('profile-select').value = ''; $('profile-id').value = ''; $('profile-name').value = ''; $('repositories').value = ''; $('token').value = ''; $('remember').checked = false; $('forget-token').disabled = true; $('profile-delete').disabled = true; $('settings-mode').textContent = 'New connection'; setSettingsMessage('Enter a PAT for this new profile. Blank PAT keeps only this profile’s existing token.', ''); if (!$('settings-dialog').open) $('settings-dialog').showModal(); });
     for (const id of ['profile-name', 'repositories', 'token', 'remember']) $(id).addEventListener('input', () => state.testOperation?.controller.abort());
     $('remember').addEventListener('change', () => state.testOperation?.controller.abort());
     $('profile-filter').addEventListener('change', () => { state.profileFilter = $('profile-filter').value; render(); }); $('refresh').addEventListener('click', () => { for (const entry of state.clients.values()) entry.suspendedRepos.clear(); void monitor.refresh(); });
@@ -275,7 +298,8 @@
     let storageTimer = null;
     chrome.storage.onChanged.addListener((changes, area) => {
         if (!['local', 'session'].includes(area) || !Object.keys(changes).some((key) => key.startsWith(CimSettings.PROFILE_PREFIX) || key.startsWith(CimSettings.TOKEN_PREFIX) || CimSettings.LEGACY_KEYS.includes(key))) return;
-        clearTimeout(storageTimer); storageTimer = setTimeout(() => { void loadSettings(); }, 60);
+        if (state.writeBusy) return;
+        clearTimeout(storageTimer); storageTimer = setTimeout(() => { if (state.writeBusy) return; void loadSettings().catch(() => reportStorageError('Could not reload changed profile settings from browser storage.')); }, 60);
     });
-    void loadSettings();
+    void loadSettings().catch(() => reportStorageError('Could not load profile settings from browser storage.'));
 })();
