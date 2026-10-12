@@ -117,6 +117,8 @@
             const i = cluster.filter((j) => plain(chars[j]) === k).pop();
             if (chars[i] === HAT[k]) {
                 chars[i] = k;
+                // A literal vowel after a final makes the whole word uncomposable.
+                if (s.end < chars.length) return compose(chars, upper, tone, opts.modernTone) + key;
                 append(k, key !== k);
             } else {
                 chars[i] = HAT[chars[i]];

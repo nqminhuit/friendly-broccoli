@@ -1,7 +1,7 @@
 // Run: node --test tools/vtelex/telex.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { step, isValid } = require('./telex.js');
+const { apply, convert, step, isValid } = require('./telex.js');
 
 // Types keys one by one the way content.js does, and returns the final word.
 function type(keys, opts) {
@@ -40,6 +40,16 @@ const CASES = [
     ['xooongf', 'xoòng'],
     ['tieesng', 'tiếng'],
     ['tiengse', 'tiếng'],
+    ['dataa', 'data'],
+    ['Dataa', 'Data'],
+    ['DATAA', 'DATA'],
+    ['dataA', 'datA'],
+    ['dataaa', 'dataa'],
+    ['dataas', 'datas'],
+    ['genee', 'gene'],
+    ['homoo', 'homo'],
+    ['data', 'dât'],
+    ['daat', 'dât'],
     ['DDUWOWNGF', 'ĐƯỜNG'],
     ['w', 'ư'],
     ['tw', 'tư'],
@@ -80,6 +90,22 @@ test('convert skips the restore step', () => {
     assert.equal(type('ddc'), 'ddc');
     assert.equal(require('./telex.js').convert('ddc'), 'đc');
     assert.equal(require('./telex.js').convert('DDC'), 'ĐC');
+});
+
+test('repeated vowel marks escape a marked syllable before a final consonant', () => {
+    assert.equal(apply('dât', 'a'), 'data');
+    assert.equal(convert('dataa'), 'data');
+    assert.equal(apply('dất', 'a'), 'dáta');
+    assert.equal(type('datsaa'), 'datsaa');
+
+    let state = null;
+    let word = '';
+    for (const key of 'dataa') {
+        state = step(state, word, key);
+        word = state.out;
+    }
+    assert.equal(state.raw, 'dataa');
+    assert.equal(state.out, 'data');
 });
 
 test('keep shows a shortcut start instead of the raw keys', () => {
