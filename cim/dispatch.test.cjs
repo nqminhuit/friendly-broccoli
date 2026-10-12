@@ -253,3 +253,12 @@ test('required numbers reject whitespace booleans and objects without coercing z
     assert.equal(Schema.validateDispatchValues([{ name: 'n', type: 'number', required: false }], { n: '   ' }).ok, true);
     assert.equal(Schema.validateDispatchValues([{ name: 'm', type: 'string', required: false }], { m: 'a\nb  ' }).inputs.m, 'a\nb  ');
 });
+
+test('non-choice inputs reject options instead of silently accepting them', () => {
+    for (const type of ['string', 'boolean', 'number', 'environment']) {
+        const yaml = `on:\n  workflow_dispatch:\n    inputs:\n      v:\n        type: ${type}\n        options:\n          - a\n`;
+        assert.equal(Schema.parseWorkflowYaml(yaml).dispatchable, false, type);
+    }
+    const legacy = 'on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options:\n          - a\n';
+    assert.equal(Schema.parseWorkflowYaml(legacy).dispatchable, false);
+});

@@ -117,6 +117,7 @@
             for (const key of Object.keys(config)) {
                 if (!['description', 'required', 'default', 'type', 'options'].includes(key)) return { ok: false, reason: `Unsupported field for input ${name}: ${key}.` };
             }
+            if (type !== 'choice' && own(config, 'options') !== undefined) return { ok: false, reason: `Unsupported options for input ${name}.` };
             if (type === 'string' || type === 'environment' || typeRaw === undefined || typeRaw === null) {
                 if (!absent(defaultValue)) {
                     const coerced = coerceStringDefault(defaultValue);
@@ -152,7 +153,7 @@
                     inputs.push({ name, type, description, required, default: undefined, options });
                 }
                 continue;
-            } else if (own(config, 'options') !== undefined) return { ok: false, reason: `Unsupported options for input ${name}.` };
+            }
             inputs.push({ name, type, description, required, default: absent(defaultValue) ? undefined : defaultValue, options });
         }
         return { ok: true, inputs };

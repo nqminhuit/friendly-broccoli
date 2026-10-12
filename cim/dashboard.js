@@ -319,6 +319,7 @@
         }
         try {
             const metadata = await owned.entry.client.getRun(owner, name, runId, { signal: controller.signal });
+            if (controller.signal.aborted) return;
             if (state.pinOperations.get(key)?.controller !== controller || !pinOwned(profileId, repo, token)) return;
             const live = state.runs.get(key);
             const base = live ? mergeRun(live.run, metadata) : { run: metadata, advanced: false, downgraded: false };
@@ -333,6 +334,7 @@
             } else state.pendingDispatches.delete(key);
             render();
         } catch (error) {
+            if (controller.signal.aborted) return;
             if (state.pinOperations.get(key)?.controller !== controller || !pinOwned(profileId, repo, token)) return;
             if (error?.kind === 'cancelled') return;
             // A fresh accepted run 404 is eventual consistency: keep a bounded

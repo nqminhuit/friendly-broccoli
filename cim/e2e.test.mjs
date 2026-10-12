@@ -23,14 +23,19 @@ async function evaluate(expression) {
     if (result.result.exceptionDetails) throw new Error(result.result.exceptionDetails.exception.description);
     return result.result.result.value;
 }
+const runtimeErrors = [];
 async function waitFor(expression, timeout = 7000) {
     const until = Date.now() + timeout;
     while (Date.now() < until) {
         if (await evaluate(expression)) return;
         await sleep(50);
     }
-    let page = 'unavailable';
-    throw new Error(`Timed out waiting for ${expression}; page=${page}`);
+    let diag = 'unavailable';
+    try {
+        diag = await evaluate(`(() => { const status = document.querySelector('#dispatch-status')?.textContent?.slice(0, 200) || ''; const ref = document.querySelector('#dispatch-ref')?.value || ''; const dialog = document.querySelector('#dispatch-dialog')?.open ? 'open' : 'closed'; const wf = document.querySelector('#dispatch-workflow'); const sel = wf?.selectedOptions?.[0]?.textContent?.slice(0, 120) || wf?.value || 'n/a'; const count = wf?.options?.length ?? -1; const recent = (globalThis.__cimRequests || []).slice(-5).map((x) => (x.method || 'GET') + ' ' + String(x.url).split('?')[0].replace('https://api.github.com', '')); return 'status=' + JSON.stringify(status) + ' ref=' + JSON.stringify(ref) + ' dialog=' + dialog + ' wf=' + JSON.stringify(sel) + ' wfcount=' + count + ' recent=' + JSON.stringify(recent); })()`);
+    } catch { diag = 'diagnostic failed'; }
+    const pageErrors = runtimeErrors.slice(-3).join(' | ') || 'none';
+    throw new Error(`Timed out waiting for ${expression}; ${diag}; pageErrors=${pageErrors}`);
 }
 
 before(async () => {
@@ -53,7 +58,7 @@ before(async () => {
     await new Promise((resolve) => { ws.onopen = resolve; });
     ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
-        if (message.method === 'Runtime.exceptionThrown') console.error('CIM E2E page exception:', message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text);
+        if (message.method === 'Runtime.exceptionThrown') { const text = message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text || 'unknown page exception'; runtimeErrors.push(String(text).slice(0, 500)); console.error('CIM E2E page exception:', text); }
         if (pending.has(message.id)) {
             const item = pending.get(message.id); pending.delete(message.id);
             if (message.error) item.reject(new Error(message.error.message)); else item.resolve(message);
@@ -128,10 +133,16 @@ before(async () => {
           return new Response(JSON.stringify({workflow_run_id:id,run_url:'https://api.github.com/repos/acme/app/actions/runs/'+id,html_url:'https://github.com/acme/app/actions/runs/'+id}), {status:200,headers:{'content-type':'application/json'}});
         }
         if (url.endsWith('/actions/runs/77') && !url.includes('/jobs')) {
-          if (globalThis.__dispatchFlaky && !globalThis.__dispatchFlakyUsed) { globalThis.__dispatchFlakyUsed = true; return new Response('{"message":"Not Found"}', {status:404,headers:{'content-type':'application/json'}}); }
+          if (globalThis.__dispatchRunId === 77 && globalThis.__dispatchFlaky && !globalThis.__dispatchFlakyUsed) { globalThis.__dispatchFlakyUsed = true; return new Response('{"message":"Not Found"}', {status:404,headers:{'content-type':'application/json'}}); }
           return new Response(JSON.stringify({id:77,run_attempt:1,status:'queued',conclusion:null,name:'CI',display_title:'Dispatched CI',head_branch:'main',head_sha:'abc123',event:'workflow_dispatch',actor:{login:'alice'},created_at:new Date().toISOString(),updated_at:new Date().toISOString(),html_url:'https://github.com/acme/app/actions/runs/77'}), {status:200,headers:{'content-type':'application/json','etag':'"dispatch-77"'}});
         }
         if (url.includes('/actions/runs/77/') && url.includes('/jobs')) return new Response(JSON.stringify({total_count:0,jobs:[]}), {status:200,headers:{'content-type':'application/json'}});
+        const pinId = Number(globalThis.__dispatchRunId);
+        if (pinId !== 77 && url.endsWith('/actions/runs/' + pinId) && !url.includes('/jobs')) {
+          if (globalThis.__dispatchFlaky && !globalThis.__dispatchFlakyUsed) { globalThis.__dispatchFlakyUsed = true; return new Response('{"message":"Not Found"}', {status:404,headers:{'content-type':'application/json'}}); }
+          return new Response(JSON.stringify({id:pinId,run_attempt:1,status:'queued',conclusion:null,name:'CI',display_title:'Dispatched CI',head_branch:'main',head_sha:'abc123',event:'workflow_dispatch',actor:{login:'alice'},created_at:new Date().toISOString(),updated_at:new Date().toISOString(),html_url:'https://github.com/acme/app/actions/runs/' + pinId}), {status:200,headers:{'content-type':'application/json','etag':'"dispatch-' + pinId + '"'}});
+        }
+        if (pinId !== 77 && url.includes('/actions/runs/' + pinId + '/') && url.includes('/jobs')) return new Response(JSON.stringify({total_count:0,jobs:[]}), {status:200,headers:{'content-type':'application/json'}});
          const page = Number(new URL(url).searchParams.get('page') || '1');
          if (page === 4) { globalThis.__slowSignals.push(options.signal); await new Promise(resolve=>setTimeout(resolve,700)); }
          const runId = isWorkAuth(auth) ? 20 : page + 2;
@@ -150,7 +161,8 @@ before(async () => {
 });
 
 after(async () => {
-    if (!CHROME) return;
+    if (runtimeErrors.length) console.error('CIM E2E unexpected page exceptions:', runtimeErrors.slice(0, 5));
+    if (!CHROME) { if (runtimeErrors.length) throw new Error('Unexpected page exceptions: ' + runtimeErrors.slice(0, 3).join(' | ')); return; }
     if (chrome && chrome.exitCode === null) {
         const exited = new Promise((resolve) => chrome.once('exit', resolve));
         if (ws?.readyState === WebSocket.OPEN) send('Browser.close'); else chrome.kill();
@@ -158,6 +170,7 @@ after(async () => {
         await exited; clearTimeout(killer);
     }
     ws?.close();
+    if (runtimeErrors.length) throw new Error('Unexpected page exceptions: ' + runtimeErrors.slice(0, 3).join(' | '));
     try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* Leave cleanup to the OS. */ }
 });
 
@@ -445,21 +458,35 @@ test('uncertain dispatch survives dialog close and reopen with ack gate', { skip
     await evaluate(`document.querySelector('#dispatch-close').click()`);
 });
 
+test('dialog close and immediate reopen keeps loading alive', { skip: !CHROME && 'Chrome not found' }, async () => {
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); window.confirm=()=>true; globalThis.__dispatchHang=false; globalThis.__dispatchFlaky=false; document.querySelector('#new-run').click()`);
+    await waitFor(`document.querySelector('#dispatch-dialog').open`);
+    await evaluate(`document.querySelector('#dispatch-profile').value=[...document.querySelector('#dispatch-profile').options].find(o=>o.text.startsWith('Personal')).value; document.querySelector('#dispatch-profile').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await waitFor(`document.querySelector('#dispatch-workflow').options.length >= 3`);
+    await evaluate(`document.querySelector('#dispatch-close').click(); document.querySelector('#new-run').click();`);
+    await waitFor(`document.querySelector('#dispatch-dialog').open`);
+    await waitFor(`document.querySelector('#dispatch-inputs').textContent.includes('greeting')`);
+    assert.equal(await evaluate(`document.querySelector('#dispatch-start').disabled`), false);
+    assert.equal(runtimeErrors.length, 0);
+    await evaluate(`document.querySelector('#dispatch-close').click()`);
+});
+
 test('fresh pin 404 stays transient queued without suspending the repository', { skip: !CHROME && 'Chrome not found' }, async () => {
-    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); window.confirm=()=>true; globalThis.__dispatchHang=false; globalThis.__dispatchFlaky=true; globalThis.__dispatchFlakyUsed=false; document.querySelector('#new-run').click()`);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); window.confirm=()=>true; globalThis.__dispatchHang=false; globalThis.__dispatchRunId=79; globalThis.__dispatchFlaky=true; globalThis.__dispatchFlakyUsed=false; document.querySelector('#new-run').click()`);
     await waitFor(`document.querySelector('#dispatch-dialog').open`);
     await evaluate(`document.querySelector('#dispatch-profile').value=[...document.querySelector('#dispatch-profile').options].find(o=>o.text.startsWith('Personal')).value; document.querySelector('#dispatch-profile').dispatchEvent(new Event('change',{bubbles:true}))`);
     await waitFor(`document.querySelector('#dispatch-workflow').options.length >= 3`);
     await evaluate(`document.querySelector('#dispatch-load').click()`);
     await waitFor(`document.querySelector('#dispatch-inputs').textContent.includes('greeting')`);
     await evaluate(`window.confirm=()=>true; document.querySelector('#dispatch-form').requestSubmit()`);
-    await waitFor(`document.querySelector('#dispatch-result').textContent.includes('Open run 77')`);
+    await waitFor(`document.querySelector('#dispatch-result').textContent.includes('Open run 79')`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Dispatched CI')`, 10000);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Compile app')`), true);
     await sleep(1200);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Dispatched CI')`), true);
     assert.equal(await evaluate(`globalThis.__dispatchFlakyUsed`), true);
-    await evaluate(`globalThis.__dispatchFlaky=false; document.querySelector('#dispatch-close').click()`);
+    assert.equal(await evaluate(`globalThis.__cimRequests.some(x=>x.url.endsWith('/actions/runs/79') && x.method==='GET')`), true);
+    await evaluate(`globalThis.__dispatchFlaky=false; globalThis.__dispatchRunId=77; document.querySelector('#dispatch-close').click()`);
 });
 
 test('storage repo removal during schema load never restores stale dispatch data', { skip: !CHROME && 'Chrome not found' }, async () => {

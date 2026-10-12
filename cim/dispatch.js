@@ -492,6 +492,7 @@
             };
             if (!owned() || !stillCurrent()) { setStatus('The selected profile changed. Reload before starting.', 'error'); return; }
             const seq = ++state.submitSeq;
+            const genAtSubmit = state.generation;
             const isOwner = () => state.submitSeq === seq;
             state.submitBusy = true;
             setControlsEnabled(false);
@@ -512,17 +513,20 @@
             } catch (error) {
                 if (!isOwner()) return;
                 if (!owned()) { if (stillCurrent() || dialogOpen()) setStatus('The selected profile changed. Check GitHub before retrying.', 'error'); return; }
-                if (!stillCurrent()) return;
                 if (error?.ambiguous) {
                     const repoUrl = `https://github.com/${captured.repo}/actions/workflows/${encodeURIComponent(String(captured.workflowPath || captured.workflowId).split('/').pop())}`;
+                    // Owned uncertainty survives close/reopen even when the form moved.
                     state.uncertain.set(gateKey, { profileId: captured.profileId, token: captured.token, repo: captured.repo, workflowId: captured.workflowId, ref: captured.ref, inputs: captured.inputs, workflowUrl: repoUrl });
+                    if (!stillCurrent() || !dialogOpen()) return;
                     // Ambiguous dispatch has no known run ID: link the workflow page, never newest row.
                     setStatus('Request may have been accepted; check GitHub before retrying.', 'error');
                     setResultLink('Open workflow on GitHub to verify ↗', repoUrl);
                     renderAcknowledge([[gateKey, state.uncertain.get(gateKey)]]);
                 } else if (error?.kind !== 'cancelled') {
+                    if (!stillCurrent()) return;
                     setStatus(error.message || 'Could not start the workflow.', 'error');
                 } else {
+                    if (!stillCurrent()) return;
                     // Queued POST cancelled before send leaves no request and no gate.
                     setStatus('Start was cancelled before GitHub received it. Review and try again.', 'error');
                 }
@@ -530,9 +534,11 @@
                 // A stale operation never enables or clobbers a newer submission.
                 if (isOwner()) {
                     state.submitBusy = false;
-                    // Hidden dialogs re-enable too; submit still requires visibility.
-                    if (dialogOpen()) {
+                    if (dialogOpen() && genAtSubmit === state.generation) {
                         setControlsEnabled(true);
+                        const start = $('dispatch-start');
+                        if (start) start.disabled = !state.schemaReady || matchingUncertain(currentSelection()).length > 0;
+                    } else if (dialogOpen()) {
                         const start = $('dispatch-start');
                         if (start) start.disabled = !state.schemaReady || matchingUncertain(currentSelection()).length > 0;
                     }
@@ -626,8 +632,12 @@
         document.getElementById('dispatch-ref')?.addEventListener('change', refChanged);
         document.getElementById('dispatch-form')?.addEventListener('submit', (event) => { void submit(event); });
         document.getElementById('dispatch-close')?.addEventListener('click', () => close());
-        // Native Escape/dialog close follows the same path as the Close button.
-        document.getElementById('dispatch-dialog')?.addEventListener('close', () => { noteClosed(); });
+        // Escape stops the lifetime synchronously; close only acts while still closed.
+        document.getElementById('dispatch-dialog')?.addEventListener('cancel', () => { noteClosed(); });
+        document.getElementById('dispatch-dialog')?.addEventListener('close', () => {
+            if ($('dispatch-dialog')?.open) return;
+            noteClosed();
+        });
 
 
 

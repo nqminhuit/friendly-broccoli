@@ -78,7 +78,8 @@ class FakeEl {
     showModal() { this.open = true; }
     close() {
         this.open = false;
-        for (const fn of this.listeners.close || []) fn();
+        const fns = [...(this.listeners.close || [])];
+        queueMicrotask(() => { for (const fn of fns) fn(); });
     }
     click() { for (const fn of this.listeners.click || []) fn(); }
     fire(type, event) { for (const fn of this.listeners[type] || []) fn(event); }
@@ -336,4 +337,31 @@ test('unrelated profile changes keep the current form and operation', async () =
     assert.ok(harness.controller._state.target);
     assert.equal(harness.controller._state.submitBusy, true);
     assert.equal(harness.calls.posts, 1);
+});
+
+test('queued close event never invalidates a reopened dialog', async () => {
+    const harness = setup({ profiles: [PERSONAL] });
+    harness.controller.open();
+    await flush(20);
+    assert.equal(harness.el('dispatch-start').disabled, false);
+    harness.controller.close();
+    harness.controller.open();
+    await flush(20);
+    assert.match(harness.el('dispatch-inputs').textContent, /greeting/);
+    assert.equal(harness.el('dispatch-start').disabled, false);
+});
+
+test('close and reopen while POST aborts preserves uncertainty', async () => {
+    const harness = setup({ profiles: [PERSONAL], slow: { post: 'hang' } });
+    harness.controller.open();
+    await flush(20);
+    harness.doc.getElementById('dispatch-form').fire('submit', { preventDefault() {} });
+    await flush();
+    assert.equal(harness.calls.posts, 1);
+    harness.controller.close();
+    harness.controller.open();
+    await flush(20);
+    assert.equal(harness.controller._state.uncertain.size, 1);
+    assert.match(harness.el('dispatch-status').textContent, /may have been accepted/);
+    assert.equal(harness.el('dispatch-start').disabled, true);
 });
