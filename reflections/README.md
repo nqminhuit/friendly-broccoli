@@ -22,7 +22,7 @@ description: |
 <!-- image_prompt:
 <Scene, composition, colors, symbols; full chosen style. Full-HD, 16:9, no text.>
 -->
-<Narration; spoken spoiler warning first if needed.>
+<Narration; spoken spoiler warning only if this is a spoiler reflection, otherwise no need.>
 ## Section 1
 ![](book-02.jpg)
 <!-- image_prompt:
