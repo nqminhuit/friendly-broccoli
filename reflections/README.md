@@ -1,4 +1,4 @@
-One `reflections/<name>.md` per video. Supply all metadata, narration and images; the pipeline generates no scripts or images.
+One `reflections/<name>.md` per video, with image prompts in `reflections/<name>-prompts.txt`. Supply all metadata, narration and images; the pipeline generates no scripts or images.
 
 # Format
 
@@ -9,38 +9,43 @@ Replace placeholders; repeat the section block for themes and closing.
 book: <book>
 author: <author>
 title: <SEO title>
-thumbnail: <SEO title>-thumbnail.jpg
+thumbnail: <name>-thumbnail.png
 description: |
   <SEO description>
   <hashtags>
 ---
-<!-- thumbnail_prompt:
-<Dedicated thumbnail scene, clear focal point, composition readable at small sizes; full chosen style. Full-HD, 16:9, no text.>
--->
 ## Opening
-![](book-01.jpg)
-<!-- image_prompt:
-<Scene, composition, colors, symbols; full chosen style. Full-HD, 16:9, no text.>
--->
+![](book-01.png)
 <Narration; spoken spoiler warning only if this is a spoiler reflection, otherwise no need.>
 ## Section 1
-![](book-02.jpg)
-<!-- image_prompt:
-...
--->
+![](book-02.png)
 <Narration ...>
 ## Other sections
 ...
 ## Closing
 ```
 
+Keep prompts in a companion text file, put each PNG filename on its own line, followed immediately by its prompt; separate entries with a blank line. Include the dedicated thumbnail and every section image. Filenames must match the basenames of the Markdown image/thumbnail references and be unique within the reflection.
+
+```text
+<name>-thumbnail.png
+<prompt to create image...>
+
+<book>-01.png
+<prompt to create image...>
+
+<book>-02.png
+<prompt to create image...>
+```
+
 - Required for new reflections: `book`, `author`, `title`, `description`, `thumbnail`. Only optional keys: `part` (chapter/passage), `voice` (sec10v `resources/voices/` file). Hashtags recommended.
-- `thumbnail` must name a dedicated image, separate from the first image and all other section images. Add a `thumbnail_prompt` comment after the front matter and before the first section; do not add a narration image line or section for it. The pipeline still accepts legacy files without `thumbnail`; new reflections must specify one explicitly.
+- `thumbnail` must name a dedicated image, separate from the first image and all other section images. Put its prompt in the companion text file; do not add a narration image line or section for it. The pipeline still accepts legacy files without `thumbnail`; new reflections must specify one explicitly.
 - `book`, `author`, `part` are single-line. `key: value` consumes the rest of the line, including `:`; `key: |` takes following lines indented at least two spaces.
 - `## Heading` starts a section; blank lines separate paragraphs. Standalone `[Pause]` = 3 seconds. Narration starts immediately, without a generated intro; keep it under 15 minutes including pauses.
-- Each section needs a standalone `![](ref)` before its paragraphs and an `image_prompt` comment. First image precedes narration; it persists until the next image and is never spoken. Each change starts a chunk; avoid fewer than about 40 words/image.
+- Each section needs a standalone `![](ref)` before its paragraphs and a matching prompt in the companion text file. First image precedes narration; it persists until the next image and is never spoken. Each change starts a chunk; avoid fewer than about 40 words/image.
 - Use bucket-relative image/thumbnail names, resolved via `IMAGE_BASE_URL`. This repo is public: no bucket/presigned URLs or credentials. All required section images plus the named thumbnail must arrive to build: an early 20-minute wait runs while the chunks synthesize, then a 60-minute second window after audio collection; a timeout skips the build/upload with a warning. Prompts do not create images.
 - Generated `Reflection.<FileName>` names must be unique across subdirectories and punctuation variants: `gift-of-the-magi.md` becomes `Reflection.GiftOfTheMagi`; `the-magi.md` and `the_magi.md` collide. Renaming starts a fresh name.
+- Prompt should be consistent style: "Semi-realistic cinematic oil painting with visible painterly texture, natural proportions, historically accurate, atmospheric natural light and soft shadows. Full-HD, 1920x1080, 16:9, no text, no watermark"
 
 # Spoilers and visuals
 
