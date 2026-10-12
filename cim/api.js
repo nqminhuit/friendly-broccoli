@@ -25,14 +25,14 @@
             if (!match) continue;
             let url;
             try { url = new URL(match[1], API_ORIGIN); } catch { continue; }
-            if (url.origin !== API_ORIGIN || url.pathname !== expectedPath) continue;
+            if (url.origin !== API_ORIGIN || url.username || url.password || url.pathname !== expectedPath) continue;
             result[match[2]] = url.href;
         }
         return result;
     }
 
     class GitHubClient {
-        constructor({ fetchImpl = globalThis.fetch, now = () => Date.now(), setTimer = (...args) => globalThis.setTimeout(...args), clearTimer = (id) => globalThis.clearTimeout(id), timeoutMs = 15000, maxConcurrent = 3 } = {}) {
+        constructor({ fetchImpl = globalThis.fetch, now = () => Date.now(), setTimer = (...args) => globalThis.setTimeout(...args), clearTimer = (id) => globalThis.clearTimeout(id), timeoutMs = 15000, maxConcurrent = 1 } = {}) {
             this.fetch = fetchImpl;
             this.now = now;
             this.setTimer = setTimer;
@@ -47,6 +47,7 @@
             this.authInvalid = false;
             this.generation = 0;
             this.controllers = new Set();
+            this.secondaryCount = 0;
         }
         reset(token) {
             this.generation++;
@@ -56,29 +57,34 @@
             this.cache.clear();
             this.retryAt = 0;
             this.authInvalid = false;
+            this.secondaryCount = 0;
         }
         async acquire(signal) {
+            if (signal?.aborted) throw new ApiError('GitHub request was cancelled.', { kind: 'cancelled' });
             if (this.active < this.maxConcurrent) { this.active++; return; }
             await new Promise((resolve, reject) => {
-                const waiter = { resolve: () => { signal?.removeEventListener('abort', abort); this.active++; resolve(); }, reject };
-                const abort = () => { this.waiters = this.waiters.filter((item) => item !== waiter); reject(signal.reason || new DOMException('Aborted', 'AbortError')); };
+                const waiter = { resolve: () => { signal?.removeEventListener('abort', abort); this.active++; resolve(); } };
+                const abort = () => { this.waiters = this.waiters.filter((item) => item !== waiter); signal?.removeEventListener('abort', abort); reject(new ApiError('GitHub request was cancelled.', { kind: 'cancelled' })); };
                 if (signal?.aborted) return abort();
                 signal?.addEventListener('abort', abort, { once: true });
                 this.waiters.push(waiter);
             });
         }
-        release() { this.active--; this.waiters.shift()?.resolve(); }
+        release() { this.active = Math.max(0, this.active - 1); this.waiters.shift()?.resolve(); }
         async request(url, { signal, expectedPath } = {}) {
+            if (signal?.aborted) throw new ApiError('GitHub request was cancelled.', { kind: 'cancelled' });
             if (!this.token) throw new ApiError('Configure a GitHub token first.', { kind: 'auth' });
             if (this.authInvalid) throw new ApiError('GitHub token is invalid or expired. Update it to resume.', { status: 401, kind: 'auth' });
             if (this.now() < this.retryAt) throw new ApiError('GitHub rate limit reached; refresh will resume later.', { status: 429, kind: 'rate-limit', retryAt: this.retryAt });
             const parsed = new URL(url, API_ORIGIN);
-            if (parsed.origin !== API_ORIGIN || (expectedPath && parsed.pathname !== expectedPath)) throw new ApiError('Rejected an unsafe GitHub pagination URL.', { kind: 'security' });
+            if (parsed.origin !== API_ORIGIN || parsed.username || parsed.password || (expectedPath && parsed.pathname !== expectedPath)) throw new ApiError('Rejected an unsafe GitHub pagination URL.', { kind: 'security' });
             const requestedGeneration = this.generation;
             await this.acquire(signal);
+            let released = false;
+            const release = () => { if (!released) { released = true; this.release(); } };
             if (requestedGeneration !== this.generation || !this.token || this.authInvalid || this.now() < this.retryAt) {
-                this.release();
-                if (requestedGeneration !== this.generation) throw new ApiError('GitHub request was cancelled.', { kind: 'network' });
+                release();
+                if (signal?.aborted || requestedGeneration !== this.generation) throw new ApiError('GitHub request was cancelled.', { kind: 'cancelled' });
                 if (!this.token) throw new ApiError('Configure a GitHub token first.', { kind: 'auth' });
                 if (this.authInvalid) throw new ApiError('GitHub token is invalid or expired. Update it to resume.', { status: 401, kind: 'auth' });
                 throw new ApiError('GitHub rate limit reached; refresh will resume later.', { status: 429, kind: 'rate-limit', retryAt: this.retryAt });
@@ -86,18 +92,20 @@
             const generation = requestedGeneration;
             const controller = new AbortController();
             this.controllers.add(controller);
-            const abort = () => controller.abort(signal.reason);
+            const abort = () => controller.abort(signal.reason || new DOMException('Aborted', 'AbortError'));
             signal?.addEventListener('abort', abort, { once: true });
+            if (signal?.aborted) abort();
             const timer = this.setTimer(() => controller.abort(new Error('Request timed out')), this.timeoutMs);
             const prior = this.cache.get(parsed.href);
             try {
+                if (controller.signal.aborted || generation !== this.generation) throw new ApiError('GitHub request was cancelled.', { kind: 'cancelled' });
                 const headers = { Authorization: `Bearer ${this.token}`, Accept: ACCEPT, 'X-GitHub-Api-Version': API_VERSION };
                 if (prior?.etag) headers['If-None-Match'] = prior.etag;
                 const response = await this.fetch(parsed.href, { method: 'GET', headers, signal: controller.signal, redirect: 'error' });
-                if (generation !== this.generation) throw new ApiError('GitHub request was cancelled.', { kind: 'network' });
+                if (generation !== this.generation || controller.signal.aborted) throw new ApiError('GitHub request was cancelled.', { kind: 'cancelled' });
                 if (response.status === 304 && prior) return { ...prior, status: 304 };
                 if (response.status === 401) {
-                    this.authInvalid = true;
+                    if (generation === this.generation) this.authInvalid = true;
                     throw new ApiError('GitHub token is invalid or expired. Update it to resume.', { status: 401, kind: 'auth' });
                 }
                 if (response.status === 403 || response.status === 429) {
@@ -108,11 +116,16 @@
                     const retryAfter = Number.isFinite(retryValue) ? retryValue : 0;
                     let responseMessage = '';
                     try { responseMessage = (await response.clone().json()).message || ''; } catch { /* Error bodies are optional. */ }
-                    if (generation !== this.generation) throw new ApiError('GitHub request was cancelled.', { kind: 'network' });
-                    const secondary = response.status === 403 && /secondary rate limit/i.test(responseMessage) ? this.now() + 60000 : 0;
-                    const isRate = response.status === 429 || response.headers.get('X-RateLimit-Remaining') === '0' || !!retryHeader || secondary > 0;
+                    if (generation !== this.generation || controller.signal.aborted) throw new ApiError('GitHub request was cancelled.', { kind: 'cancelled' });
+                    const remaining = response.headers.get('X-RateLimit-Remaining');
+                    const primary = remaining === '0';
+                    const secondaryLimit = response.status === 429 || /secondary rate limit/i.test(responseMessage);
+                    const secondary = secondaryLimit && !retryHeader ? this.now() + Math.min(15 * 60_000, 60_000 * 2 ** Math.min(this.secondaryCount++, 4)) : 0;
+                    const isRate = response.status === 429 || primary || !!retryHeader || secondary > 0;
                     if (isRate) {
-                        this.retryAt = Math.max(retryAfter || 0, reset || 0, secondary, (!retryAfter && !reset ? this.now() + 60000 : 0));
+                        const delay = retryAfter > this.now() ? retryAfter : 0;
+                        const resetDelay = primary && reset > this.now() ? reset : 0;
+                        this.retryAt = Math.max(delay, resetDelay, secondary, (!delay && !resetDelay && !secondary ? this.now() + 60000 : 0));
                         throw new ApiError('GitHub rate limit reached; refresh will resume later.', { status: response.status, kind: 'rate-limit', retryAt: this.retryAt });
                     }
                     throw new ApiError('GitHub denied access to this resource.', { status: 403, kind: 'permission' });
@@ -120,18 +133,19 @@
                 if (response.status === 404) throw new ApiError('Repository is absent or inaccessible to this token.', { status: 404, kind: 'not-found' });
                 if (!response.ok) throw new ApiError(`GitHub returned an unexpected error (${response.status}).`, { status: response.status, kind: 'http' });
                 const data = await response.json();
+                if (generation !== this.generation || controller.signal.aborted) throw new ApiError('GitHub request was cancelled.', { kind: 'cancelled' });
                 const value = { data, links: paginationLinks(response.headers.get('Link'), expectedPath || parsed.pathname), etag: response.headers.get('ETag'), status: response.status };
                 if (generation === this.generation) this.cache.set(parsed.href, value);
                 return value;
             } catch (error) {
                 if (error instanceof ApiError) throw error;
-                if (controller.signal.aborted) throw new ApiError(controller.signal.reason?.message === 'Request timed out' ? 'GitHub request timed out.' : 'GitHub request was cancelled.', { kind: 'network' });
+                if (controller.signal.aborted) throw new ApiError(controller.signal.reason?.message === 'Request timed out' ? 'GitHub request timed out.' : 'GitHub request was cancelled.', { kind: controller.signal.reason?.message === 'Request timed out' ? 'network' : 'cancelled' });
                 throw new ApiError('Could not reach GitHub. Check your connection and try again.', { kind: 'network' });
             } finally {
                 this.clearTimer(timer);
                 this.controllers.delete(controller);
                 signal?.removeEventListener('abort', abort);
-                this.release();
+                release();
             }
         }
         async listRuns(owner, repo, { url, signal } = {}) {

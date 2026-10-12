@@ -52,8 +52,9 @@
             this.running = Promise.resolve().then(() => this.cycle(controller.signal)).then((result) => {
                 if (generation !== this.generation || controller.signal.aborted) return;
                 this.onCycle(null, result);
+                if (result?.continueMonitoring === false) return;
                 const active = (result?.runs || []).some((run) => ACTIVE.has(run.status));
-                const next = Math.max(this.now() + (active ? this.fastMs : this.idleMs), result?.retryAt || 0);
+                const next = Math.max(this.now() + (active ? this.fastMs : this.idleMs), result?.nextAt || result?.retryAt || 0);
                 this.timer = this.setTimer(() => { this.timer = null; void this.refresh(); }, Math.max(0, next - this.now()));
             }).catch((error) => {
                 if (generation !== this.generation || controller.signal.aborted) return;

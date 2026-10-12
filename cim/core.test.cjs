@@ -16,24 +16,43 @@ test('repository input trims, deduplicates case-insensitively, and rejects unsaf
 
 function storageArea(initial = {}) {
     const values = { ...initial };
-    return { values, async get(keys) { return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, values[key]])); }, async set(next) { Object.assign(values, next); }, async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete values[key]; } };
+    return { values, async get(keys) { if (keys === null) return { ...values }; return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((key) => [key, values[key]]).filter(([, value]) => value !== undefined)); }, async set(next) { Object.assign(values, next); }, async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete values[key]; } };
 }
-test('token migration, session-only default, remembered save, and forget clear both stores', async () => {
+test('profile storage isolates tokens and settings, keeps session-only default, and forget retains repositories', async () => {
+    let nextId = 0;
+    const local = storageArea(), session = storageArea();
+    const store = new SettingsStore({ local, session }, { createId: () => `profile-${++nextId}` });
+    const personal = await store.saveProfile({ name: ' Personal ', repos: ['acme/app'], tokenInput: 'personal-pat', rememberToken: false });
+    const work = await store.saveProfile({ name: 'Work', repos: ['acme/app', 'acme/infra'], tokenInput: 'work-pat', rememberToken: true });
+    assert.equal(personal.name, 'Personal');
+    assert.equal(local.values['cimProfile:profile-1'].token, undefined);
+    assert.equal(local.values['cimProfile:profile-2'].token, 'work-pat');
+    assert.deepEqual((await store.load()).map(({ id, token }) => [id, token]), [['profile-1', 'personal-pat'], ['profile-2', 'work-pat']]);
+    await store.saveProfile({ id: work.id, name: ' Work ', repos: ['acme/infra'], rememberToken: false, tokenInput: '' });
+    assert.equal(local.values['cimProfile:profile-1'].repos[0], 'acme/app');
+    assert.equal(local.values['cimProfile:profile-2'].token, undefined);
+    assert.equal((await store.load()).find(({ id }) => id === work.id).token, 'work-pat');
+    await store.forgetToken(work.id);
+    assert.equal((await store.load()).find(({ id }) => id === work.id).token, '');
+    assert.deepEqual(local.values['cimProfile:profile-2'].repos, ['acme/infra']);
+    await store.deleteProfile(personal.id);
+    assert.equal(session.values['cimToken:profile-1'], undefined);
+    assert.equal(local.values['cimProfile:profile-1'], undefined);
+});
+
+test('legacy single profile migrates once and removes old PAT keys', async () => {
     const local = storageArea({ repositories: ['a/b'], rememberToken: true, token: 'legacy' });
     const session = storageArea();
     const store = new SettingsStore({ local, session });
-    assert.equal((await store.load()).token, 'legacy');
-    assert.equal(session.values.token, 'legacy');
-    const saved = await store.save({ repos: ['c/d'], rememberToken: false, tokenInput: '' });
-    assert.equal(saved.token, 'legacy');
+    const [profile] = await store.load();
+    assert.equal(profile.id, 'default');
+    assert.equal(profile.token, 'legacy');
+    assert.equal(session.values['cimToken:default'], 'legacy');
     assert.equal(local.values.token, undefined);
-    assert.equal(session.values.token, 'legacy');
-    await store.save({ repos: ['c/d'], rememberToken: true, tokenInput: 'new-token' });
-    assert.equal(local.values.token, 'new-token');
-    await store.forgetToken();
-    assert.equal(local.values.token, undefined);
-    assert.equal(session.values.token, undefined);
-    assert.equal(local.values.rememberToken, false);
+    assert.equal(local.values.repositories, undefined);
+    assert.equal(local.values['cimProfile:default'].token, 'legacy');
+    await store.load();
+    assert.equal(Object.keys(local.values).filter((key) => key.startsWith('cimProfile:')).length, 1);
 });
 
 function response(status, data, headers = {}) {
@@ -52,8 +71,9 @@ test('safe API URL, encoded path, fixed auth headers, and validated pagination',
     assert.equal(captured.options.headers.Accept, 'application/vnd.github+json');
     assert.equal(captured.options.headers['X-GitHub-Api-Version'], API_VERSION);
     await assert.rejects(client.request('https://evil.example/private'), /unsafe GitHub pagination URL/);
-    const links = paginationLinks('<https://api.github.com.evil.test/repos/a/b/actions/runs?page=2>; rel="next", <https://api.github.com/repos/a/b/actions/runs?page=2>; rel="next"', '/repos/a/b/actions/runs');
+    const links = paginationLinks('<https://api.github.com.evil.test/repos/a/b/actions/runs?page=2>; rel="next", <https://user:pass@api.github.com/repos/a/b/actions/runs?page=3>; rel="prev", <https://api.github.com/repos/a/b/actions/runs?page=2>; rel="next"', '/repos/a/b/actions/runs');
     assert.equal(links.next, 'https://api.github.com/repos/a/b/actions/runs?page=2');
+    assert.equal(links.prev, undefined);
 });
 
 test('ETag request reuses 304 data and reset isolates credential cache', async () => {
@@ -79,7 +99,7 @@ test('reset aborts old credential requests and stale responses never refill the 
     await new Promise((resolve) => setImmediate(resolve));
     client.reset('new-token');
     resolveFetch(runResponse([{ id: 9 }]));
-    await assert.rejects(request, (error) => error.kind === 'network');
+    await assert.rejects(request, (error) => error.kind === 'cancelled');
     assert.equal(client.cache.size, 0);
 });
 
@@ -108,13 +128,45 @@ test('401 stops requests; 403 permissions and 404 are readable per-repository er
     await assert.rejects(client.listRuns('a', 'b'), (error) => error.kind === 'not-found');
 });
 
-test('rate limit honors retry-after and secondary rate limit has a minimum pause', async () => {
+test('secondary Retry-After is not overridden by a primary reset; fallback backs off', async () => {
     let now = 100000, status = 429;
-    const client = new GitHubClient({ now: () => now, fetchImpl: async () => response(status, { message: 'secondary rate limit' }, { 'Retry-After': '12', 'X-RateLimit-Remaining': '3' }) });
+    const client = new GitHubClient({ now: () => now, fetchImpl: async () => response(status, { message: 'secondary rate limit' }, { 'Retry-After': '12', 'X-RateLimit-Remaining': '3', 'X-RateLimit-Reset': '3700' }) });
     client.reset('token');
     await assert.rejects(client.listRuns('a', 'b'), (error) => error.kind === 'rate-limit' && error.retryAt === now + 12000);
     status = 403; client.reset('token');
-    await assert.rejects(client.listRuns('a', 'b'), (error) => error.kind === 'rate-limit' && error.retryAt >= now + 60000);
+    const secondary = new GitHubClient({ now: () => now, fetchImpl: async () => response(403, { message: 'secondary rate limit' }, { 'X-RateLimit-Remaining': '3' }) });
+    secondary.reset('token');
+    await assert.rejects(secondary.listRuns('a', 'b'), (error) => error.kind === 'rate-limit' && error.retryAt >= now + 60000);
+});
+
+test('primary rate limit uses reset; Retry-After HTTP date and malformed values never spin', async () => {
+    const now = 100000; let headers = { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': '3700' };
+    const client = new GitHubClient({ now: () => now, fetchImpl: async () => response(403, { message: 'API rate limit exceeded' }, headers) }); client.reset('token');
+    await assert.rejects(client.listRuns('a', 'primary'), (error) => error.kind === 'rate-limit' && error.retryAt === 3700000);
+    const date = new Date(now + 15000).toUTCString(); headers = { 'Retry-After': date, 'X-RateLimit-Remaining': '3' }; client.reset('token');
+    await assert.rejects(client.listRuns('a', 'date'), (error) => error.kind === 'rate-limit' && error.retryAt === Date.parse(date));
+    headers = { 'Retry-After': 'invalid', 'X-RateLimit-Remaining': '3' }; client.reset('token');
+    await assert.rejects(client.listRuns('a', 'malformed'), (error) => error.kind === 'rate-limit' && error.retryAt >= now + 60000);
+});
+
+test('already-aborted request never fetches and queued cancellation releases serialized request slot', async () => {
+    let active = 0, peak = 0, calls = 0, release;
+    const client = new GitHubClient({ fetchImpl: async (_url, options) => { calls++; active++; peak = Math.max(peak, active); await new Promise((resolve) => { release = resolve; options.signal.addEventListener('abort', resolve, { once: true }); }); active--; return runResponse(); } });
+    client.reset('token'); const pre = new AbortController(); pre.abort();
+    await assert.rejects(client.listRuns('a', 'x', { signal: pre.signal }), (error) => error.kind === 'cancelled');
+    assert.equal(calls, 0);
+    const first = client.listRuns('a', 'b'); await new Promise((resolve) => setImmediate(resolve));
+    const queuedController = new AbortController(); const queued = client.listRuns('a', 'c', { signal: queuedController.signal }); queuedController.abort();
+    await assert.rejects(queued, (error) => error.kind === 'cancelled');
+    release(); await first; assert.equal(calls, 1); assert.equal(peak, 1);
+});
+
+test('credential reset during delayed JSON rejects old data and does not cache it', async () => {
+    let parse;
+    const client = new GitHubClient({ fetchImpl: async () => ({ status: 200, ok: true, headers: new Headers(), json: () => new Promise((resolve) => { parse = resolve; }) }) });
+    client.reset('old'); const request = client.listRuns('a', 'b'); await new Promise((resolve) => setImmediate(resolve));
+    client.reset('new'); parse({ total_count: 1, workflow_runs: [{ id: 1 }] });
+    await assert.rejects(request, (error) => error.kind === 'cancelled'); assert.equal(client.cache.size, 0);
 });
 
 function fakeTimers() {
@@ -143,6 +195,16 @@ test('hidden monitor pauses and aborts; resume starts immediately; reset invalid
     visible = true; monitor.resume(); await Promise.resolve(); assert.equal(calls, 2);
     monitor.reset(); await Promise.resolve(); assert.equal(signals[1].aborted, true); assert.equal(calls, 3);
     monitor.stop(); assert.equal(signals[2].aborted, true);
+});
+
+test('monitor accepts scheduler cooldowns and stops timers when every profile needs intervention', async () => {
+    const timers = fakeTimers(); let calls = 0;
+    const monitor = new ForegroundMonitor({ cycle: () => { calls++; return { runs: [{ status: 'unknown_future_status' }], nextAt: timers.now() + 90000, continueMonitoring: true }; }, setTimer: timers.setTimer, clearTimer: timers.clearTimer, now: timers.now });
+    await monitor.start();
+    assert.equal([...timers.timers.values()][0].at, 90000);
+    monitor.stop();
+    const idle = new ForegroundMonitor({ cycle: () => ({ runs: [], continueMonitoring: false }), setTimer: timers.setTimer, clearTimer: timers.clearTimer, now: timers.now });
+    await idle.start(); assert.equal(timers.timers.size, 0); assert.equal(calls, 1); idle.stop();
 });
 
 test('toolbar reuses only the dashboard tab, restores focus, and coalesces clicks', async () => {

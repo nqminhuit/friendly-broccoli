@@ -2,7 +2,6 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,7 +36,7 @@ async function waitFor(expression, timeout = 7000) {
 
 before(async () => {
     if (!CHROME) return;
-    profile = fs.mkdtempSync(path.join(os.tmpdir(), 'cim-e2e-'));
+    profile = fs.mkdtempSync(path.join('/tmp/opencode', 'cim-e2e-'));
     const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--enable-unsafe-extension-debugging'];
     if (process.env.CI) args.push('--no-sandbox');
     chrome = spawn(CHROME, [...args, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -69,19 +68,24 @@ before(async () => {
     await send('Runtime.enable', {}, pageSession);
     const mock = `(() => {
       globalThis.__cimRequests = [];
+      globalThis.__slowSignals = [];
       globalThis.fetch = async (input, options = {}) => {
         const url = String(input), auth = options.headers?.Authorization;
         globalThis.__cimRequests.push({ url, auth });
         if (!url.startsWith('https://api.github.com/')) throw new Error('Blocked unexpected network URL');
-        if (auth !== 'Bearer e2e-token') throw new Error('Unexpected or missing token');
+        if (!['Bearer e2e-token','Bearer work-pat','Bearer expired-pat'].includes(auth)) throw new Error('Unexpected or missing token');
+        if (auth === 'Bearer expired-pat') return new Response('{"message":"Bad credentials"}', {status:401});
+        if (url.includes('/repos/acme/slow/')) { globalThis.__slowSignals.push(options.signal); await new Promise(resolve=>setTimeout(resolve,700)); return new Response(JSON.stringify({total_count:1,workflow_runs:[{id:90,name:'Slow',display_title:'Slow private result',status:'completed',conclusion:'success',created_at:'2025-01-01T00:00:00Z'}]}),{status:200,headers:{'content-type':'application/json'}}); }
         if (url.includes('/repos/acme/forbidden/')) return new Response('{"message":"Not Found"}', {status:404});
-        const older = url.includes('page=2');
-        const runs = older ? [{id:3,name:'Deploy',display_title:'Older deploy',head_branch:'main',status:'completed',conclusion:'success',run_number:3,run_attempt:1,event:'push',actor:{login:'ci'},created_at:'2025-01-01T00:00:00Z',updated_at:'2025-01-01T00:01:00Z',html_url:'https://github.com/acme/app/actions/runs/3'}] : [
+         const page = Number(new URL(url).searchParams.get('page') || '1');
+         if (page === 4) { globalThis.__slowSignals.push(options.signal); await new Promise(resolve=>setTimeout(resolve,700)); }
+         const runId = auth === 'Bearer work-pat' ? 20 : page + 2;
+         const runs = page > 1 ? [{id:runId,name:'Deploy',display_title:'Older page '+page,head_branch:'main',status:'completed',conclusion:page===2?'success':'cancelled',run_number:runId,run_attempt:1,event:'push',actor:{login:'ci'},created_at:'2025-01-01T00:00:00Z',updated_at:'2025-01-01T00:01:00Z',html_url:'https://github.com/acme/app/actions/runs/'+runId}] : auth === 'Bearer work-pat' ? [{id:20,name:'Work Build',display_title:'Work-only result',head_branch:'work',status:'completed',conclusion:'action_required',run_number:20,run_attempt:1,event:'push',actor:{login:'worker'},created_at:'2025-03-01T00:00:00Z',updated_at:'2025-03-01T00:01:00Z',html_url:'https://github.com/acme/app/actions/runs/20'}] : [
           {id:1,name:'Build',display_title:'Compile app',head_branch:'main',status:'completed',conclusion:'success',run_number:12,run_attempt:1,event:'push',actor:{login:'alice'},created_at:'2025-02-01T00:00:00Z',updated_at:'2025-02-01T00:02:00Z',run_started_at:'2025-02-01T00:00:00Z',html_url:'https://github.com/acme/app/actions/runs/1'},
           {id:2,name:'Deploy',display_title:'Deploy to preview',head_branch:'feature/demo',status:'in_progress',conclusion:null,run_number:13,run_attempt:2,event:'workflow_dispatch',actor:{login:'bob'},created_at:'2025-02-02T00:00:00Z',updated_at:'2025-02-02T00:01:00Z',html_url:'https://evil.example/steal'}
         ];
         const headers = new Headers({'content-type':'application/json','etag':'"fixture"'});
-        if (!older) headers.set('Link', '<https://api.github.com/repos/acme/app/actions/runs?per_page=30&page=2>; rel="next"');
+         if (page < 4 && auth === 'Bearer e2e-token') headers.set('Link', '<https://api.github.com/repos/acme/app/actions/runs?per_page=30&page='+(page+1)+'>; rel="next"');
         if (options.headers?.['If-None-Match']) return new Response(null, {status:304,headers});
         return new Response(JSON.stringify({total_count:3,workflow_runs:runs}), {status:200,headers});
       };
@@ -102,16 +106,16 @@ after(async () => {
     try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* Leave cleanup to the OS. */ }
 });
 
-test('dashboard saves session config, filters history, renders safe links/errors, and pauses when hidden', { skip: !CHROME && 'Chrome not found' }, async () => {
+test('profiles route their own PATs, filter identity, paginate without rewind, and pause when hidden', { skip: !CHROME && 'Chrome not found' }, async () => {
     await waitFor(`document.querySelector('#setup-empty') && !document.querySelector('#setup-empty').hidden`);
     await evaluate(`document.querySelector('#setup-open').click()`);
-    await evaluate(`document.querySelector('#repositories').value='acme/app\\nacme/forbidden'; document.querySelector('#token').value='e2e-token'; document.querySelector('#settings-form').requestSubmit()`);
+    await evaluate(`document.querySelector('#profile-new').click(); document.querySelector('#profile-name').value='Personal'; document.querySelector('#repositories').value='acme/app\\nacme/forbidden'; document.querySelector('#token').value='e2e-token'; document.querySelector('#settings-form').requestSubmit()`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
     await waitFor(`document.querySelector('#repo-errors').textContent.includes('inaccessible')`);
     const dashboardUrls = await evaluate(`chrome.tabs.query({url:chrome.runtime.getURL('dashboard.html')}).then(tabs=>tabs.map(tab=>tab.url))`);
     assert.ok(dashboardUrls.includes(`chrome-extension://${extensionId}/dashboard.html`));
-    assert.equal(await evaluate(`chrome.storage.session.get('token').then(x=>x.token)`), 'e2e-token');
-    assert.equal(await evaluate(`chrome.storage.local.get('token').then(x=>x.token||null)`), null);
+    assert.equal(await evaluate(`chrome.storage.session.get(null).then(x=>Object.values(x).includes('e2e-token'))`), true);
+    assert.equal(await evaluate(`chrome.storage.local.get(null).then(x=>Object.entries(x).filter(([k])=>k.startsWith('cimProfile:')).every(([,v])=>!v.token))`), true);
     assert.equal(await evaluate(`document.querySelectorAll('#run-list a').length`), 1);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Running')`), true);
     assert.equal(await evaluate(`document.querySelector('#run-list a').href`), 'https://github.com/acme/app/actions/runs/1');
@@ -120,12 +124,50 @@ test('dashboard saves session config, filters history, renders safe links/errors
     await evaluate(`document.querySelector('#search').value='no match'; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true}))`);
     assert.equal(await evaluate(`!document.querySelector('#filtered-empty').hidden`), true);
     await evaluate(`document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#older').click()`);
-    await waitFor(`document.querySelector('#run-list').textContent.includes('Older deploy')`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Older page 2')`);
+    await evaluate(`document.querySelector('#refresh').click()`);
+    await sleep(100);
+    await evaluate(`document.querySelector('#older').click()`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Older page 3')`);
+    await evaluate(`document.querySelector('#profile-new').click(); document.querySelector('#profile-name').value='Work'; document.querySelector('#repositories').value='acme/app'; document.querySelector('#token').value='work-pat'; document.querySelector('#settings-form').requestSubmit()`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Work-only result')`);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Work')`), true);
+    assert.equal(await evaluate(`document.querySelector('#run-list .profile-badge').textContent`), 'Work');
+    assert.equal(await evaluate(`globalThis.__cimRequests.some(x=>x.auth==='Bearer work-pat' && x.url.includes('/repos/acme/app/'))`), true);
+    await evaluate(`document.querySelector('#profile-filter').value=[...document.querySelector('#profile-filter').options].find(o=>o.text==='Personal').value; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Work-only result')`), false);
+    await evaluate(`document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#status-filter').value='action_required'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Work-only result')`), true);
+    await evaluate(`document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#profile-new').click(); document.querySelector('#profile-name').value='Expired'; document.querySelector('#repositories').value='acme/app'; document.querySelector('#token').value='expired-pat'; document.querySelector('#settings-form').requestSubmit()`);
+    await waitFor(`document.querySelector('#repo-errors').textContent.includes('invalid or expired')`);
+    const healthyCount = await evaluate(`globalThis.__cimRequests.filter(x=>x.auth==='Bearer work-pat').length`);
+    await evaluate(`document.querySelector('#refresh').click()`);
+    await sleep(100);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.auth==='Bearer work-pat').length > ${healthyCount}`), true);
+    const personalId = await evaluate(`[...document.querySelector('#profile-filter').options].find(o=>o.text==='Personal').value`);
+    await evaluate(`document.querySelector('#profile-filter').value='${personalId}'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#older').click()`);
+    await waitFor(`globalThis.__slowSignals.length > 0`);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'}); document.dispatchEvent(new Event('visibilitychange'))`);
+    await waitFor(`globalThis.__slowSignals.at(-1).aborted`);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Older page 4')`), false);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange'))`);
+    await evaluate(`document.querySelector('#profile-new').click(); document.querySelector('#profile-name').value='Slow'; document.querySelector('#repositories').value='acme/slow'; document.querySelector('#token').value='e2e-token'; document.querySelector('#settings-form').requestSubmit()`);
+    await waitFor(`globalThis.__slowSignals.length > 1`);
+    await evaluate(`document.querySelector('#settings-open').click(); document.querySelector('#test-access').click()`);
+    await waitFor(`globalThis.__slowSignals.length > 2`);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'}); document.dispatchEvent(new Event('visibilitychange'))`);
+    await waitFor(`globalThis.__slowSignals.slice(-2).every(signal=>signal.aborted)`);
+    await waitFor(`!document.querySelector('#test-access').disabled`);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange'))`);
+    await waitFor(`globalThis.__slowSignals.length > 3`);
+    await evaluate(`window.confirm=()=>true; document.querySelector('#profile-delete').click()`);
+    await waitFor(`globalThis.__slowSignals.at(-1).aborted`);
+    await waitFor(`!document.querySelector('#run-list').textContent.includes('Slow private result')`);
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'}); document.dispatchEvent(new Event('visibilitychange'))`);
     const hiddenCount = await evaluate(`globalThis.__cimRequests.length`);
     await sleep(200);
     assert.equal(await evaluate(`globalThis.__cimRequests.length`), hiddenCount);
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange'))`);
     await waitFor(`globalThis.__cimRequests.length > ${hiddenCount}`);
-    assert.equal(await evaluate(`globalThis.__cimRequests.every(x=>x.url.startsWith('https://api.github.com/') && x.auth==='Bearer e2e-token')`), true);
+    assert.equal(await evaluate(`globalThis.__cimRequests.every(x=>x.url.startsWith('https://api.github.com/') && ['Bearer e2e-token','Bearer work-pat','Bearer expired-pat'].includes(x.auth))`), true);
 });
