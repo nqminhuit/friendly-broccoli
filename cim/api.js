@@ -91,7 +91,7 @@
 
     class GitHubClient {
         constructor({ fetchImpl = globalThis.fetch, now = () => Date.now(), setTimer = (...args) => globalThis.setTimeout(...args), clearTimer = (id) => globalThis.clearTimeout(id), timeoutMs = 15000, maxConcurrent = 1 } = {}) {
-            this.fetch = fetchImpl;
+            this.fetch = fetchImpl.bind(globalThis);
             this.now = now;
             this.setTimer = setTimer;
             this.clearTimer = clearTimer;
