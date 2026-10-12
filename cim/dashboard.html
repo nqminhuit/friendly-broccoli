@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>CI Management · cim</title>
+  <link rel="stylesheet" href="dashboard.css">
+  <script src="settings.js" defer></script>
+  <script src="api.js" defer></script>
+  <script src="monitor.js" defer></script>
+  <script src="dashboard.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="dashboard.html" aria-label="cim dashboard"><span class="brand-mark">c</span><span>cim <small>CI MANAGEMENT</small></span></a>
+    <div class="header-actions"><span id="monitor-label" class="monitor-label">Monitoring paused</span><button id="refresh" class="button quiet" type="button">Refresh</button><button id="settings-open" class="button primary" type="button">Settings</button></div>
+  </header>
+  <main>
+    <section class="intro"><div><p class="eyebrow">YOUR DELIVERY OVERVIEW</p><h1>Workflow runs</h1><p class="subhead">A focused view of GitHub Actions across your repositories.</p></div><div id="summary" class="summary" aria-live="polite"></div></section>
+    <section id="setup-empty" class="empty setup-empty" hidden><div class="empty-icon">⌘</div><h2>Connect your repositories</h2><p>Add GitHub repositories and a personal access token to see workflow runs. Monitoring only runs while this dashboard is visible.</p><button id="setup-open" class="button primary">Configure repositories</button></section>
+    <section id="dashboard-content" hidden>
+      <div class="toolbar"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search repositories, workflows, branches…" aria-label="Search loaded runs"></label><label class="filter-label" for="status-filter">Status</label><select id="status-filter" aria-label="Filter by status"><option value="all">All statuses</option><option>Queued</option><option>Running</option><option>Waiting</option><option>Pending</option><option>Completed</option></select><button id="older" class="button quiet" type="button">Load older runs</button></div>
+      <p id="history-note" class="history-note"></p><div id="feedback" role="status" aria-live="polite" class="feedback" hidden></div><div id="repo-errors" class="repo-errors" aria-live="polite"></div>
+      <div id="run-list" class="run-list"></div><div id="no-runs" class="empty compact" hidden><h2>No runs yet</h2><p>GitHub has not returned any workflow runs for these repositories.</p></div><div id="filtered-empty" class="empty compact" hidden><h2>No matching runs</h2><p>Try a different search or status filter.</p></div>
+    </section>
+  </main>
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <form id="settings-form" method="dialog" novalidate>
+      <div class="dialog-head"><div><p class="eyebrow">PERSONAL CONFIGURATION</p><h2 id="settings-title">Settings</h2></div><button id="settings-close" class="icon-button" type="button" aria-label="Close settings">×</button></div>
+      <label class="field-label" for="repositories">Repositories</label><textarea id="repositories" rows="5" spellcheck="false" placeholder="owner/repository, one per line"></textarea><p class="help">Use one <code>owner/repository</code> per line. Duplicate entries are ignored.</p>
+      <label class="field-label" for="token">Personal access token</label><input id="token" type="password" autocomplete="new-password" placeholder="ghp_…"><p class="help">Blank keeps your current token. Use <strong>Forget token</strong> to remove it.</p>
+      <label class="remember"><input id="remember" type="checkbox"><span><strong>Remember on this device</strong><small>Unchecked by default. Remembered tokens are stored unencrypted in local browser storage.</small></span></label>
+      <div class="token-warning">Use a fine-grained token with Actions: read-only access for each selected repository.</div>
+      <div id="settings-message" class="settings-message" role="status" aria-live="polite"></div>
+      <div class="dialog-actions"><button id="forget-token" class="button danger" type="button">Forget token</button><span class="spacer"></span><button id="test-access" class="button quiet" type="button">Test access</button><button id="save-settings" class="button primary" type="submit">Save</button></div>
+    </form>
+  </dialog>
+</body>
+</html>
