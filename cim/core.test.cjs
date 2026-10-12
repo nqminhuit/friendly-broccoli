@@ -98,6 +98,15 @@ function response(status, data, headers = {}) {
 }
 const runResponse = (items = []) => response(200, { total_count: items.length, workflow_runs: items }, { ETag: 'etag-1' });
 
+test('fetch uses the global receiver required by native browser functions', async () => {
+    const client = new GitHubClient({ fetchImpl: async function () {
+        assert.equal(this, globalThis);
+        return runResponse();
+    } });
+    client.reset('test-token');
+    assert.equal(await client.testRepo('owner', 'repo'), true);
+});
+
 test('safe API URL, encoded path, fixed auth headers, and validated pagination', async () => {
     let captured;
     const client = new GitHubClient({ fetchImpl: async (url, options) => { captured = { url, options }; return runResponse(); } });

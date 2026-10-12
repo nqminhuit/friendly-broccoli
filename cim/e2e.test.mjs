@@ -100,7 +100,8 @@ before(async () => {
       const allowedAuth = ['Bearer e2e-token','Bearer work-pat','Bearer expired-pat','Bearer e2e-rotated','Bearer work-rotated'];
       const isWorkAuth = (auth) => auth === 'Bearer work-pat' || auth === 'Bearer work-rotated';
       const isE2eAuth = (auth) => auth === 'Bearer e2e-token' || auth === 'Bearer e2e-rotated';
-      globalThis.fetch = async (input, options = {}) => {
+      globalThis.fetch = async function (input, options = {}) {
+        if (this !== globalThis) throw new TypeError('Illegal invocation');
         const url = String(input), auth = options.headers?.Authorization;
         globalThis.__cimRequests.push({ url, auth, method: options.method || 'GET', body: options.body || '' });
         if (!url.startsWith('https://api.github.com/')) throw new Error('Blocked unexpected network URL');
@@ -279,6 +280,38 @@ test('profiles route their own PATs, filter identity, paginate without rewind, a
     assert.equal(await evaluate(`globalThis.__cimRequests.every(x=>x.url.startsWith('https://api.github.com/') && ['Bearer e2e-token','Bearer work-pat','Bearer expired-pat'].includes(x.auth))`), true);
 });
 
+test('run summaries stay compact, truncate safely, and disclose details accessibly at narrow widths', { skip: !CHROME && 'Chrome not found' }, async () => {
+    await evaluate(`if(document.querySelector('#settings-dialog').open) document.querySelector('#settings-close').click(); if(document.querySelector('#dispatch-dialog').open) document.querySelector('#dispatch-close').click()`);
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, pageSession);
+    await evaluate(`document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await waitFor(`document.querySelector('#run-list .run-card')`);
+    const desktop = await evaluate(`(() => { const card=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); const row=card.getBoundingClientRect(); const fields=[card.querySelector('.profile-badge'),card.querySelector('.run-repo'),card.querySelector('.run-title'),card.querySelector('.run-branch')]; const values=['A profile name deliberately much longer than its column','example-owner/an-extremely-long-repository-name','A deliberately very long workflow title that should be clipped to one line without losing its original value','a/branch/name/that/is/longer/than/the/available/column']; const clipped=fields.map((node,index)=>{node.textContent=values[index];node.title=values[index];return node.scrollWidth>node.clientWidth && getComputedStyle(node).textOverflow==='ellipsis' && node.textContent===values[index] && node.title===values[index]}); return {height:row.height, clipped, columns:getComputedStyle(card).gridTemplateColumns}; })()`);
+    assert.ok(desktop.height >= 38 && desktop.height <= 46, `collapsed run row was ${desktop.height}px tall`);
+    assert.deepEqual(desktop.clipped, [true, true, true, true], 'long profile, repository, title and branch values ellipsize without losing text or titles');
+    await evaluate(`var compileCard=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.querySelector('.run-title').title.startsWith('A deliberately')); for (const [selector,value] of [['.profile-badge','Personal'],['.run-repo','acme/app'],['.run-title','Compile app'],['.run-branch','main']]) { const node=compileCard.querySelector(selector); node.textContent=value; node.title=value; }`);
+    await evaluate(`var compactToggle=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.details-toggle'); compactToggle.focus()`);
+    const focusedToggle = await evaluate(`document.activeElement?.className`);
+    assert.equal(focusedToggle, 'button quiet details-toggle');
+    assert.equal(await evaluate(`compactToggle.tagName==='BUTTON' && compactToggle.tabIndex===0`), true, 'native button remains keyboard operable');
+    await evaluate(`compactToggle.click()`);
+    await waitFor(`document.querySelector('.details-toggle[aria-expanded="true"]')`);
+    await waitFor(`document.activeElement?.matches('.details-toggle') && document.activeElement.getAttribute('aria-expanded')==='true'`);
+    const expanded = await evaluate(`(() => { const card=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); const row=card.querySelector('.details-toggle').getBoundingClientRect(); const panel=card.querySelector('.run-details').getBoundingClientRect(); return {below:panel.top>=row.bottom, label:card.querySelector('.details-toggle').getAttribute('aria-label'), metadata:card.querySelector('.detail-meta')?.textContent || '', expanded:card.querySelector('.details-toggle').getAttribute('aria-expanded')}; })()`);
+    assert.equal(expanded.below, true);
+    assert.match(expanded.label, /jobs and steps for Compile app/i);
+    assert.match(expanded.metadata, /Event: push/);
+    assert.equal(expanded.expanded, 'true');
+    await evaluate(`document.activeElement.click()`);
+    await waitFor(`document.querySelector('.details-toggle[aria-expanded="false"]')`);
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true }, pageSession);
+    const narrow = await evaluate(`(() => { const list=document.querySelector('.run-list-scroll'); const card=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); return {listOverflow:list.scrollWidth>list.clientWidth,pageOverflow:document.documentElement.scrollWidth>innerWidth+1,rowHeight:card.getBoundingClientRect().height,columns:getComputedStyle(card).gridTemplateColumns}; })()`);
+    assert.equal(narrow.listOverflow, true, 'narrow viewport should scroll the run list horizontally');
+    assert.equal(narrow.pageOverflow, false, 'run-list overflow must not widen the page');
+    assert.ok(narrow.rowHeight >= 38 && narrow.rowHeight <= 46, 'narrow summaries remain on one compact line');
+    assert.equal(narrow.columns.split(' ').length, 8, 'summary keeps all eight columns at narrow widths');
+    await send('Emulation.clearDeviceMetricsOverride', {}, pageSession);
+});
+
 // Browser tests share one dashboard page: later tests reuse the Personal/Work
 // profiles and rotated PATs created above. Toolbar discovery stays independent
 // of that profile state and never reads tab URLs.
@@ -311,7 +344,7 @@ test('expanded details stay text-safe and a failed-only rerun waits for a fresh 
     await waitFor(`document.querySelector('#run-list').textContent.includes('Rerun requested')`);
     await sleep(700);
     await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).querySelector('.run-details .detail-heading button').click()`);
-    await waitFor(`document.querySelector('#run-list').textContent.includes('attempt 2') && document.querySelector('#run-list').textContent.includes('Compile <script>')`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Attempt: 2') && document.querySelector('#run-list').textContent.includes('Compile <script>')`);
     assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).textContent.includes('failure')`), false);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.endsWith('/rerun-failed-jobs')).length`), 1);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Rerun requested')`), false);
@@ -320,7 +353,7 @@ test('expanded details stay text-safe and a failed-only rerun waits for a fresh 
 test('aborted sent POST stays uncertain with a single request until acknowledged', { skip: !CHROME && 'Chrome not found' }, async () => {
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true})); window.confirm=()=>true; globalThis.__rerunHang=false; globalThis.__rerunDeny=false;`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
-    await evaluate(`var cardA=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tA=cardA?.querySelector('.details-toggle'); if(tA&&tA.textContent.includes('Show')) tA.click();`);
+    await evaluate(`var cardA=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tA=cardA?.querySelector('.details-toggle'); if(tA?.getAttribute('aria-expanded')==='false') tA.click();`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile <script>')`);
     const before = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`);
     await evaluate(`globalThis.__rerunHang=true; window.confirm=()=>true; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').click();`);
@@ -344,7 +377,7 @@ test('aborted sent POST stays uncertain with a single request until acknowledged
 test('queued rerun hidden before send leaves no request and no pending', { skip: !CHROME && 'Chrome not found' }, async () => {
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); window.confirm=()=>true; globalThis.__rerunHang=false; globalThis.__rerunDeny=true;`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
-    await evaluate(`var cardB=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tB=cardB?.querySelector('.details-toggle'); if(tB&&tB.textContent.includes('Show')) tB.click();`);
+    await evaluate(`var cardB=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tB=cardB?.querySelector('.details-toggle'); if(tB?.getAttribute('aria-expanded')==='false') tB.click();`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Re-run all jobs')`);
     await evaluate(`window.confirm=()=>true; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').click();`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Actions: write')`);
@@ -363,7 +396,7 @@ test('queued rerun hidden before send leaves no request and no pending', { skip:
 test('replacing a PAT clears only that profile pending and allows a fresh rerun', { skip: !CHROME && 'Chrome not found' }, async () => {
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true})); window.confirm=()=>true; globalThis.__rerunHang=false; globalThis.__rerunDeny=false;`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app') && document.querySelector('#run-list').textContent.includes('Work-only result')`);
-    await evaluate(`for (var textD of ['Compile app','Work-only result']) { var cardD=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes(textD)); var tD=cardD?.querySelector('.details-toggle'); if(tD&&tD.textContent.includes('Show')) tD.click(); }`);
+    await evaluate(`for (var textD of ['Compile app','Work-only result']) { var cardD=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes(textD)); var tD=cardD?.querySelector('.details-toggle'); if(tD?.getAttribute('aria-expanded')==='false') tD.click(); }`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Re-run all jobs')`);
     const postBase = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`);
     await evaluate(`window.confirm=()=>true; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').click();`);
@@ -378,7 +411,7 @@ test('replacing a PAT clears only that profile pending and allows a fresh rerun'
     await evaluate(`document.querySelector('#token').value='e2e-rotated'; document.querySelector('#settings-form').requestSubmit()`);
     await waitFor(`globalThis.__cimRequests.some(x=>x.auth==='Bearer e2e-rotated')`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
-    await evaluate(`var cardE=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tE=cardE?.querySelector('.details-toggle'); if(tE&&tE.textContent.includes('Show')) tE.click();`);
+    await evaluate(`var cardE=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tE=cardE?.querySelector('.details-toggle'); if(tE?.getAttribute('aria-expanded')==='false') tE.click();`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile <script>') || document.querySelector('#run-list').textContent.includes('2 of 2 jobs loaded') || document.querySelector('#run-list').textContent.includes('No jobs') || document.querySelector('#run-list').textContent.includes('Re-run all jobs')`);
     assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).textContent.includes('Rerun requested')`), false);
     assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').disabled`), false);

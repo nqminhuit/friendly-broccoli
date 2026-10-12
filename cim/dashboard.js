@@ -85,23 +85,23 @@
             if (branchFilter !== ALL && (run.head_branch || 'Unknown') !== branchFilter) continue;
             if (statusFilter !== ALL && (statusFilter === 'active' ? !activeStates.has(run.status) : statusFilter === COMPLETED ? run.status !== COMPLETED : status.conclusion !== statusFilter)) continue;
             const card = document.createElement('article'); card.className = 'run-card';
-            const main = document.createElement('div'); main.className = 'run-main';
-            const identity = document.createElement('div'); identity.className = 'run-identity'; text(identity, 'span', profileName, 'profile-badge'); text(identity, 'span', repo, 'run-repo'); main.append(identity);
-            text(main, 'div', run.display_title || run.name || 'Workflow run', 'run-title');
-            const meta = document.createElement('div'); meta.className = 'run-meta';
-            const info = [run.head_branch || 'Branch unavailable', run.event || 'Event unavailable', `#${run.run_number ?? '—'} · attempt ${run.run_attempt ?? '—'}`, `by ${run.actor?.login || 'unknown actor'}`, dateLabel(run.created_at)]; const duration = durationLabel(run); if (duration) info.push(duration);
-            for (const part of info) text(meta, 'span', part); main.append(meta);
-            const statusNode = document.createElement('div'); statusNode.className = `run-status status-${status.kind}`; const icon = document.createElement('span'); icon.className = 'status-icon'; icon.setAttribute('aria-hidden', 'true'); statusNode.append(icon); text(statusNode, 'span', status.label);
-            const side = document.createElement('div'); side.className = 'run-side'; text(side, 'span', dateLabel(run.updated_at));
-            let githubUrl; try { githubUrl = new URL(run.html_url); } catch { githubUrl = null; }
-            if (githubUrl?.origin === 'https://github.com' && githubUrl.protocol === 'https:' && !githubUrl.username && !githubUrl.password) { const link = document.createElement('a'); link.href = githubUrl.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = 'Open on GitHub ↗'; link.dataset.focusKey = `${runKey(profileId, repo, run)}:github`; side.append(link); }
+            const titleValue = run.display_title || run.name || 'Workflow run';
+            const statusNode = document.createElement('div'); statusNode.className = `run-status status-${status.kind}`; const icon = document.createElement('span'); icon.className = 'status-icon'; icon.setAttribute('aria-hidden', 'true'); statusNode.append(icon); text(statusNode, 'span', status.label, 'run-status-label');
+            const identity = document.createElement('div'); identity.className = 'run-identity'; text(identity, 'span', profileName, 'profile-badge').title = profileName; text(identity, 'span', repo, 'run-repo').title = repo;
+            const title = text(card, 'div', titleValue, 'run-title'); title.title = titleValue;
+            const branchValue = run.head_branch || 'Branch unavailable'; const branch = text(card, 'div', branchValue, 'run-branch'); branch.title = branchValue;
+            const runNumber = text(card, 'div', `#${run.run_number ?? '—'}`, 'run-number');
+            const timeValue = dateLabel(run.created_at); const time = text(card, 'time', timeValue, 'run-time'); time.dateTime = run.created_at || ''; time.title = run.created_at ? `${run.created_at}${Number.isNaN(Date.parse(run.created_at)) ? ' (invalid timestamp)' : ''}` : 'Timestamp unavailable';
             const key = runKey(profileId, repo, run); const detail = state.details.get(key);
             const pending = state.pendingReruns.get(key) || (detail?.pending ? { message: detail.pending, ambiguous: detail.ambiguous } : null);
-            if (pending) text(statusNode, 'span', pending.ambiguous ? 'Rerun uncertain' : 'Rerun pending', 'rerun-pending');
-            const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'button quiet details-toggle'; toggle.dataset.focusKey = `${key}:toggle`; toggle.setAttribute('aria-expanded', String(detail?.expanded === true)); toggle.textContent = detail?.expanded ? 'Hide jobs' : 'Show jobs and steps'; toggle.addEventListener('click', () => toggleDetails(key));
+            if (pending) { const pendingNode = text(statusNode, 'span', pending.ambiguous ? 'Rerun uncertain' : 'Rerun pending', 'rerun-pending'); pendingNode.title = pending.message; }
+            const githubUrl = safeGitHubLink(run.html_url);
+            const linkCell = document.createElement('div'); linkCell.className = 'run-link';
+            if (githubUrl) { const link = document.createElement('a'); link.href = githubUrl; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = 'GitHub ↗'; link.title = 'Open run on GitHub'; link.dataset.focusKey = `${key}:github`; linkCell.append(link); }
+            const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'button quiet details-toggle'; toggle.dataset.focusKey = `${key}:toggle`; toggle.setAttribute('aria-expanded', String(detail?.expanded === true)); toggle.setAttribute('aria-label', `${detail?.expanded ? 'Hide' : 'Show'} jobs and steps for ${titleValue}`); toggle.textContent = detail?.expanded ? 'Jobs ▾' : 'Jobs ▸'; toggle.addEventListener('click', () => toggleDetails(key));
             const panel = document.createElement('section'); panel.className = 'run-details'; panel.hidden = detail?.expanded !== true;
             if (detail?.expanded) renderDetails(panel, item, detail);
-            card.append(main, statusNode, side, toggle, panel); list.append(card); visibleCount++;
+            card.prepend(statusNode, identity); card.append(runNumber, time, toggle, linkCell, panel); list.append(card); visibleCount++;
         }
         if (focusKey) {
             const focused = [...list.querySelectorAll('[data-focus-key]')].find((node) => node.dataset.focusKey === focusKey);
@@ -129,6 +129,14 @@
         return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
     }
     function renderDetails(panel, item, detail) {
+        const run = item.run;
+        const metadata = document.createElement('div'); metadata.className = 'detail-meta';
+        const duration = durationLabel(run);
+        for (const [label, value] of [['Event', run.event || 'Event unavailable'], ['Actor', run.actor?.login || 'Unknown actor'], ['Attempt', String(run.run_attempt ?? '—')], ['Created', dateLabel(run.created_at)], ['Updated', dateLabel(run.updated_at)], ['Duration', duration || 'Duration unavailable']]) {
+            const field = document.createElement('span'); const exact = label === 'Created' ? run.created_at : label === 'Updated' ? run.updated_at : '';
+            text(field, 'strong', `${label}: `); const valueNode = text(field, 'span', value); if (exact) valueNode.title = exact; metadata.append(field);
+        }
+        panel.append(metadata);
         const head = document.createElement('div'); head.className = 'detail-heading';
         const jobs = detail.jobs || [];
         text(head, 'strong', detail.loading ? 'Loading jobs…' : `${jobs.length} of ${detail.total || jobs.length} jobs loaded`);
