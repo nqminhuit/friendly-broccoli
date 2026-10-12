@@ -2,10 +2,11 @@
 
 A personal automation repo with no application code and no local build/test system. It builds tools from source inside containerized environments via GitHub Actions, publishes the results as images to `docker.io/nqminhuit/*`, and the owner later pulls an image with **podman** (not docker) and copies the binary out to the local machine. All work happens in `.github/workflows/` and `containers/`.
 
-The exceptions are two browser extensions, plain JavaScript with no build, each with node tests and a workflow that tests every change and, on master, releases `<name>-v<manifest version>` with `<name>.zip` once per version:
+The exceptions are three browser extensions, plain JavaScript with no build, each with node tests and a workflow that tests every change and, on master, releases `<name>-v<manifest version>` with `<name>.zip` once per version:
 
 - `vtelex/`: Vietnamese telex typing. Tests: `node --test vtelex/telex.test.js vtelex/macros.test.js`, plus `vtelex/e2e.test.mjs`, which loads it into headless Chrome. See `vtelex/README.md`.
 - `bcoin/`: inline FIM suggestions in textareas and rich editors from a local llama.cpp server, the browser sibling of ecoin. Tests: `node --test bcoin/infill.test.js`, plus `bcoin/e2e.test.mjs` (bcoin and vtelex against a fake `/infill`). See `bcoin/README.md`.
+- `cim/`: GitHub Actions monitoring and dispatch across account profiles. Tests: `node --test cim/*.test.cjs`, plus `cim/e2e.test.mjs`, which mocks GitHub in headless Chrome. See `cim/README.md`.
 
 ## Commands
 

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "cim",
+  "version": "0.1.0",
+  "description": "CI Management",
+  "permissions": ["storage"],
+  "host_permissions": ["https://api.github.com/*"],
+  "action": { "default_title": "Open CI Management" },
+  "minimum_chrome_version": "116",
+  "background": { "service_worker": "background.js" }
+}
