@@ -5,8 +5,6 @@
     const KEY_SEPARATOR = '\u0000';
     const COMPLETED = 'completed';
     const CANCELLED = 'cancelled';
-    const DISPATCH_PENDING = 'Workflow requested—waiting for run to start.';
-    const DISPATCH_UNCERTAIN = 'Request may have been accepted; check GitHub before retrying.';
     const RERUN_PENDING = 'Rerun requested—waiting for new attempt.';
     const RERUN_UNCERTAIN = 'Request may have been accepted; check GitHub before retrying.';
     const RunState = globalThis.CimRunState || null;
