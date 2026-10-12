@@ -41,6 +41,6 @@ jobs:
             echo "$tag is already released"
             exit 0
           fi
-          (cd cim && zip -q -r ../cim.zip manifest.json ./*.js ./*.html ./*.css vendor -x '*.test.js' '*.test.cjs' '*.test.mjs')
+          (cd cim && zip -q -r ../cim.zip manifest.json ./*.js ./*.html ./*.css ./*.svg vendor -x '*.test.js' '*.test.cjs' '*.test.mjs')
           gh release create "$tag" cim.zip --target "$GITHUB_SHA" --title "cim $version" \
             --notes "Unzip and load unpacked in brave://extensions. See cim/README.md."

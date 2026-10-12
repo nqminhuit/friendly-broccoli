@@ -200,6 +200,26 @@ after(async () => {
     try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* Leave cleanup to the OS. */ }
 });
 
+test('dashboard favicon loads from the extension without external resources', { skip: !CHROME && 'Chrome not found' }, async () => {
+    await waitFor(`document.readyState === 'complete'`);
+    const icon = await evaluate(`(async () => {
+        const link = document.querySelector('link[rel~="icon"]');
+        if (!link) return null;
+        const image = new Image(); image.src = link.href; await image.decode();
+        const canvas = document.createElement('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+        const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        let foregroundPixels = 0;
+        for (let index = 0; index < pixels.length; index += 4) if (pixels[index] === 255 && pixels[index + 1] === 255 && pixels[index + 2] === 255 && pixels[index + 3] === 255) foregroundPixels++;
+        return {url:link.href,expectedUrl:chrome.runtime.getURL('favicon.svg'),type:link.type,width:image.naturalWidth,height:image.naturalHeight,foregroundPixels};
+    })()`);
+    assert.ok(icon, 'dashboard declares a favicon');
+    assert.equal(icon.url, icon.expectedUrl);
+    assert.equal(icon.type, 'image/svg+xml');
+    assert.deepEqual([icon.width, icon.height], [64, 64]);
+    assert.ok(icon.foregroundPixels > 100, 'favicon renders a visible white glyph');
+});
+
 test('profiles route their own PATs, filter identity, paginate without rewind, and pause when hidden', { skip: !CHROME && 'Chrome not found' }, async () => {
     await waitFor(`document.querySelector('#setup-empty') && !document.querySelector('#setup-empty').hidden`);
     await evaluate(`document.querySelector('#setup-open').click()`);
