@@ -10,12 +10,15 @@
   <script src="api.js" defer></script>
   <script src="run-state.js" defer></script>
   <script src="monitor.js" defer></script>
+  <script src="vendor/js-yaml.umd.min.js" defer></script>
+  <script src="workflow-schema.js" defer></script>
+  <script src="dispatch.js" defer></script>
   <script src="dashboard.js" defer></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="dashboard.html" aria-label="cim dashboard"><span class="brand-mark">c</span><span>cim <small>CI MANAGEMENT</small></span></a>
-    <div class="header-actions"><span id="monitor-label" class="monitor-label">Monitoring paused</span><button id="refresh" class="button quiet" type="button">Refresh</button><button id="settings-open" class="button primary" type="button">Settings</button></div>
+    <div class="header-actions"><span id="monitor-label" class="monitor-label">Monitoring paused</span><button id="new-run" class="button primary" type="button">New run</button><button id="refresh" class="button quiet" type="button">Refresh</button><button id="settings-open" class="button primary" type="button">Settings</button></div>
   </header>
   <main>
     <section class="intro"><div><p class="eyebrow">YOUR DELIVERY OVERVIEW</p><h1>Workflow runs</h1><p class="subhead">A focused view of GitHub Actions across your repositories and accounts.</p></div><div id="summary" class="summary" aria-live="polite"></div></section>
@@ -37,6 +40,23 @@
       <div class="token-warning">Use a fine-grained token with Actions: read access for monitoring. Rerun controls require Actions: write permission on that repository.</div>
       <div id="settings-message" class="settings-message" role="status" aria-live="polite"></div>
       <p class="help">Opening a private run uses your browser’s GitHub web session, not this PAT; switch GitHub accounts there if needed.</p><div class="dialog-actions"><button id="forget-token" class="button danger" type="button">Forget token</button><button id="profile-delete" class="button danger" type="button">Remove profile</button><span class="spacer"></span><button id="test-access" class="button quiet" type="button">Test access</button><button id="save-settings" class="button primary" type="submit">Save</button></div>
+    </form>
+  </dialog>
+  <dialog id="dispatch-dialog" aria-labelledby="dispatch-title">
+    <form id="dispatch-form" novalidate>
+      <div class="dialog-head"><div><p class="eyebrow">START WORKFLOW</p><h2 id="dispatch-title">New run</h2></div><button id="dispatch-close" class="icon-button" type="button" aria-label="Close new run">×</button></div>
+      <p class="help">Manual workflows only: the selected workflow must declare <code>workflow_dispatch</code> on its default branch. Forms reflect the selected ref’s YAML.</p>
+      <label class="field-label" for="dispatch-profile">Connection profile</label><select id="dispatch-profile"></select>
+      <label class="field-label" for="dispatch-repo">Repository</label><select id="dispatch-repo"></select>
+      <label class="field-label" for="dispatch-workflow">Workflow</label><select id="dispatch-workflow"></select>
+      <label class="field-label" for="dispatch-ref">Branch or tag ref</label>
+      <div class="dispatch-ref-row"><input id="dispatch-ref" type="text" maxlength="255" autocomplete="off" placeholder="main" spellcheck="false"><button id="dispatch-load" class="button quiet" type="button">Load inputs</button></div>
+      <p id="dispatch-schema-note" class="help" hidden></p>
+      <div id="dispatch-inputs" class="dispatch-inputs" aria-live="polite"></div>
+      <div class="token-warning">Starting a workflow uses this profile’s workflow privileges and may incur Actions usage charges. Requires Actions: read/write plus Contents: read for forms.</div>
+      <div id="dispatch-status" class="dispatch-status" role="status" aria-live="polite" hidden></div>
+      <div id="dispatch-result" class="dispatch-result" aria-live="polite"></div>
+      <div class="dialog-actions"><span class="spacer"></span><button id="dispatch-start" class="button primary" type="submit" disabled>Start workflow</button></div>
     </form>
   </dialog>
 </body>
