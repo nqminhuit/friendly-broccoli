@@ -312,6 +312,42 @@ test('run summaries stay compact, truncate safely, and disclose details accessib
     await send('Emulation.clearDeviceMetricsOverride', {}, pageSession);
 });
 
+test('run hover and focus highlights preserve layout in both themes and respect reduced motion', { skip: !CHROME && 'Chrome not found' }, async () => {
+    const rowExpression = "document.querySelector('#run-list .run-card')";
+    const movePointer = (x, y) => send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, pageSession);
+    const settled = () => waitFor(`${rowExpression}.getAnimations().length === 0`);
+    const appearance = () => evaluate(`(() => { const row=${rowExpression}, style=getComputedStyle(row), rect=row.getBoundingClientRect(); return {background:style.backgroundColor,border:style.borderTopColor,width:rect.width,height:rect.height,left:rect.left,top:rect.top,status:getComputedStyle(row.querySelector('.status-icon')).backgroundColor}; })()`);
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, pageSession);
+    try {
+        for (const theme of ['light', 'dark']) {
+            await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] }, pageSession);
+            await evaluate('document.activeElement?.blur()');
+            await movePointer(0, 0);
+            await settled();
+            const normal = await appearance();
+            await movePointer(normal.left + 100, normal.top + normal.height / 2);
+            await settled();
+            const hovered = await appearance();
+            assert.notEqual(hovered.background, normal.background, `${theme} row background highlights on hover`);
+            assert.notEqual(hovered.border, normal.border, `${theme} row border highlights on hover`);
+            assert.deepEqual([hovered.width, hovered.height, hovered.status], [normal.width, normal.height, normal.status], 'highlight does not shift rows or recolor their status');
+            await movePointer(0, 0);
+            await evaluate(`${rowExpression}.querySelector('.details-toggle').focus()`);
+            await settled();
+            const focused = await appearance();
+            assert.equal(focused.background, hovered.background, 'keyboard focus receives the same row highlight');
+            assert.equal(focused.border, hovered.border);
+        }
+        await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] }, pageSession);
+        assert.equal(await evaluate(`getComputedStyle(${rowExpression}).transitionDuration`), '0s', 'reduced motion disables row transitions');
+    } finally {
+        await evaluate('document.activeElement?.blur()');
+        await movePointer(0, 0);
+        await send('Emulation.setEmulatedMedia', { features: [] }, pageSession);
+        await send('Emulation.clearDeviceMetricsOverride', {}, pageSession);
+    }
+});
+
 // Browser tests share one dashboard page: later tests reuse the Personal/Work
 // profiles and rotated PATs created above. Toolbar discovery stays independent
 // of that profile state and never reads tab URLs.
