@@ -254,19 +254,31 @@
         const warning = `Request ${failedOnly ? 'failed jobs' : 'all jobs'} to rerun?\n\n${profile.name} · ${target.repo}\n${target.run.name || target.run.display_title || 'Workflow run'} · ${target.run.head_branch || 'ref unavailable'} · ${target.run.head_sha || 'commit unavailable'}\n\nGitHub reruns use the original actor's workflow privileges and may incur Actions usage charges.`;
         if (!confirm(warning)) return;
         const entry = clientFor(profile), controller = new AbortController(), op = { profileId: target.profileId, controller };
-        const valid = () => state.clients.get(target.profileId) === entry && entry.token === target.token && !controller.signal.aborted;
+        // Ownership (credential/target) is separate from signal cancellation so a sent POST stays uncertain.
+        const owned = () => state.clients.get(target.profileId) === entry && entry.token === target.token;
+        const PROFILE_CHANGED = 'The selected profile changed. Reopen the run before retrying.';
         detail.rerunBusy = true; detail.pendingAttempt = target.attempt; state.operations.add(op); render();
         try {
-            if (!valid()) throw new Error('The selected profile changed. Reopen the run before retrying.');
+            if (!owned()) throw new Error(PROFILE_CHANGED);
             await entry.client.rerun(target.repo.split('/')[0], target.repo.split('/')[1], target.runId, failedOnly, { signal: controller.signal });
-            if (!valid()) return;
+            if (!owned()) return;
+            if (controller.signal.aborted) {
+                // Confirmed send raced with hide: keep uncertain until the user verifies.
+                if (state.details.get(key) === detail) {
+                    detail.rerunBusy = false;
+                    trackPending(key, { profileId: target.profileId, repo: target.repo, runId: target.runId, baseAttempt: target.attempt, token: target.token, ambiguous: true, message: RERUN_UNCERTAIN });
+                    detail.jobs = []; detail.total = 0; detail.loaded = false; detail.stale = false;
+                }
+                return;
+            }
             trackPending(key, { profileId: target.profileId, repo: target.repo, runId: target.runId, baseAttempt: target.attempt, token: target.token, ambiguous: false, message: RERUN_PENDING });
             detail.rerunBusy = false;
             detail.jobs = []; detail.total = 0; detail.loaded = false; detail.stale = false;
             void loadDetails(key, true);
         } catch (error) {
-            if (!valid() && error.message === 'The selected profile changed. Reopen the run before retrying.') { if (state.details.get(key) === detail) { detail.rerunBusy = false; render(); } return; }
-            if (!valid()) return;
+            // Replaced or removed target discards its private UI; unrelated profiles stay owned.
+            if (!owned()) { if (state.details.get(key) === detail) { detail.rerunBusy = false; render(); } return; }
+            if (state.details.get(key) !== detail) return;
             detail.rerunBusy = false;
             if (error.ambiguous) { trackPending(key, { profileId: target.profileId, repo: target.repo, runId: target.runId, baseAttempt: target.attempt, token: target.token, ambiguous: true, message: RERUN_UNCERTAIN }); detail.jobs = []; detail.total = 0; detail.loaded = false; detail.stale = false; }
             else if (error.kind !== CANCELLED) detail.error = error.message;
@@ -480,6 +492,8 @@
                 for (const map of [state.errors, state.latestLinks, state.historyLinks]) for (const key of [...map.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`)) map.delete(key);
                 for (const key of [...state.historyStarted]) if (key.startsWith(`${id}${KEY_SEPARATOR}`)) state.historyStarted.delete(key);
                 for (const key of [...state.details.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`)) state.details.delete(key);
+                // Stale token-tracked reruns never poll again, so drop all of this profile's pending.
+                for (const key of [...state.pendingReruns.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`)) state.pendingReruns.delete(key);
             }
             else if (entry) { const oldRepos = new Set(old.repos.map(repoKey)); const newRepos = new Set(next.repos.map(repoKey)); for (const repo of new Set([...oldRepos, ...newRepos])) if (oldRepos.has(repo) !== newRepos.has(repo)) { clearRepoCache(entry, repo); entry.suspendedRepos.delete(repo); for (const key of [...state.runs.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}${repo}${KEY_SEPARATOR}`)) state.runs.delete(key); for (const key of [...state.details.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}${repo}${KEY_SEPARATOR}`)) state.details.delete(key); state.errors.delete(`${id}${KEY_SEPARATOR}${repo}`); state.latestLinks.delete(`${id}${KEY_SEPARATOR}${repo}`); state.historyLinks.delete(`${id}${KEY_SEPARATOR}${repo}`); state.historyStarted.delete(`${id}${KEY_SEPARATOR}${repo}`); } entry.repos = new Set(next.repos.map(repoKey)); }
             for (const key of [...state.runs.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key.startsWith(`${profileKey(id, repo)}${KEY_SEPARATOR}`)))) state.runs.delete(key);

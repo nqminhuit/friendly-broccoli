@@ -70,15 +70,29 @@ before(async () => {
       globalThis.__cimRequests = [];
       globalThis.__slowSignals = [];
       globalThis.__rerunAttempt = 1;
+      globalThis.__workAttempt = 1;
+      globalThis.__rerunHang = false;
+      globalThis.__rerunDeny = false;
+      const allowedAuth = ['Bearer e2e-token','Bearer work-pat','Bearer expired-pat','Bearer e2e-rotated','Bearer work-rotated'];
+      const isWorkAuth = (auth) => auth === 'Bearer work-pat' || auth === 'Bearer work-rotated';
+      const isE2eAuth = (auth) => auth === 'Bearer e2e-token' || auth === 'Bearer e2e-rotated';
       globalThis.fetch = async (input, options = {}) => {
         const url = String(input), auth = options.headers?.Authorization;
         globalThis.__cimRequests.push({ url, auth, method: options.method || 'GET', body: options.body || '' });
         if (!url.startsWith('https://api.github.com/')) throw new Error('Blocked unexpected network URL');
-        if (!['Bearer e2e-token','Bearer work-pat','Bearer expired-pat'].includes(auth)) throw new Error('Unexpected or missing token');
+        if (!allowedAuth.includes(auth)) throw new Error('Unexpected or missing token');
         if (auth === 'Bearer expired-pat') return new Response('{"message":"Bad credentials"}', {status:401});
         if (url.includes('/repos/acme/slow/')) { globalThis.__slowSignals.push(options.signal); await new Promise(resolve=>setTimeout(resolve,700)); return new Response(JSON.stringify({total_count:1,workflow_runs:[{id:90,name:'Slow',display_title:'Slow private result',status:'completed',conclusion:'success',created_at:'2025-01-01T00:00:00Z'}]}),{status:200,headers:{'content-type':'application/json'}}); }
         if (url.includes('/repos/acme/forbidden/')) return new Response('{"message":"Not Found"}', {status:404});
-        if (url.endsWith('/actions/runs/1/rerun') || url.endsWith('/actions/runs/1/rerun-failed-jobs')) { setTimeout(()=>globalThis.__rerunAttempt++,600); return new Response(null, {status:201}); }
+        if (url.includes('/rerun') || url.includes('/rerun-failed-jobs')) {
+          if (globalThis.__rerunDeny) return new Response('{"message":"Resource not accessible"}', {status:403,headers:{'content-type':'application/json'}});
+          if (globalThis.__rerunHang) { globalThis.__slowSignals.push(options.signal); await new Promise((_,reject)=>{ if (options.signal?.aborted) reject(new Error('aborted after send')); else options.signal?.addEventListener('abort',()=>reject(new Error('aborted after send')),{once:true}); }); }
+          if (url.includes('/actions/runs/20/')) { setTimeout(()=>globalThis.__workAttempt++,600); return new Response(null, {status:201}); }
+          if (url.includes('/actions/runs/1/')) { setTimeout(()=>globalThis.__rerunAttempt++,600); return new Response(null, {status:201}); }
+          setTimeout(()=>globalThis.__rerunAttempt++,600); return new Response(null, {status:201});
+        }
+        if (url.endsWith('/actions/runs/20') && !url.includes('/jobs')) return new Response(JSON.stringify({id:20,run_attempt:globalThis.__workAttempt,status:'completed',conclusion:globalThis.__workAttempt === 1 ? 'action_required' : 'success',name:'Work Build',head_branch:'work',head_sha:'def456',created_at:new Date(Date.now()-86400000).toISOString()}), {status:200,headers:{'content-type':'application/json','etag':'"run-20-'+globalThis.__workAttempt+'"'}});
+        if (url.includes('/actions/runs/20/') && url.includes('/jobs')) return new Response(JSON.stringify({total_count:0,jobs:[]}), {status:200,headers:{'content-type':'application/json'}});
         if (url.endsWith('/actions/runs/1') && !url.includes('/jobs')) return new Response(JSON.stringify({id:1,run_attempt:globalThis.__rerunAttempt,status:'completed',conclusion:globalThis.__rerunAttempt === 1 ? 'failure' : 'success',name:'Build',head_branch:'main',head_sha:'abc123',created_at:new Date(Date.now()-86400000).toISOString()}), {status:200,headers:{'content-type':'application/json','etag':'"run-'+globalThis.__rerunAttempt+'"'}});
         if (url.includes('/actions/runs/1/attempts/') && url.includes('/jobs')) {
           const page = Number(new URL(url).searchParams.get('page') || '1'), headers = new Headers({'content-type':'application/json'});
@@ -88,13 +102,13 @@ before(async () => {
         }
          const page = Number(new URL(url).searchParams.get('page') || '1');
          if (page === 4) { globalThis.__slowSignals.push(options.signal); await new Promise(resolve=>setTimeout(resolve,700)); }
-         const runId = auth === 'Bearer work-pat' ? 20 : page + 2;
-         const runs = page > 1 ? [{id:runId,name:'Deploy',display_title:'Older page '+page,head_branch:'main',status:'completed',conclusion:page===2?'success':'cancelled',run_number:runId,run_attempt:1,event:'push',actor:{login:'ci'},created_at:'2025-01-01T00:00:00Z',updated_at:'2025-01-01T00:01:00Z',html_url:'https://github.com/acme/app/actions/runs/'+runId}] : auth === 'Bearer work-pat' ? [{id:20,name:'Work Build',display_title:'Work-only result',head_branch:'work',status:'completed',conclusion:'action_required',run_number:20,run_attempt:1,event:'push',actor:{login:'worker'},created_at:'2025-03-01T00:00:00Z',updated_at:'2025-03-01T00:01:00Z',html_url:'https://github.com/acme/app/actions/runs/20'}] : [
+         const runId = isWorkAuth(auth) ? 20 : page + 2;
+         const runs = page > 1 ? [{id:runId,name:'Deploy',display_title:'Older page '+page,head_branch:'main',status:'completed',conclusion:page===2?'success':'cancelled',run_number:runId,run_attempt:1,event:'push',actor:{login:'ci'},created_at:'2025-01-01T00:00:00Z',updated_at:'2025-01-01T00:01:00Z',html_url:'https://github.com/acme/app/actions/runs/'+runId}] : isWorkAuth(auth) ? [{id:20,name:'Work Build',display_title:'Work-only result',head_branch:'work',status:'completed',conclusion:'action_required',run_number:20,run_attempt:1,event:'push',actor:{login:'worker'},created_at:'2025-03-01T00:00:00Z',updated_at:'2025-03-01T00:01:00Z',html_url:'https://github.com/acme/app/actions/runs/20'}] : [
           {id:1,name:'Build',display_title:'Compile app',head_branch:'main',status:'completed',conclusion:'success',run_number:12,run_attempt:1,event:'push',actor:{login:'alice'},created_at:'2025-02-01T00:00:00Z',updated_at:'2025-02-01T00:02:00Z',run_started_at:'2025-02-01T00:00:00Z',html_url:'https://github.com/acme/app/actions/runs/1'},
           {id:2,name:'Deploy',display_title:'Deploy to preview',head_branch:'feature/demo',status:'in_progress',conclusion:null,run_number:13,run_attempt:2,event:'workflow_dispatch',actor:{login:'bob'},created_at:'2025-02-02T00:00:00Z',updated_at:'2025-02-02T00:01:00Z',html_url:'https://evil.example/steal'}
         ];
         const headers = new Headers({'content-type':'application/json','etag':'"fixture"'});
-         if (page < 4 && auth === 'Bearer e2e-token') headers.set('Link', '<https://api.github.com/repos/acme/app/actions/runs?per_page=30&page='+(page+1)+'>; rel="next"');
+         if (page < 4 && isE2eAuth(auth)) headers.set('Link', '<https://api.github.com/repos/acme/app/actions/runs?per_page=30&page='+(page+1)+'>; rel="next"');
         if (options.headers?.['If-None-Match']) return new Response(null, {status:304,headers});
         return new Response(JSON.stringify({total_count:3,workflow_runs:runs}), {status:200,headers});
       };
@@ -216,4 +230,78 @@ test('expanded details stay text-safe and a failed-only rerun waits for a fresh 
     assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).textContent.includes('failure')`), false);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.endsWith('/rerun-failed-jobs')).length`), 1);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Rerun requested')`), false);
+});
+
+test('aborted sent POST stays uncertain with a single request until acknowledged', { skip: !CHROME && 'Chrome not found' }, async () => {
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true})); window.confirm=()=>true; globalThis.__rerunHang=false; globalThis.__rerunDeny=false;`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
+    await evaluate(`var cardA=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tA=cardA?.querySelector('.details-toggle'); if(tA&&tA.textContent.includes('Show')) tA.click();`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Compile <script>')`);
+    const before = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`);
+    await evaluate(`globalThis.__rerunHang=true; window.confirm=()=>true; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').click();`);
+    await waitFor(`globalThis.__cimRequests.filter(x=>x.method==='POST').length > ${before}`);
+    const during = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'}); document.dispatchEvent(new Event('visibilitychange'))`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('may have been accepted')`);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Rerun uncertain')`), true);
+    assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelectorAll('.rerun-controls button')[0].disabled && [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelectorAll('.rerun-controls button')[1].disabled`), true);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`), during);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange'))`);
+    await sleep(500);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`), during);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('may have been accepted')`), true);
+    await evaluate(`globalThis.__rerunHang=false; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelectorAll('.rerun-controls button'); [...document.querySelectorAll('.rerun-controls button')].find(b=>b.textContent.includes('I checked GitHub')).click();`);
+    await waitFor(`!document.querySelector('#run-list').textContent.includes('may have been accepted')`);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`), during);
+    assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').disabled`), false);
+});
+
+test('queued rerun hidden before send leaves no request and no pending', { skip: !CHROME && 'Chrome not found' }, async () => {
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); window.confirm=()=>true; globalThis.__rerunHang=false; globalThis.__rerunDeny=true;`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
+    await evaluate(`var cardB=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tB=cardB?.querySelector('.details-toggle'); if(tB&&tB.textContent.includes('Show')) tB.click();`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Re-run all jobs')`);
+    await evaluate(`window.confirm=()=>true; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').click();`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('denied the rerun')`);
+    const afterDeny = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`);
+    await evaluate(`globalThis.__rerunDeny=false; window.confirm=()=>true; var cardC=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); cardC.querySelector('.rerun-controls button').click(); Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'}); document.dispatchEvent(new Event('visibilitychange'));`);
+    await sleep(500);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`), afterDeny);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('may have been accepted')`), false);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Rerun requested')`), false);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange'))`);
+    await sleep(400);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`), afterDeny);
+    assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').disabled`), false);
+});
+
+test('replacing a PAT clears only that profile pending and allows a fresh rerun', { skip: !CHROME && 'Chrome not found' }, async () => {
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true})); window.confirm=()=>true; globalThis.__rerunHang=false; globalThis.__rerunDeny=false;`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app') && document.querySelector('#run-list').textContent.includes('Work-only result')`);
+    await evaluate(`for (var textD of ['Compile app','Work-only result']) { var cardD=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes(textD)); var tD=cardD?.querySelector('.details-toggle'); if(tD&&tD.textContent.includes('Show')) tD.click(); }`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Re-run all jobs')`);
+    const postBase = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`);
+    await evaluate(`window.confirm=()=>true; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').click();`);
+    await waitFor(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).textContent.includes('Rerun requested')`);
+    await evaluate(`window.confirm=()=>true; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Work-only result')).querySelector('.rerun-controls button').click();`);
+    await waitFor(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Work-only result')).textContent.includes('Rerun requested')`);
+    const bothPending = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`);
+    assert.equal(bothPending, postBase + 2);
+    const personalId = await evaluate(`[...document.querySelector('#profile-filter').options].find(o=>o.text==='Personal').value`);
+    await evaluate(`document.querySelector('#settings-open').click(); document.querySelector('#profile-select').value='${personalId}'; document.querySelector('#profile-select').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await waitFor(`document.querySelector('#settings-dialog').open && document.querySelector('#profile-name').value.includes('Personal')`);
+    await evaluate(`document.querySelector('#token').value='e2e-rotated'; document.querySelector('#settings-form').requestSubmit()`);
+    await waitFor(`globalThis.__cimRequests.some(x=>x.auth==='Bearer e2e-rotated')`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
+    await evaluate(`var cardE=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tE=cardE?.querySelector('.details-toggle'); if(tE&&tE.textContent.includes('Show')) tE.click();`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Compile <script>') || document.querySelector('#run-list').textContent.includes('2 of 2 jobs loaded') || document.querySelector('#run-list').textContent.includes('No jobs') || document.querySelector('#run-list').textContent.includes('Re-run all jobs')`);
+    assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).textContent.includes('Rerun requested')`), false);
+    assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').disabled`), false);
+    assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Work-only result')).textContent.includes('Rerun requested')`), true);
+    const beforeFresh = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`);
+    await evaluate(`window.confirm=()=>true; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').click();`);
+    await waitFor(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.auth==='Bearer e2e-rotated').length > 0`);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`), beforeFresh + 1);
+    assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).textContent.includes('Rerun requested')`), true);
+    assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Work-only result')).textContent.includes('Rerun requested')`), true);
 });

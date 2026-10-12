@@ -417,3 +417,30 @@ test('run metadata merges monotonically and only real advances invalidate jobs',
     assert.equal(isAttemptAdvance(1, 1), false);
     assert.equal(isAttemptAdvance(null, 1), true);
 });
+
+test('unknown attempts never wipe a known run attempt', () => {
+    assert.equal(attemptNumber(null), null);
+    assert.equal(attemptNumber(undefined), null);
+    assert.equal(attemptNumber(''), null);
+    assert.equal(attemptNumber('   '), null);
+    assert.equal(attemptNumber(0), null);
+    assert.equal(attemptNumber(-1), null);
+    assert.equal(attemptNumber(1.5), null);
+    assert.equal(attemptNumber('2'), 2);
+    assert.equal(isAttemptAdvance(1, null), false);
+    assert.equal(isAttemptAdvance(null, null), false);
+    assert.equal(isAttemptAdvance(undefined, 1), true);
+    const known = { id: 1, run_attempt: 2, status: 'completed', conclusion: 'failure' };
+    for (const unknown of [undefined, null, '', '   ', 0]) {
+        const incoming = { id: 1, status: 'completed', conclusion: 'success', run_attempt: unknown };
+        const merged = mergeRunMetadata(known, incoming);
+        assert.equal(merged.downgraded, false);
+        assert.equal(merged.advanced, false);
+        assert.equal(merged.run.run_attempt, 2);
+        assert.equal(merged.run.conclusion, 'success');
+    }
+    // Missing attempt key also preserves the known number while merging other fields.
+    const missing = mergeRunMetadata(known, { id: 1, status: 'completed' });
+    assert.equal(missing.run.run_attempt, 2);
+    assert.equal(mergeRunMetadata({ id: 1, run_attempt: 1 }, { id: 1, run_attempt: 2 }).advanced, true);
+});
