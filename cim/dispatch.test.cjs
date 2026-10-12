@@ -201,3 +201,55 @@ test('dispatch clears run-feed caches for its repository only', async () => {
     assert.equal(remaining.length, 1);
     assert.ok(remaining[0].includes('/repos/a/other/'));
 });
+
+test('real repository workflows accept legacy numeric defaults as text', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const expected = {
+        'alacritty.yml': [['version', 'string', 'v0.17.0'], ['debian_version', 'string', '13']],
+        'emacs.yml': [['version', 'string', '31.1'], ['tree_sitter_version', 'string', 'v0.26.13']],
+        'fd-container.yml': [['version', 'string', 'v10.4.2'], ['debian_version', 'string', '13']],
+        'fd.yml': [['version', 'string', 'v10.4.2'], ['ubuntu-version', 'string', '26.04']],
+        'ffmpeg.yml': [['version', 'string', 'n7.0.2'], ['debian_version', 'string', '13']],
+        'ripgrep-container.yml': [['version', 'string', '15.2.0'], ['debian_version', 'string', '13']],
+        'ripgrep.yml': [['version', 'string', '15.2.0'], ['ubuntu-version', 'string', '26.04']],
+        'tmux.yml': [['version', 'choice', '3.7c'], ['debian_version', 'string', '12']],
+    };
+    for (const [file, inputs] of Object.entries(expected)) {
+        const text = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', file), 'utf8');
+        const parsed = Schema.parseWorkflowYaml(text);
+        assert.equal(parsed.dispatchable, true, file);
+        assert.deepEqual(parsed.inputs.map((item) => [item.name, item.type, item.default]), inputs, file);
+    }
+});
+
+test('string defaults coerce finite scalars and typed meanings are preserved', () => {
+    const legacy = (def) => Schema.parseWorkflowYaml(`on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: x\n        default: ${def}`).inputs[0];
+    assert.equal(legacy('13').default, '13');
+    assert.equal(legacy('26.04').default, '26.04');
+    assert.equal(legacy('true').default, 'true');
+    assert.equal(Schema.parseWorkflowYaml('on:\n  workflow_dispatch:\n    inputs:\n      v:\n        type: boolean\n        default: true').inputs[0].default, true);
+    assert.equal(Schema.parseWorkflowYaml('on:\n  workflow_dispatch:\n    inputs:\n      v:\n        type: number\n        default: 0').inputs[0].default, 0);
+    assert.equal(Schema.parseWorkflowYaml('on:\n  workflow_dispatch:\n    inputs:\n      v:\n        type: boolean\n        default: "true"').dispatchable, false);
+    assert.equal(Schema.parseWorkflowYaml('on:\n  workflow_dispatch:\n    inputs:\n      v:\n        type: number\n        default: "12"').dispatchable, false);
+    assert.equal(Schema.parseWorkflowYaml('on:\n  workflow_dispatch:\n    inputs:\n      v:\n        type: string\n        default: {a: 1}').dispatchable, false);
+});
+
+test('choice accepts harmless option strings and numeric scalars uniformly', () => {
+    const yaml = (options, def) => ['on:', '  workflow_dispatch:', '    inputs:', '      v:', '        type: choice', '        options:', ...options.map((o) => `          - ${o}`), `        default: ${def}`].join('\n');
+    assert.equal(Schema.parseWorkflowYaml(yaml(['constructor', 'prod'], 'constructor')).dispatchable, true);
+    const numeric = Schema.parseWorkflowYaml(yaml(['12', '13'], '12'));
+    assert.equal(numeric.dispatchable, true);
+    assert.deepEqual(numeric.inputs[0].options, ['12', '13']);
+    assert.equal(Schema.parseWorkflowYaml(yaml(['a'], 'b')).dispatchable, false);
+});
+
+test('required numbers reject whitespace booleans and objects without coercing zero', () => {
+    const schema = [{ name: 'n', type: 'number', required: true }];
+    assert.equal(Schema.validateDispatchValues(schema, { n: 0 }).ok, true);
+    for (const bad of ['   ', true, false, {}, [], 'oops']) {
+        assert.equal(Schema.validateDispatchValues(schema, { n: bad }).ok, false, JSON.stringify(bad));
+    }
+    assert.equal(Schema.validateDispatchValues([{ name: 'n', type: 'number', required: false }], { n: '   ' }).ok, true);
+    assert.equal(Schema.validateDispatchValues([{ name: 'm', type: 'string', required: false }], { m: 'a\nb  ' }).inputs.m, 'a\nb  ');
+});

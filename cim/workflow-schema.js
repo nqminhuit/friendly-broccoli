@@ -75,6 +75,18 @@
         return value.length > MAX_DESCRIPTION_CHARS ? value.slice(0, MAX_DESCRIPTION_CHARS) : value;
     }
 
+    function absent(value) {
+        return value === undefined || value === null;
+    }
+
+    // GitHub coerces finite numeric/boolean YAML scalars to text for string inputs.
+    function coerceStringDefault(value) {
+        if (typeof value === 'string') return { ok: true, value };
+        if (typeof value === 'number' && Number.isFinite(value)) return { ok: true, value: String(value) };
+        if (typeof value === 'boolean') return { ok: true, value: String(value) };
+        return { ok: false };
+    }
+
     function extractInputs(dispatchConfig) {
         if (dispatchConfig === null || dispatchConfig === undefined) return { ok: true, inputs: [] };
         if (!isPlainMapping(dispatchConfig)) return { ok: false, reason: 'This workflow’s workflow_dispatch trigger is malformed.' };
@@ -99,12 +111,24 @@
             const type = typeRaw === undefined || typeRaw === null ? 'string' : typeRaw;
             if (typeof type !== 'string' || !SUPPORTED_TYPES.includes(type)) return { ok: false, reason: `Unsupported type for input ${name}.` };
             const defaultValue = own(config, 'default');
-            if (defaultValue !== undefined && (typeof defaultValue === 'object' && defaultValue !== null)) return { ok: false, reason: `Unsupported default for input ${name}.` };
+            if (defaultValue !== undefined && defaultValue !== null && (typeof defaultValue === 'object')) return { ok: false, reason: `Unsupported default for input ${name}.` };
             if (typeof defaultValue === 'number' && !Number.isFinite(defaultValue)) return { ok: false, reason: `Unsupported default for input ${name}.` };
-            if (type === 'string' && defaultValue !== undefined && typeof defaultValue !== 'string') return { ok: false, reason: `Unsupported default for input ${name}.` };
-            if (type === 'environment' && defaultValue !== undefined && typeof defaultValue !== 'string') return { ok: false, reason: `Unsupported default for input ${name}.` };
-            if (type === 'boolean' && defaultValue !== undefined && typeof defaultValue !== 'boolean') return { ok: false, reason: `Unsupported default for input ${name}.` };
-            if (type === 'number' && defaultValue !== undefined && (typeof defaultValue !== 'number' || !Number.isFinite(defaultValue))) return { ok: false, reason: `Unsupported default for input ${name}.` };
+            // Reject unknown declaration keys to avoid silent YAML object values.
+            for (const key of Object.keys(config)) {
+                if (!['description', 'required', 'default', 'type', 'options'].includes(key)) return { ok: false, reason: `Unsupported field for input ${name}: ${key}.` };
+            }
+            if (type === 'string' || type === 'environment' || typeRaw === undefined || typeRaw === null) {
+                if (!absent(defaultValue)) {
+                    const coerced = coerceStringDefault(defaultValue);
+                    if (!coerced.ok) return { ok: false, reason: `Unsupported default for input ${name}.` };
+                    inputs.push({ name, type, description, required, default: coerced.value, options: undefined });
+                    continue;
+                }
+                inputs.push({ name, type, description, required, default: undefined, options: undefined });
+                continue;
+            }
+            if (type === 'boolean' && !absent(defaultValue) && typeof defaultValue !== 'boolean') return { ok: false, reason: `Unsupported default for input ${name}.` };
+            if (type === 'number' && !absent(defaultValue) && (typeof defaultValue !== 'number' || !Number.isFinite(defaultValue))) return { ok: false, reason: `Unsupported default for input ${name}.` };
             let options;
             if (type === 'choice') {
                 const rawOptions = own(config, 'options');
@@ -112,19 +136,24 @@
                 options = [];
                 const seen = new Set();
                 for (const option of rawOptions) {
-                    if (typeof option !== 'string' || !option || option.length > MAX_OPTION_CHARS) return { ok: false, reason: `Unsupported option for input ${name}.` };
-                    if (PROTOTYPE_KEYS.has(option)) return { ok: false, reason: `Unsupported option for input ${name}.` };
-                    if (!seen.has(option)) { seen.add(option); options.push(option); }
+                    // Option values are array items, never dictionary keys: coerce
+                    // finite scalars to text instead of prototype-blocking them.
+                    const coerced = coerceStringDefault(option);
+                    if (!coerced.ok || !coerced.value || coerced.value.length > MAX_OPTION_CHARS) return { ok: false, reason: `Unsupported option for input ${name}.` };
+                    if (!seen.has(coerced.value)) { seen.add(coerced.value); options.push(coerced.value); }
                 }
                 if (!options.length) return { ok: false, reason: `Choice input ${name} needs 1–${MAX_OPTIONS} options.` };
-                if (defaultValue !== undefined && typeof defaultValue !== 'string') return { ok: false, reason: `Unsupported default for input ${name}.` };
-                if (typeof defaultValue === 'string' && !seen.has(defaultValue)) return { ok: false, reason: `Default for input ${name} must be one of its options.` };
+                if (!absent(defaultValue)) {
+                    const coerced = coerceStringDefault(defaultValue);
+                    if (!coerced.ok) return { ok: false, reason: `Unsupported default for input ${name}.` };
+                    if (!seen.has(coerced.value)) return { ok: false, reason: `Default for input ${name} must be one of its options.` };
+                    inputs.push({ name, type, description, required, default: coerced.value, options });
+                } else {
+                    inputs.push({ name, type, description, required, default: undefined, options });
+                }
+                continue;
             } else if (own(config, 'options') !== undefined) return { ok: false, reason: `Unsupported options for input ${name}.` };
-            // Reject unknown declaration keys to avoid silent YAML object values.
-            for (const key of Object.keys(config)) {
-                if (!['description', 'required', 'default', 'type', 'options'].includes(key)) return { ok: false, reason: `Unsupported field for input ${name}: ${key}.` };
-            }
-            inputs.push({ name, type, description, required, default: defaultValue, options });
+            inputs.push({ name, type, description, required, default: absent(defaultValue) ? undefined : defaultValue, options });
         }
         return { ok: true, inputs };
     }
@@ -181,6 +210,13 @@
             } else if (input.type === 'number') {
                 if (raw === '' && !input.required) continue;
                 if (raw === '' && input.required) { errors[input.name] = 'This input is required.'; continue; }
+                // Booleans/objects/whitespace never coerce: Number('   ') is 0
+                // and must not become a genuine zero.
+                if (typeof raw === 'boolean' || (typeof raw === 'object' && raw !== null)) { errors[input.name] = 'Enter a finite number.'; continue; }
+                if (typeof raw === 'string' && raw.trim() === '') {
+                    if (input.required) errors[input.name] = 'This input is required.';
+                    continue;
+                }
                 const numeric = typeof raw === 'number' ? raw : Number(String(raw));
                 if (!Number.isFinite(numeric)) { errors[input.name] = 'Enter a finite number.'; continue; }
                 // Required zero is valid; check presence, not truthiness.

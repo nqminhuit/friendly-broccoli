@@ -30,7 +30,6 @@ async function waitFor(expression, timeout = 7000) {
         await sleep(50);
     }
     let page = 'unavailable';
-    try { page = await evaluate(`location.href + ' | ' + document.title + ' | ' + document.body?.innerText + ' | scripts=' + typeof CimSettings + '/' + typeof CimApi + '/' + typeof CimMonitor + '/' + typeof chrome + ' | hidden=' + document.querySelector('#setup-empty')?.hidden + ' | requests=' + JSON.stringify(globalThis.__cimRequests) + ' | errors=' + document.querySelector('#repo-errors')?.textContent`); } catch (error) { page = String(error); }
     throw new Error(`Timed out waiting for ${expression}; page=${page}`);
 }
 
@@ -75,6 +74,8 @@ before(async () => {
       globalThis.__rerunDeny = false;
       globalThis.__dispatchHang = false;
       globalThis.__dispatchDenyContents = false;
+      globalThis.__dispatchFlaky = false;
+      globalThis.__dispatchFlakyUsed = false;
       globalThis.__dispatchRunId = 77;
       const allowedAuth = ['Bearer e2e-token','Bearer work-pat','Bearer expired-pat','Bearer e2e-rotated','Bearer work-rotated'];
       const isWorkAuth = (auth) => auth === 'Bearer work-pat' || auth === 'Bearer work-rotated';
@@ -126,7 +127,10 @@ before(async () => {
           const id = globalThis.__dispatchRunId;
           return new Response(JSON.stringify({workflow_run_id:id,run_url:'https://api.github.com/repos/acme/app/actions/runs/'+id,html_url:'https://github.com/acme/app/actions/runs/'+id}), {status:200,headers:{'content-type':'application/json'}});
         }
-        if (url.endsWith('/actions/runs/77') && !url.includes('/jobs')) return new Response(JSON.stringify({id:77,run_attempt:1,status:'queued',conclusion:null,name:'CI',display_title:'Dispatched CI',head_branch:'main',head_sha:'abc123',event:'workflow_dispatch',actor:{login:'alice'},created_at:new Date().toISOString(),updated_at:new Date().toISOString(),html_url:'https://github.com/acme/app/actions/runs/77'}), {status:200,headers:{'content-type':'application/json','etag':'"dispatch-77"'}});
+        if (url.endsWith('/actions/runs/77') && !url.includes('/jobs')) {
+          if (globalThis.__dispatchFlaky && !globalThis.__dispatchFlakyUsed) { globalThis.__dispatchFlakyUsed = true; return new Response('{"message":"Not Found"}', {status:404,headers:{'content-type':'application/json'}}); }
+          return new Response(JSON.stringify({id:77,run_attempt:1,status:'queued',conclusion:null,name:'CI',display_title:'Dispatched CI',head_branch:'main',head_sha:'abc123',event:'workflow_dispatch',actor:{login:'alice'},created_at:new Date().toISOString(),updated_at:new Date().toISOString(),html_url:'https://github.com/acme/app/actions/runs/77'}), {status:200,headers:{'content-type':'application/json','etag':'"dispatch-77"'}});
+        }
         if (url.includes('/actions/runs/77/') && url.includes('/jobs')) return new Response(JSON.stringify({total_count:0,jobs:[]}), {status:200,headers:{'content-type':'application/json'}});
          const page = Number(new URL(url).searchParams.get('page') || '1');
          if (page === 4) { globalThis.__slowSignals.push(options.signal); await new Promise(resolve=>setTimeout(resolve,700)); }
@@ -344,22 +348,24 @@ test('new run loads schema defaults validates and pins the exact returned run', 
     assert.equal(await evaluate(`document.querySelector('#dispatch-ref').value`), 'main');
     assert.equal(await evaluate(`[...document.querySelector('#dispatch-workflow').options].some(o=>o.text.includes('cannot start'))`), true);
     await waitFor(`document.querySelector('#dispatch-inputs').textContent.includes('greeting')`);
-    assert.equal(await evaluate(`document.querySelector('#dispatch-inputs input[name=greeting]').value`), 'Hello');
+    assert.equal(await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value`), 'Hello');
+    assert.equal(await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').tagName`), 'TEXTAREA');
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs input[name=flag]').checked`), false);
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs input[name=count]').value`), '0');
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs select[name=env_choice]').value`), 'dev');
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs').textContent.includes('<script>')`), true);
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs script') === null`), true);
     const postBase = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`);
-    await evaluate(`document.querySelector('#dispatch-inputs input[name=greeting]').value=''; document.querySelector('#dispatch-form').requestSubmit()`);
+    await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value=''; document.querySelector('#dispatch-form').requestSubmit()`);
     await waitFor(`document.querySelector('#dispatch-status').textContent.includes('Fix the highlighted')`);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), postBase);
-    await evaluate(`document.querySelector('#dispatch-inputs input[name=greeting]').value='hi'; document.querySelector('#dispatch-inputs input[name=count]').value='not-a-number'; document.querySelector('#dispatch-form').requestSubmit()`);
+    await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value='hi'; document.querySelector('#dispatch-inputs input[name=count]').value='not-a-number'; document.querySelector('#dispatch-form').requestSubmit()`);
     await waitFor(`document.querySelector('#dispatch-status').textContent.includes('Fix the highlighted')`);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), postBase);
-    await evaluate(`document.querySelector('#dispatch-inputs input[name=count]').value='2'; window.confirm=()=>true; document.querySelector('#dispatch-form').requestSubmit(); document.querySelector('#dispatch-form').requestSubmit()`);
+    await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value='hi'+String.fromCharCode(10)+'there'; document.querySelector('#dispatch-inputs input[name=count]').value='2'; window.confirm=()=>true; document.querySelector('#dispatch-form').requestSubmit(); document.querySelector('#dispatch-form').requestSubmit()`);
     await waitFor(`document.querySelector('#dispatch-result').textContent.includes('Open run 77')`);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), postBase + 1);
+    assert.equal(await evaluate(`JSON.parse(globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).at(-1).body).inputs.greeting`), 'hi\nthere');
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).every(x=>x.auth==='Bearer e2e-rotated')`), true);
     assert.equal(await evaluate(`document.querySelector('#dispatch-result a').href`), 'https://github.com/acme/app/actions/runs/77');
     await waitFor(`document.querySelector('#run-list').textContent.includes('Dispatched CI')`);
@@ -400,9 +406,74 @@ test('uncertain dispatch gates retry until acknowledged and unrelated profiles s
     await sleep(300);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), during);
     await evaluate(`[...document.querySelectorAll('#dispatch-result button')].find(b=>b.textContent.includes('I checked GitHub')).click()`);
+    await waitFor(`document.querySelector('#dispatch-inputs').textContent.includes('greeting')`);
     await evaluate(`window.confirm=()=>true; document.querySelector('#dispatch-form').requestSubmit()`);
     await waitFor(`document.querySelector('#dispatch-result').textContent.includes('Open run 77')`);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), during + 1);
     await evaluate(`document.querySelector('#dispatch-close').click()`);
     assert.equal(await evaluate(`globalThis.__cimRequests.some(x=>x.auth==='Bearer work-rotated' || x.auth==='Bearer work-pat')`), true);
+});
+
+test('uncertain dispatch survives dialog close and reopen with ack gate', { skip: !CHROME && 'Chrome not found' }, async () => {
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); window.confirm=()=>true; globalThis.__dispatchHang=true; globalThis.__dispatchFlaky=false; document.querySelector('#new-run').click()`);
+    await waitFor(`document.querySelector('#dispatch-dialog').open`);
+    await evaluate(`document.querySelector('#dispatch-profile').value=[...document.querySelector('#dispatch-profile').options].find(o=>o.text.startsWith('Personal')).value; document.querySelector('#dispatch-profile').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await waitFor(`document.querySelector('#dispatch-inputs').textContent.includes('greeting')`);
+    const before = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`);
+    await evaluate(`window.confirm=()=>true; document.querySelector('#dispatch-form').requestSubmit()`);
+    await waitFor(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length > ${before}`);
+    const during = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'hidden'}); document.dispatchEvent(new Event('visibilitychange'))`);
+    await waitFor(`document.querySelector('#dispatch-status').textContent.includes('may have been accepted')`);
+    await evaluate(`document.querySelector('#dispatch-close').click()`);
+    await waitFor(`!document.querySelector('#dispatch-dialog').open`);
+    await evaluate(`globalThis.__dispatchHang=false; Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#new-run').click()`);
+    await waitFor(`document.querySelector('#dispatch-dialog').open`);
+    await waitFor(`document.querySelector('#dispatch-workflow').options.length >= 3`);
+    await evaluate(`document.querySelector('#dispatch-load').click()`);
+    await waitFor(`document.querySelector('#dispatch-status').textContent.includes('may have been accepted')`);
+    assert.equal(await evaluate(`[...document.querySelectorAll('#dispatch-result button')].some(b=>b.textContent.includes('I checked GitHub'))`), true);
+    assert.equal(await evaluate(`document.querySelector('#dispatch-start').disabled`), true);
+    await evaluate(`window.confirm=()=>true; document.querySelector('#dispatch-form').requestSubmit()`);
+    await sleep(300);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), during);
+    await evaluate(`[...document.querySelectorAll('#dispatch-result button')].find(b=>b.textContent.includes('I checked GitHub')).click()`);
+    await waitFor(`document.querySelector('#dispatch-inputs').textContent.includes('greeting')`);
+    await evaluate(`window.confirm=()=>true; document.querySelector('#dispatch-form').requestSubmit()`);
+    await waitFor(`document.querySelector('#dispatch-result').textContent.includes('Open run 77')`);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), during + 1);
+    await evaluate(`document.querySelector('#dispatch-close').click()`);
+});
+
+test('fresh pin 404 stays transient queued without suspending the repository', { skip: !CHROME && 'Chrome not found' }, async () => {
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); window.confirm=()=>true; globalThis.__dispatchHang=false; globalThis.__dispatchFlaky=true; globalThis.__dispatchFlakyUsed=false; document.querySelector('#new-run').click()`);
+    await waitFor(`document.querySelector('#dispatch-dialog').open`);
+    await evaluate(`document.querySelector('#dispatch-profile').value=[...document.querySelector('#dispatch-profile').options].find(o=>o.text.startsWith('Personal')).value; document.querySelector('#dispatch-profile').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await waitFor(`document.querySelector('#dispatch-workflow').options.length >= 3`);
+    await evaluate(`document.querySelector('#dispatch-load').click()`);
+    await waitFor(`document.querySelector('#dispatch-inputs').textContent.includes('greeting')`);
+    await evaluate(`window.confirm=()=>true; document.querySelector('#dispatch-form').requestSubmit()`);
+    await waitFor(`document.querySelector('#dispatch-result').textContent.includes('Open run 77')`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Dispatched CI')`, 10000);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Compile app')`), true);
+    await sleep(1200);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Dispatched CI')`), true);
+    assert.equal(await evaluate(`globalThis.__dispatchFlakyUsed`), true);
+    await evaluate(`globalThis.__dispatchFlaky=false; document.querySelector('#dispatch-close').click()`);
+});
+
+test('storage repo removal during schema load never restores stale dispatch data', { skip: !CHROME && 'Chrome not found' }, async () => {
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); window.confirm=()=>true; globalThis.__dispatchHang=false; globalThis.__dispatchFlaky=false; document.querySelector('#new-run').click()`);
+    await waitFor(`document.querySelector('#dispatch-dialog').open`);
+    await evaluate(`document.querySelector('#dispatch-profile').value=[...document.querySelector('#dispatch-profile').options].find(o=>o.text.startsWith('Personal')).value; document.querySelector('#dispatch-profile').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await waitFor(`document.querySelector('#dispatch-workflow').options.length >= 3`);
+    const postBase = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`);
+    await evaluate(`document.querySelector('#dispatch-ref').value='slow-branch'; document.querySelector('#dispatch-load').click()`);
+    await evaluate(`(async () => { const id=[...document.querySelector('#dispatch-profile').options].find(o=>o.text.startsWith('Personal')).value; const key='cimProfile:'+id; const stored=(await chrome.storage.local.get(key))[key]; await chrome.storage.local.set({[key]:{...stored,repos:['acme/forbidden']}}); })()`);
+    await sleep(1200);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), postBase);
+    assert.equal(await evaluate(`document.querySelector('#dispatch-inputs').children.length`), 0);
+    assert.equal(await evaluate(`document.querySelector('#dispatch-start').disabled`), true);
+    assert.equal(await evaluate(`[...document.querySelector('#dispatch-profile').options].some(o=>o.text.startsWith('Work'))`), true);
+    await evaluate(`document.querySelector('#dispatch-close').click()`);
 });

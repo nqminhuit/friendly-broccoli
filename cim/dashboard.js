@@ -12,7 +12,7 @@
     const RunState = globalThis.CimRunState || null;
     const attemptAdvance = (previous, next) => RunState ? RunState.isAttemptAdvance(previous, next) : (next !== null && Number(next) > Number(previous || 0));
     const mergeRun = (current, incoming) => RunState ? RunState.mergeRunMetadata(current, incoming) : { run: { ...current, ...incoming }, advanced: false, downgraded: false };
-    const state = { profiles: [], selected: '', editingId: null, profileFilter: ALL, runs: new Map(), latestLinks: new Map(), historyLinks: new Map(), historyStarted: new Set(), errors: new Map(), clients: new Map(), operations: new Set(), details: new Map(), detailOperations: new Map(), pendingReruns: new Map(), pendingDispatches: new Map(), loading: false, initialLoading: false, epoch: 0, settingsBusy: false, writeBusy: false, dispatchController: null };
+    const state = { profiles: [], selected: '', editingId: null, profileFilter: ALL, runs: new Map(), latestLinks: new Map(), historyLinks: new Map(), historyStarted: new Set(), errors: new Map(), clients: new Map(), operations: new Set(), details: new Map(), detailOperations: new Map(), pinOperations: new Map(), pendingReruns: new Map(), pendingDispatches: new Map(), loading: false, initialLoading: false, epoch: 0, settingsBusy: false, writeBusy: false, dispatchController: null };
     const profileKey = (id, repo) => `${id}${KEY_SEPARATOR}${repo.toLocaleLowerCase('en-US')}`;
     const runKey = (id, repo, run) => `${profileKey(id, repo)}${KEY_SEPARATOR}${run.id}`;
     const repoKey = (repo) => repo.toLocaleLowerCase('en-US');
@@ -289,28 +289,62 @@
     function safeDispatchUrl(value) {
         try { const url = new URL(value); return url.protocol === 'https:' && url.origin === 'https://github.com' && !url.username && !url.password ? url.href : ''; } catch { return ''; }
     }
-    async function pinDispatchedRun({ profileId, repo, runId, token, htmlUrl }) {
+    const PIN_TRANSIENT_ATTEMPTS = 30;
+
+    function pinOwned(profileId, repo, token) {
         const profile = state.profiles.find((item) => item.id === profileId);
         const entry = profile && state.clients.get(profileId);
-        if (!profile || !entry || entry.token !== token) return;
+        if (!profile || !entry || entry.token !== token) return null;
+        if (!profile.repos.includes(repo)) return null;
+        return { profile, entry };
+    }
+
+    async function pinDispatchedRun({ profileId, repo, runId, token, htmlUrl }) {
+        const owned = pinOwned(profileId, repo, token);
+        if (!owned) return;
         const key = `${profileId}${KEY_SEPARATOR}${repo.toLocaleLowerCase('en-US')}${KEY_SEPARATOR}${runId}`;
+        // Hidden dashboards never fire the pin GET; memory tracking resumes on visible poll.
+        if (document.visibilityState !== 'visible') {
+            if (pinOwned(profileId, repo, token)) state.pendingDispatches.set(key, { profileId, repo, runId, token, attempts: 0 });
+            return;
+        }
+        const controller = new AbortController();
+        state.pinOperations.set(key, { controller, profileId, token, repo, runId });
         const [owner, name] = repo.split('/');
+        // Seed the exact returned ID only while the target is still owned.
+        if (pinOwned(profileId, repo, token) && !state.runs.has(key)) {
+            state.runs.set(key, { profileId, profileName: owned.profile.name, repo, run: { id: runId, status: 'queued', conclusion: null, name: 'Dispatched workflow', html_url: htmlUrl, created_at: new Date().toISOString() } });
+            state.pendingDispatches.set(key, { profileId, repo, runId, token, attempts: 0 });
+            render();
+        }
         try {
-            const metadata = await entry.client.getRun(owner, name, runId);
-            if (state.clients.get(profileId) !== entry || entry.token !== token) return;
+            const metadata = await owned.entry.client.getRun(owner, name, runId, { signal: controller.signal });
+            if (state.pinOperations.get(key)?.controller !== controller || !pinOwned(profileId, repo, token)) return;
             const live = state.runs.get(key);
             const base = live ? mergeRun(live.run, metadata) : { run: metadata, advanced: false, downgraded: false };
             if (base.downgraded) return;
             // Pin exact returned ID; never overwrite an unrelated concurrent new run.
             if (live) live.run = base.run;
-            else state.runs.set(key, { profileId, profileName: profile.name, repo, run: { ...base.run, html_url: safeDispatchUrl(htmlUrl) || base.run.html_url || htmlUrl } });
-            if (base.run.status !== COMPLETED) state.pendingDispatches.set(key, { profileId, repo, runId, token });
+            else if (pinOwned(profileId, repo, token)) state.runs.set(key, { profileId, profileName: owned.profile.name, repo, run: { ...base.run, html_url: safeDispatchUrl(htmlUrl) || base.run.html_url || htmlUrl } });
+            else return;
+            if (base.run.status !== COMPLETED) {
+                const tracked = state.pendingDispatches.get(key);
+                state.pendingDispatches.set(key, { profileId, repo, runId, token, attempts: tracked?.attempts || 0 });
+            } else state.pendingDispatches.delete(key);
             render();
-        } catch { /* Result link already shows; polling will retry while visible. */
-            const fallback = { id: runId, status: 'queued', conclusion: null, name: 'Dispatched workflow', html_url: htmlUrl, created_at: new Date().toISOString() };
-            if (!state.runs.has(key)) state.runs.set(key, { profileId, profileName: profile.name, repo, run: fallback });
-            state.pendingDispatches.set(key, { profileId, repo, runId, token });
+        } catch (error) {
+            if (state.pinOperations.get(key)?.controller !== controller || !pinOwned(profileId, repo, token)) return;
+            if (error?.kind === 'cancelled') return;
+            // A fresh accepted run 404 is eventual consistency: keep a bounded
+            // transient queued row and retry, never suspend the whole repository.
+            const tracked = state.pendingDispatches.get(key);
+            state.pendingDispatches.set(key, { profileId, repo, runId, token, attempts: tracked?.attempts || 0 });
+            if (!state.runs.has(key) && pinOwned(profileId, repo, token)) {
+                state.runs.set(key, { profileId, profileName: owned.profile.name, repo, run: { id: runId, status: 'queued', conclusion: null, name: 'Dispatched workflow', html_url: htmlUrl, created_at: new Date().toISOString() } });
+            }
             render();
+        } finally {
+            if (state.pinOperations.get(key)?.controller === controller) state.pinOperations.delete(key);
         }
     }
     function updateFilterOptions() {
@@ -423,9 +457,18 @@
                     if (live) live.run = base.run;
                     else state.runs.set(key, { profileId: tracked.profileId, profileName: profile.name, repo: tracked.repo, run: base.run });
                     if (base.run.status === COMPLETED) state.pendingDispatches.delete(key);
+                    else state.pendingDispatches.set(key, { ...tracked, attempts: 0 });
                 } catch (error) {
                     if (error.kind === CANCELLED || signal.aborted || cycleEpoch !== state.epoch) continue;
-                    if (error.kind === 'permission' || error.kind === 'not-found') entry.suspendedRepos.add(repoKey(tracked.repo));
+                    // Fresh dispatch IDs 404 while GitHub converges: bounded transient
+                    // retries without suspending the repository feed.
+                    if (error.kind === 'not-found') {
+                        const attempts = (tracked.attempts || 0) + 1;
+                        if (attempts > PIN_TRANSIENT_ATTEMPTS) state.pendingDispatches.delete(key);
+                        else state.pendingDispatches.set(key, { ...tracked, attempts });
+                        continue;
+                    }
+                    if (error.kind === 'permission') entry.suspendedRepos.add(repoKey(tracked.repo));
                 }
             }
         }
@@ -446,7 +489,7 @@
         const now = Date.now();
         const eligibleNow = profiles.some((profile) => { const entry = state.clients.get(profile.id); return entry && !entry.client.authInvalid && entry.client.retryAt <= now && profile.repos.some((repo) => !entry.suspendedRepos.has(repoKey(repo))); });
         const cooldowns = profiles.map((profile) => state.clients.get(profile.id)?.client).filter((client) => client && !client.authInvalid && client.retryAt > now).map((client) => client.retryAt);
-        const active = latestRuns.some((run) => activeStates.has(run.status)) || visibleDetailKeys.length > 0;
+        const active = latestRuns.some((run) => activeStates.has(run.status)) || visibleDetailKeys.length > 0 || state.pendingReruns.size > 0 || state.pendingDispatches.size > 0;
         const nextAt = CimMonitor.nextPollAt(now, expectedRequests, active, cooldowns);
         return { results, runs: latestRuns, nextAt, continueMonitoring: eligibleNow || cooldowns.length > 0 };
     }
@@ -534,6 +577,7 @@
         for (const op of state.operations) if (changed.has(op.profileId) || op.profileIds?.some((id) => changed.has(id)) || op.profileId === 'pending') op.controller.abort();
         // Abort only changed-profile detail fetches; unrelated profiles keep credential-owned ops.
         for (const [key, op] of state.detailOperations) if (changed.has(op.profileId)) { op.controller.abort(); state.detailOperations.delete(key); const detail = state.details.get(key); if (detail) detail.loading = false; }
+        for (const [key, op] of state.pinOperations) if (changed.has(op.profileId)) { op.controller.abort(); state.pinOperations.delete(key); }
         for (const id of changed) {
             const old = previous.get(id), next = incoming.get(id); const entry = state.clients.get(id);
             if (!next) state.clients.delete(id);
@@ -548,7 +592,6 @@
                 // Stale token-tracked reruns never poll again, so drop all of this profile's pending.
                 for (const key of [...state.pendingReruns.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`)) state.pendingReruns.delete(key);
                 for (const key of [...state.pendingDispatches.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`)) state.pendingDispatches.delete(key);
-                try { state.dispatchController?.handleProfileChange(id); } catch { /* Dispatch form clears only its changed target. */ }
             }
             else if (entry) { const oldRepos = new Set(old.repos.map(repoKey)); const newRepos = new Set(next.repos.map(repoKey)); for (const repo of new Set([...oldRepos, ...newRepos])) if (oldRepos.has(repo) !== newRepos.has(repo)) { clearRepoCache(entry, repo); entry.suspendedRepos.delete(repo); for (const key of [...state.runs.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}${repo}${KEY_SEPARATOR}`)) state.runs.delete(key); for (const key of [...state.details.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}${repo}${KEY_SEPARATOR}`)) state.details.delete(key); state.errors.delete(`${id}${KEY_SEPARATOR}${repo}`); state.latestLinks.delete(`${id}${KEY_SEPARATOR}${repo}`); state.historyLinks.delete(`${id}${KEY_SEPARATOR}${repo}`); state.historyStarted.delete(`${id}${KEY_SEPARATOR}${repo}`); } entry.repos = new Set(next.repos.map(repoKey)); }
             for (const key of [...state.runs.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key.startsWith(`${profileKey(id, repo)}${KEY_SEPARATOR}`)))) state.runs.delete(key);
@@ -559,6 +602,9 @@
             for (const key of [...state.historyStarted]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key === profileKey(id, repo)))) state.historyStarted.delete(key);
         }
         state.profiles = profiles; if (!incoming.has(state.selected)) state.selected = profiles[0]?.id || ALL;
+        // Dispatch lifecycle invalidates after the snapshot is replaced so the form
+        // reads new profiles; every changed target (token, repos, deletion) is covered.
+        for (const id of changed) { try { state.dispatchController?.handleProfileChange(id); } catch { /* Dispatch form clears only its changed target. */ } }
         state.initialLoading = profiles.some((profile) => profile.token && profile.repos.length) && document.visibilityState === 'visible'; render(); syncProfileUI(); updateMonitorLabel();
         if (currentProfiles().length) void monitor.start();
     }
@@ -617,8 +663,8 @@
     $('profile-filter').addEventListener('change', () => { state.profileFilter = $('profile-filter').value; render(); }); $('refresh').addEventListener('click', () => { for (const entry of state.clients.values()) entry.suspendedRepos.clear(); state.forceDetailsRefresh = true; void monitor.refresh(); });
     $('older').addEventListener('click', () => { void loadOlder(); });
     for (const id of ['search', 'status-filter', 'repo-filter', 'workflow-filter', 'branch-filter']) $(id).addEventListener(id === 'search' ? 'input' : 'change', render);
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { monitor.pause(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); try { state.dispatchController?.handleHidden(); } catch { /* Uncertain POSTs gate until acknowledged. */ } render(); } else void monitor.resume(); updateMonitorLabel(); });
-    window.addEventListener('pagehide', () => { monitor.stop(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); try { state.dispatchController?.handleHidden(); } catch { /* Closing never declares the workflow stopped. */ } });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { monitor.pause(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); for (const [, op] of state.pinOperations) op.controller.abort(); state.pinOperations.clear(); try { state.dispatchController?.handleHidden(); } catch { /* Uncertain POSTs gate until acknowledged. */ } render(); } else void monitor.resume(); updateMonitorLabel(); });
+    window.addEventListener('pagehide', () => { monitor.stop(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); for (const [, op] of state.pinOperations) op.controller.abort(); state.pinOperations.clear(); try { state.dispatchController?.handleHidden(); } catch { /* Closing never declares the workflow stopped. */ } });
     let storageTimer = null;
     chrome.storage.onChanged.addListener((changes, area) => {
         if (!['local', 'session'].includes(area) || !Object.keys(changes).some((key) => key.startsWith(CimSettings.PROFILE_PREFIX) || key.startsWith(CimSettings.TOKEN_PREFIX) || CimSettings.LEGACY_KEYS.includes(key))) return;

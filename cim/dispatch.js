@@ -3,7 +3,8 @@
     if (typeof module !== 'undefined' && module.exports) module.exports = dispatch;
     root.CimDispatch = dispatch;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-    const WORKFLOW_PAGE_SIZE = 100;
+    const MAX_WORKFLOWS = 500;
+    const UNCERTAIN_ACK = 'I checked GitHub; allow another request';
 
     function safeGitHubUrl(value) {
         try {
@@ -23,10 +24,24 @@
 
     function createDispatchController({ document, getProfiles, getClientEntry, onDispatched, isVisible }) {
         const $ = (id) => document.getElementById(id);
-        const state = { generation: 0, listController: null, fileController: null, repoController: null, submitBusy: false, uncertainKey: '', workflows: [], workflowsTruncated: false, target: null };
+        // Uncertain dispatches are keyed per immutable target+body; a resolved B never clears A.
+        const state = { generation: 0, listController: null, fileController: null, repoController: null, submitBusy: false, submitSeq: 0, uncertain: new Map(), workflows: [], workflowsTruncated: false, target: null, schemaReady: false };
         const Schema = globalThis.CimWorkflowSchema || null;
 
         function profiles() { try { return getProfiles() || []; } catch { return []; } }
+
+        function visible() { try { const check = isVisible; return typeof check === 'function' ? check() !== false : true; } catch { return true; } }
+
+        function dialogOpen() { try { return Boolean($('dispatch-dialog')?.open); } catch { return false; } }
+
+        // Every read/post continuation must recheck lifetime: open dialog, visible page,
+        // current generation, and owning profile credential.
+        function readAlive(generation, entry, captured) {
+            if (generation !== state.generation || !dialogOpen() || !visible()) return false;
+            if (!entry || !captured) return false;
+            try { if (getClientEntry(captured.profileId) !== entry || entry.token !== captured.token) return false; } catch { return false; }
+            return true;
+        }
 
         function setStatus(message, kind) {
             const target = $('dispatch-status');
@@ -60,15 +75,88 @@
         }
 
         function invalidateSchema(message) {
-            state.generation++;
             try { state.fileController?.abort(); } catch { /* Stale schema reads never restore. */ }
             state.fileController = null;
+            // Readiness clears with the form: submission needs a freshly loaded schema.
+            state.schemaReady = false;
+            state.target = null;
             const box = $('dispatch-inputs');
             if (box) box.replaceChildren();
             const meta = $('dispatch-schema-note');
-            if (meta) { meta.textContent = message || ''; meta.hidden = !message; }
+            // A truncated workflow listing stays visible across schema reloads.
+            const truncatedNote = state.workflowsTruncated && state.workflows.length ? ` Showing the first ${state.workflows.length} workflows; the repository list is truncated.` : '';
+            if (meta) { meta.textContent = `${message || ''}${truncatedNote}`; meta.hidden = !meta.textContent; }
             const start = $('dispatch-start');
             if (start) start.disabled = true;
+        }
+
+        function setControlsEnabled(enabled) {
+            for (const id of ['dispatch-profile', 'dispatch-repo', 'dispatch-workflow', 'dispatch-ref', 'dispatch-load', 'dispatch-start']) {
+                const node = $(id);
+                if (node) node.disabled = !enabled;
+            }
+        }
+
+        function gateKeyFor(selection, inputs) {
+            return `${selection.profileId}|${selection.repo}|${selection.workflowId}|${selection.ref}|${JSON.stringify(inputs ?? null)}`;
+        }
+
+        function targetPrefixOf(record) {
+            return `${record.profileId}|${record.repo}|${record.workflowId}|${record.ref}`;
+        }
+
+        function selectionPrefix(selection) {
+            return `${selection.profileId}|${selection.repo}|${selection.workflowId}|${selection.ref}`;
+        }
+
+        function matchingUncertain(selection) {
+            const prefix = selectionPrefix(selection);
+            const matches = [];
+            for (const [key, record] of state.uncertain) {
+                if (targetPrefixOf(record) === prefix) matches.push([key, record]);
+            }
+            return matches;
+        }
+
+        function renderAcknowledge(matches) {
+            const box = $('dispatch-result');
+            if (!box) return;
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'button quiet';
+            button.textContent = UNCERTAIN_ACK;
+            button.addEventListener('click', () => {
+                for (const [key] of matches) state.uncertain.delete(key);
+                setStatus('', '');
+                setResultLink('', '');
+                button.remove();
+                if (state.schemaReady && dialogOpen() && visible()) {
+                    const start = $('dispatch-start');
+                    if (start) start.disabled = false;
+                } else if (dialogOpen() && visible()) {
+                    // Acknowledgement is an explicit user gesture: reload the
+                    // current target inputs (GET only, never POST) when hidden
+                    // time cleared schema readiness.
+                    void loadSchema();
+                }
+            });
+            box.append(button);
+            const start = $('dispatch-start');
+            if (start) start.disabled = true;
+        }
+
+        // Reopening an uncertain target restores its warning, workflow link, and ack.
+        function restoreUncertainBanner(selection) {
+            const matches = matchingUncertain(selection);
+            if (!matches.length) return false;
+            const [, record] = matches[0];
+            const box = $('dispatch-result');
+            const already = [...(box?.querySelectorAll?.('button') || [])].some((node) => node.textContent === UNCERTAIN_ACK);
+            setStatus('Request may have been accepted; check GitHub before retrying.', 'error');
+            if (!box?.textContent?.includes('Open workflow on GitHub')) setResultLink('Open workflow on GitHub to verify ↗', record.workflowUrl);
+            if (!already) renderAcknowledge(matches);
+            else { const start = $('dispatch-start'); if (start) start.disabled = true; }
+            return true;
         }
 
         function currentSelection() {
@@ -107,20 +195,24 @@
         }
 
         async function loadReposAndWorkflows() {
+            if (!dialogOpen() || !visible()) return;
             const selection = currentSelection();
             const profile = profiles().find((item) => item.id === selection.profileId);
             if (!profile) { setStatus('Add a connection profile with a token to start a workflow.', 'error'); invalidateSchema(''); return; }
             abortReads();
             invalidateSchema('');
+            state.workflows = [];
+            state.workflowsTruncated = false;
             const generation = ++state.generation;
             setStatus('', '');
-            setResultLink('', '');
+            // Preserve an uncertain target's warning/link/ack across reloads.
+            if (!restoreUncertainBanner(selection)) setResultLink('', '');
             const workflowSelect = $('dispatch-workflow');
             if (workflowSelect) { workflowSelect.replaceChildren(new Option('Loading workflows…', '')); workflowSelect.disabled = true; }
             const entry = getClientEntry(selection.profileId);
-            if (!entry) { setStatus('This profile lost its token. Reopen after saving a token.', 'error'); return; }
+            if (!entry || !entry.token) { setStatus('This profile lost its token. Reopen after saving a token.', 'error'); return; }
+            if (!profile.repos.includes(selection.repo) && selection.repo) { setStatus('This repository is no longer in the selected profile.', 'error'); return; }
             const captured = { profileId: selection.profileId, token: entry.token, repo: selection.repo || profile.repos[0] || '' };
-            if (repoSelectValue() !== captured.repo && profile.repos.includes(captured.repo)) { /* keep */ }
             // Default branch + workflow listing use the owning profile client gates.
             const repoController = new AbortController();
             state.repoController = repoController;
@@ -129,22 +221,20 @@
                 const [owner, name] = captured.repo.split('/');
                 try {
                     const repo = await entry.client.getRepo(owner, name, { signal: repoController.signal });
-                    if (generation !== state.generation || getClientEntry(captured.profileId) !== entry) return;
+                    if (!readAlive(generation, entry, captured)) return;
                     if (typeof repo?.default_branch === 'string' && repo.default_branch) defaultBranch = repo.default_branch;
                 } catch (error) {
-                    if (generation !== state.generation) return;
+                    if (!readAlive(generation, entry, captured)) return;
                     // Contents/write failures must not suspend run monitoring; show form-only error.
                     if (error?.kind !== 'cancelled') setStatus(`Could not read ${captured.repo}: ${error.message || 'request failed.'}`, 'error');
                 }
             }
-            if (generation !== state.generation || getClientEntry(captured.profileId) !== entry) return;
+            if (!readAlive(generation, entry, captured)) return;
             const refInput = $('dispatch-ref');
             if (refInput && !refInput.value.trim() && defaultBranch) refInput.value = defaultBranch;
             if (refInput) refInput.placeholder = defaultBranch || 'main';
             await loadWorkflows(captured, entry, generation);
         }
-
-        function repoSelectValue() { return $('dispatch-repo')?.value || ''; }
 
         async function loadWorkflows(captured, entry, generation) {
             const workflowSelect = $('dispatch-workflow');
@@ -156,21 +246,26 @@
             const listController = new AbortController();
             state.listController = listController;
             const workflows = new Map();
+            const seenPages = new Set();
             let url = null;
+            let truncated = false;
             try {
                 do {
+                    // A repeated Link page means the listing cycles: surface it, never spin.
+                    if (url && seenPages.has(url)) { truncated = true; break; }
+                    if (url) seenPages.add(url);
                     const page = await entry.client.listWorkflows(owner, name, url ? { url, signal: listController.signal } : { signal: listController.signal });
-                    if (generation !== state.generation || getClientEntry(captured.profileId) !== entry) return;
+                    if (!readAlive(generation, entry, captured)) return;
                     for (const item of page.workflows) {
                         if (item && (typeof item.id === 'number' || typeof item.id === 'string') && !workflows.has(String(item.id))) workflows.set(String(item.id), item);
-                        if (workflows.size >= 500) break;
+                        if (workflows.size >= MAX_WORKFLOWS) break;
                     }
                     url = page.links?.next || null;
                     // Never assume the first page holds the target workflow.
-                    if (workflows.size >= 500) { state.workflowsTruncated = true; break; }
+                    if (workflows.size >= MAX_WORKFLOWS) { truncated = true; break; }
                 } while (url);
             } catch (error) {
-                if (generation !== state.generation) return;
+                if (!readAlive(generation, entry, captured)) return;
                 if (error?.kind === 'cancelled') return;
                 setStatus(`Could not list workflows: ${error.message || 'request failed.'}`, 'error');
                 if (workflowSelect) { workflowSelect.replaceChildren(new Option('Workflows unavailable', '')); workflowSelect.disabled = true; }
@@ -178,8 +273,9 @@
             } finally {
                 if (state.listController === listController) state.listController = null;
             }
-            if (generation !== state.generation || getClientEntry(captured.profileId) !== entry) return;
+            if (!readAlive(generation, entry, captured)) return;
             state.workflows = [...workflows.values()];
+            state.workflowsTruncated = truncated;
             renderWorkflowOptions(captured);
         }
 
@@ -210,6 +306,7 @@
         }
 
         async function loadSchema() {
+            if (!dialogOpen() || !visible()) return;
             const selection = currentSelection();
             const profile = profiles().find((item) => item.id === selection.profileId);
             const entry = selection.profileId ? getClientEntry(selection.profileId) : null;
@@ -217,10 +314,12 @@
             const workflowPath = workflowOption?.dataset.path || '';
             const workflowState = workflowOption?.dataset.state || 'active';
             invalidateSchema('');
-            if (!profile || !entry || !selection.repo || !selection.workflowId || !selection.ref) {
+            if (!profile || !entry || !entry.token || !selection.repo || !selection.workflowId || !selection.ref) {
                 invalidateSchema(!selection.ref ? 'Enter a branch or tag ref, then load inputs.' : '');
                 return;
             }
+            // A removed repo stays non-dispatchable even when the client object is shared.
+            if (!profile.repos.includes(selection.repo)) { invalidateSchema('This repository is no longer in the selected profile.'); return; }
             if (workflowState !== 'active') { invalidateSchema('This workflow is disabled and cannot be started.'); return; }
             if (workflowPath && !/^\.github\/workflows\/[^/]+\.ya?ml$/.test(workflowPath)) { invalidateSchema('This workflow file path is unsupported.'); return; }
             const generation = ++state.generation;
@@ -229,26 +328,27 @@
             state.fileController = fileController;
             setStatus('Loading workflow inputs…', '');
             const captured = { profileId: selection.profileId, token: entry.token, repo: selection.repo, workflowId: selection.workflowId, workflowPath, ref: selection.ref };
-            state.target = captured;
             const [owner, name] = captured.repo.split('/');
             try {
                 const file = await entry.client.getWorkflowFile(owner, name, captured.workflowPath || captured.workflowId, captured.ref, { signal: fileController.signal });
-                if (generation !== state.generation || getClientEntry(captured.profileId) !== entry || entry.token !== captured.token) return;
+                if (!readAlive(generation, entry, captured)) return;
                 if (!Schema) throw new Error('Workflow parser is unavailable.');
                 const parsed = Schema.parseWorkflowYaml(file.text);
-                if (generation !== state.generation) return;
+                if (!readAlive(generation, entry, captured)) return;
                 // Stale YAML must never restore another workflow/ref/account form.
                 const now = currentSelection();
                 if (now.profileId !== captured.profileId || now.repo !== captured.repo || now.workflowId !== captured.workflowId || now.ref !== captured.ref) return;
                 if (!parsed.dispatchable) { invalidateSchema(parsed.reason); setStatus(parsed.reason, 'error'); return; }
                 renderInputs(parsed.inputs, captured);
-                setStatus(parsed.inputs.length ? `Loaded ${parsed.inputs.length} input${parsed.inputs.length === 1 ? '' : 's'} from ${captured.ref}.` : `This workflow takes no inputs on ${captured.ref}. Review and start.`, 'success');
-                const start = $('dispatch-start');
-                if (start) start.disabled = false;
+                // A revisited uncertain target keeps its gate until acknowledged.
+                if (!restoreUncertainBanner(now)) {
+                    setStatus(parsed.inputs.length ? `Loaded ${parsed.inputs.length} input${parsed.inputs.length === 1 ? '' : 's'} from ${captured.ref}.` : `This workflow takes no inputs on ${captured.ref}. Review and start.`, 'success');
+                    const start = $('dispatch-start');
+                    if (start) start.disabled = false;
+                }
             } catch (error) {
-                if (generation !== state.generation) return;
+                if (!readAlive(generation, entry, captured)) return;
                 if (error?.kind === 'cancelled') return;
-                if (getClientEntry(captured.profileId) !== entry) return;
                 const now = currentSelection();
                 if (now.profileId !== captured.profileId || now.repo !== captured.repo || now.workflowId !== captured.workflowId || now.ref !== captured.ref) return;
                 invalidateSchema('');
@@ -261,11 +361,14 @@
         function renderInputs(inputs, captured) {
             captured.inputsSchema = inputs;
             state.target = captured;
+            state.schemaReady = true;
             const box = $('dispatch-inputs');
             if (!box) return;
             box.replaceChildren();
             const note = $('dispatch-schema-note');
-            if (note) { note.textContent = `Inputs reflect ${captured.workflowPath || captured.workflowId} at ref ${captured.ref}.`; note.hidden = false; }
+            // Provider payload limit applies at submit; fields never truncate input.
+            const truncatedNote = state.workflowsTruncated && state.workflows.length ? ` Showing the first ${state.workflows.length} workflows; the repository list is truncated.` : '';
+            if (note) { note.textContent = `Inputs reflect ${captured.workflowPath || captured.workflowId} at ref ${captured.ref}.${truncatedNote}`; note.hidden = false; }
             for (const input of inputs) {
                 const wrap = document.createElement('label');
                 wrap.className = 'dispatch-field';
@@ -301,13 +404,13 @@
                     if (input.required) field.setAttribute('aria-required', 'true');
                     wrap.append(field);
                 } else {
-                    // String/environment preserve whitespace/UTF-8/multiline exactly.
-                    const hasMultiline = typeof input.default === 'string' && input.default.includes('\n');
-                    const field = document.createElement(hasMultiline ? 'textarea' : 'input');
-                    if (!hasMultiline) field.type = 'text';
+                    // Strings use a multiline-capable control so pasted newlines survive;
+                    // environments stay single-line names. No field truncates input.
+                    const field = input.type === 'environment'
+                        ? (() => { const node = document.createElement('input'); node.type = 'text'; return node; })()
+                        : document.createElement('textarea');
                     field.name = input.name;
                     field.setAttribute('aria-label', input.name);
-                    field.maxLength = 10000;
                     if (typeof input.default === 'string') field.value = input.default;
                     if (input.type === 'environment') field.placeholder = 'environment name';
                     if (input.required) field.setAttribute('aria-required', 'true');
@@ -348,54 +451,75 @@
 
         async function submit(event) {
             event?.preventDefault();
+            // One active submission owns busy/controls/result; concurrent submits wait.
             if (state.submitBusy) return;
+            if (!dialogOpen() || !visible()) { setStatus('Reopen the dialog while the dashboard is visible to start.', 'error'); return; }
             const selection = currentSelection();
             const profile = profiles().find((item) => item.id === selection.profileId);
             const entry = selection.profileId ? getClientEntry(selection.profileId) : null;
-            if (!profile || !entry) { setStatus('Select a connection profile with a token first.', 'error'); return; }
+            if (!profile || !entry || !entry.token) { setStatus('Select a connection profile with a token first.', 'error'); return; }
             const workflowOption = $('dispatch-workflow')?.selectedOptions[0];
             const workflowName = workflowOption ? workflowOption.textContent : selection.workflowId;
             const workflowPath = workflowOption?.dataset.path || selection.workflowId;
+            const workflowState = workflowOption?.dataset.state || 'active';
             if (!selection.repo || !selection.workflowId || !selection.ref) { setStatus('Choose a repository, workflow, and ref before starting.', 'error'); return; }
+            // Stale DOM never dispatches: repo must belong to the profile, workflow active,
+            // ref must match the loaded schema target.
+            if (!profile.repos.includes(selection.repo)) { setStatus('This repository is no longer in the selected profile.', 'error'); return; }
+            if (workflowState !== 'active') { setStatus('This workflow is disabled and cannot be started.', 'error'); return; }
+            if (!state.schemaReady || !state.target || state.target.profileId !== selection.profileId || state.target.repo !== selection.repo || state.target.workflowId !== selection.workflowId || state.target.ref !== selection.ref) { setStatus('Load inputs for this workflow and ref first.', 'error'); return; }
             // Repeat identical uncertain dispatches stay gated until explicit acknowledgement.
             const values = readFormValues();
             if (!Schema) { setStatus('Workflow parser is unavailable.', 'error'); return; }
-            if (!state.target || state.target.profileId !== selection.profileId || state.target.repo !== selection.repo || state.target.workflowId !== selection.workflowId || state.target.ref !== selection.ref) { setStatus('Load inputs for this workflow and ref first.', 'error'); return; }
             const effective = Array.isArray(state.target.inputsSchema) ? state.target.inputsSchema : [];
             const checked = Schema.validateDispatchValues(effective, values);
             showFieldErrors(checked.errors);
             if (!checked.ok) { setStatus('Fix the highlighted inputs before starting.', 'error'); return; }
             if (Schema.isPayloadTooLarge(selection.ref, checked.inputs)) { setStatus('Workflow inputs exceed the 65535 character payload limit.', 'error'); return; }
-            const gateKey = `${selection.profileId}|${selection.repo}|${selection.workflowId}|${selection.ref}|${JSON.stringify(checked.inputs)}`;
-            if (state.uncertainKey && state.uncertainKey === gateKey) { setStatus('This exact request is uncertain. Check GitHub, then acknowledge to allow another request.', 'error'); return; }
+            const gateKey = gateKeyFor(selection, checked.inputs);
+            if (state.uncertain.has(gateKey)) { setStatus('This exact request is uncertain. Check GitHub, then acknowledge to allow another request.', 'error'); return; }
             const warning = `Start workflow?\n\n${profile.name} · ${selection.repo}\n${workflowName} · ref ${selection.ref}\n\nGitHub runs use this profile’s workflow privileges and may incur Actions usage charges.`;
             if (!globalThis.confirm(warning)) return;
-            // Capture immutable target+PAT for submission; recheck ownership before sending.
-            const captured = { profileId: profile.id, token: profile.token, repo: selection.repo, workflowId: selection.workflowId, workflowPath, ref: selection.ref, inputs: checked.inputs, workflowName };
-            const owned = () => getClientEntry(captured.profileId) === entry && entry.token === captured.token && entry.token === profile.token;
-            if (!owned()) { setStatus('The selected profile changed. Reload before starting.', 'error'); return; }
+            if (!dialogOpen() || !visible()) { setStatus('Reopen the dialog while the dashboard is visible to start.', 'error'); return; }
+            // Snapshot immutable target+PAT; recheck ownership before and after sending.
+            const captured = { profileId: profile.id, token: entry.token, repo: selection.repo, workflowId: selection.workflowId, workflowPath, ref: selection.ref, inputs: checked.inputs, workflowName };
+            const owned = () => {
+                try { return getClientEntry(captured.profileId) === entry && entry.token === captured.token; } catch { return false; }
+            };
+            const stillCurrent = () => {
+                const now = currentSelection();
+                return now.profileId === captured.profileId && now.repo === captured.repo && now.workflowId === captured.workflowId && now.ref === captured.ref;
+            };
+            if (!owned() || !stillCurrent()) { setStatus('The selected profile changed. Reload before starting.', 'error'); return; }
+            const seq = ++state.submitSeq;
+            const isOwner = () => state.submitSeq === seq;
             state.submitBusy = true;
-            const start = $('dispatch-start');
-            if (start) start.disabled = true;
+            setControlsEnabled(false);
             setStatus('Starting workflow…', '');
-            setResultLink('', '');
+            if (stillCurrent()) setResultLink('', '');
             const [owner, name] = captured.repo.split('/');
             try {
                 const outcome = await entry.client.dispatchWorkflow(owner, name, captured.workflowId, { ref: captured.ref, inputs: captured.inputs, signal: submitSignal() });
-                if (!owned()) { setStatus('The selected profile changed during the request. Check GitHub for this workflow.', 'error'); return; }
-                state.uncertainKey = '';
+                if (!isOwner()) return;
+                if (!stillCurrent()) return;
+                if (!owned() || !dialogOpen()) { setStatus('The selected profile changed during the request. Check GitHub for this workflow.', 'error'); return; }
+                // Only this exact target+body resolves; other uncertain targets stay gated.
+                state.uncertain.delete(gateKey);
+                if (!stillCurrent()) return;
                 setStatus(`Workflow requested. Monitoring run ${outcome.runId}.`, 'success');
                 setResultLink(`Open run ${outcome.runId} on GitHub ↗`, outcome.htmlUrl);
                 try { await onDispatched?.({ profileId: captured.profileId, repo: captured.repo, runId: outcome.runId, token: captured.token, htmlUrl: outcome.htmlUrl }); } catch { /* Pinning never blocks the result link. */ }
             } catch (error) {
-                if (!owned()) { setStatus('The selected profile changed. Check GitHub before retrying.', 'error'); return; }
+                if (!isOwner()) return;
+                if (!owned()) { if (stillCurrent() || dialogOpen()) setStatus('The selected profile changed. Check GitHub before retrying.', 'error'); return; }
+                if (!stillCurrent()) return;
                 if (error?.ambiguous) {
-                    state.uncertainKey = gateKey;
-                    // Ambiguous dispatch has no known run ID: link the workflow page, never newest row.
                     const repoUrl = `https://github.com/${captured.repo}/actions/workflows/${encodeURIComponent(String(captured.workflowPath || captured.workflowId).split('/').pop())}`;
+                    state.uncertain.set(gateKey, { profileId: captured.profileId, token: captured.token, repo: captured.repo, workflowId: captured.workflowId, ref: captured.ref, inputs: captured.inputs, workflowUrl: repoUrl });
+                    // Ambiguous dispatch has no known run ID: link the workflow page, never newest row.
                     setStatus('Request may have been accepted; check GitHub before retrying.', 'error');
                     setResultLink('Open workflow on GitHub to verify ↗', repoUrl);
-                    renderAcknowledge();
+                    renderAcknowledge([[gateKey, state.uncertain.get(gateKey)]]);
                 } else if (error?.kind !== 'cancelled') {
                     setStatus(error.message || 'Could not start the workflow.', 'error');
                 } else {
@@ -403,8 +527,16 @@
                     setStatus('Start was cancelled before GitHub received it. Review and try again.', 'error');
                 }
             } finally {
-                state.submitBusy = false;
-                if (start && !state.uncertainKey) start.disabled = false;
+                // A stale operation never enables or clobbers a newer submission.
+                if (isOwner()) {
+                    state.submitBusy = false;
+                    // Hidden dialogs re-enable too; submit still requires visibility.
+                    if (dialogOpen()) {
+                        setControlsEnabled(true);
+                        const start = $('dispatch-start');
+                        if (start) start.disabled = !state.schemaReady || matchingUncertain(currentSelection()).length > 0;
+                    }
+                }
             }
         }
 
@@ -417,67 +549,85 @@
 
 
 
-        function renderAcknowledge() {
-            const box = $('dispatch-result');
-            if (!box) return;
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'button quiet';
-            button.textContent = 'I checked GitHub; allow another request';
-            button.addEventListener('click', () => { state.uncertainKey = ''; setStatus('', ''); const start = $('dispatch-start'); if (start) start.disabled = false; button.remove(); });
-            box.append(button);
-            const start = $('dispatch-start');
-            if (start) start.disabled = true;
-        }
-
         function open() {
             const dialog = $('dispatch-dialog');
             if (!dialog) return;
             syncRepoOptions();
-            if (!$('dispatch-ref')?.value) { /* default branch fills on load */ }
+            // Never carry a stale ref from another account/repo into a new target.
+            const now = currentSelection();
+            const refInput = $('dispatch-ref');
+            if (refInput && (!state.target || state.target.profileId !== now.profileId || state.target.repo !== now.repo)) refInput.value = '';
             if (!dialog.open) { dialog.showModal(); const first = $('dispatch-profile'); first?.focus({ preventScroll: true }); }
+            if (!dialogOpen() || !visible()) return;
+            // Reopening restores controls an aborted submission may have disabled.
+            setControlsEnabled(true);
             void loadReposAndWorkflows();
         }
 
-        function close() {
+        // Dialog-close and hide share one path: invalidate reads+readiness, keep
+        // owned uncertainty, and never settle another operation's busy flag.
+        function noteClosed() {
             abortReads();
             try { submitController?.abort(); } catch { /* Closing never declares the workflow stopped. */ }
             state.generation++;
-            state.submitBusy = false;
+            state.schemaReady = false;
+            state.target = null;
+            invalidateSchema('');
+        }
+
+        function close() {
+            noteClosed();
             const dialog = $('dispatch-dialog');
             if (dialog?.open) dialog.close();
             $('new-run')?.focus({ preventScroll: true });
         }
 
         function handleHidden() {
-            // Reads abort on hide; a sent POST abort stays uncertain via owned catch above.
+            // Reads abort on hide without launching replacements; a sent POST abort
+            // stays uncertain via its owned catch. Generation invalidates continuations.
             abortReads();
             try { submitController?.abort(); } catch { /* Uncertain POSTs gate until acknowledged. */ }
+            state.generation++;
+            state.schemaReady = false;
         }
 
         function handleProfileChange(profileId) {
-            // Drop only the changed target's private form info; other targets stay usable.
+            // Clear only the changed profile's records; other profiles stay usable.
+            for (const [key, record] of [...state.uncertain]) {
+                if (record.profileId === profileId) state.uncertain.delete(key);
+            }
+            // Unrelated selections keep their form and in-flight operations.
             const selection = currentSelection();
-            if (selection.profileId !== profileId) return;
+            if (selection.profileId !== profileId && state.target?.profileId !== profileId) return;
             abortReads();
             try { submitController?.abort(); } catch { /* Credential-owned POSTs resolve separately. */ }
             state.generation++;
-            state.uncertainKey = '';
-            state.target = null;
+            state.submitSeq++;
+            state.submitBusy = false;
             invalidateSchema('');
+            setResultLink('', '');
             setStatus('This profile changed. Reselect it to start a workflow.', 'error');
             syncRepoOptions();
+            // A removed profile/repo never dispatches through stale selectors, and
+            // controls aborted mid-POST stay usable; Start waits for fresh inputs.
+            setControlsEnabled(true);
+            const start = $('dispatch-start');
+            if (start) start.disabled = true;
         }
 
         // Target changes invalidate old fields/schema and abort outstanding reads.
+        // Ref invalidates on every keystroke without network traffic per keystroke.
+        const refChanged = () => { state.generation++; invalidateSchema('Ref changed. Load inputs for this ref.'); };
         document.getElementById('dispatch-profile')?.addEventListener('change', () => { syncRepoOptions(); const ref = $('dispatch-ref'); if (ref) ref.value = ''; void loadReposAndWorkflows(); });
         document.getElementById('dispatch-repo')?.addEventListener('change', () => { const ref = $('dispatch-ref'); if (ref) ref.value = ''; void loadReposAndWorkflows(); });
         document.getElementById('dispatch-workflow')?.addEventListener('change', () => { void loadSchema(); });
         document.getElementById('dispatch-load')?.addEventListener('click', () => { void loadSchema(); });
-        document.getElementById('dispatch-ref')?.addEventListener('change', () => { invalidateSchema('Ref changed. Load inputs for this ref.'); const start = $('dispatch-start'); if (start) start.disabled = true; });
+        document.getElementById('dispatch-ref')?.addEventListener('input', refChanged);
+        document.getElementById('dispatch-ref')?.addEventListener('change', refChanged);
         document.getElementById('dispatch-form')?.addEventListener('submit', (event) => { void submit(event); });
         document.getElementById('dispatch-close')?.addEventListener('click', () => close());
-        document.getElementById('dispatch-dialog')?.addEventListener('close', () => { abortReads(); state.generation++; });
+        // Native Escape/dialog close follows the same path as the Close button.
+        document.getElementById('dispatch-dialog')?.addEventListener('close', () => { noteClosed(); });
 
 
 
