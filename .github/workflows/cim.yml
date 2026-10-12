@@ -1,0 +1,46 @@
+name: cim
+
+# Tests every cim change; on master, publishes cim-v<manifest version> once per version.
+on:
+  push:
+    branches: [master]
+    paths: ["cim/**", ".github/workflows/cim.yml"]
+  pull_request:
+    paths: ["cim/**", ".github/workflows/cim.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: node --test cim/*.test.cjs
+      # The runner image ships Google Chrome; GitHub responses are mocked.
+      - run: mkdir -p /tmp/opencode
+      - run: node --test cim/e2e.test.mjs
+
+  release:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Publish the manifest version unless it is already released
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r .version cim/manifest.json)
+          tag="cim-v$version"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "$tag is already released"
+            exit 0
+          fi
+          (cd cim && zip -q -r ../cim.zip manifest.json ./*.js ./*.html ./*.css vendor -x '*.test.js' '*.test.cjs' '*.test.mjs')
+          gh release create "$tag" cim.zip --target "$GITHUB_SHA" --title "cim $version" \
+            --notes "Unzip and load unpacked in brave://extensions. See cim/README.md."
