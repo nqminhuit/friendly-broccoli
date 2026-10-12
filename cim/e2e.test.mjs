@@ -260,6 +260,10 @@ test('profiles route their own PATs, filter identity, paginate without rewind, a
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Work-only result')`), false);
     await evaluate(`document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#status-filter').value='action_required'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Work-only result')`), true);
+    await evaluate(`document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#status-hide input[value=active]').checked=true; document.querySelector('#status-hide input[value=action_required]').checked=true; document.querySelector('#status-hide').dispatchEvent(new Event('change',{bubbles:true}))`);
+    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return !t.includes('Work-only result') && !t.includes('Deploy to preview') && t.includes('Compile app') && document.querySelector('#status-hide summary').textContent==='Hide statuses (2)'})()`), true);
+    await evaluate(`document.querySelector('#status-hide input[value=active]').checked=false; document.querySelector('#status-hide input[value=action_required]').checked=false; document.querySelector('#status-hide').dispatchEvent(new Event('change',{bubbles:true}))`);
+    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return t.includes('Work-only result') && t.includes('Deploy to preview') && t.includes('Compile app') && document.querySelector('#status-hide summary').textContent==='Hide statuses'})()`), true);
     await evaluate(`document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#profile-new').click(); document.querySelector('#profile-name').value='Expired'; document.querySelector('#repositories').value='acme/app'; document.querySelector('#token').value='expired-pat'; document.querySelector('#settings-form').requestSubmit()`);
     await waitFor(`document.querySelector('#repo-errors').textContent.includes('invalid or expired')`);
     const expiredCount = await evaluate(`globalThis.__cimRequests.length`);
@@ -386,7 +390,7 @@ test('toolbar discovers only its own dashboard context and reuses the open page'
 });
 
 test('expanded details stay text-safe and a failed-only rerun waits for a fresh attempt', { skip: !CHROME && 'Chrome not found' }, async () => {
-    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelectorAll('#status-hide input').forEach(i=>{i.checked=false}); document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
     await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).querySelector('.details-toggle').click()`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile <script>')`);
@@ -504,7 +508,7 @@ test('new run loads schema defaults validates and pins the exact returned run', 
     await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value='hi'; document.querySelector('#dispatch-inputs input[name=count]').value='not-a-number'; document.querySelector('#dispatch-form').requestSubmit()`);
     await waitFor(`document.querySelector('#dispatch-status').textContent.includes('Fix the highlighted')`);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), postBase);
-    await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value='hi'+String.fromCharCode(10)+'there'; document.querySelector('#dispatch-inputs input[name=count]').value='2'; window.confirm=()=>true; document.querySelector('#dispatch-form').requestSubmit(); document.querySelector('#dispatch-form').requestSubmit()`);
+    await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value='hi'+String.fromCharCode(10)+'there'; document.querySelector('#dispatch-inputs input[name=count]').value='2'; window.confirm=()=>{throw new Error('should not confirm')}; document.querySelector('#dispatch-form').requestSubmit(); document.querySelector('#dispatch-form').requestSubmit()`);
     await waitFor(`document.querySelector('#dispatch-result').textContent.includes('Open run 77')`);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).length`), postBase + 1);
     assert.equal(await evaluate(`JSON.parse(globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.includes('/dispatches')).at(-1).body).inputs.greeting`), 'hi\nthere');
@@ -512,7 +516,19 @@ test('new run loads schema defaults validates and pins the exact returned run', 
     assert.equal(await evaluate(`document.querySelector('#dispatch-result a').href`), 'https://github.com/acme/app/actions/runs/77');
     await waitFor(`document.querySelector('#run-list').textContent.includes('Dispatched CI')`);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Dispatched CI')`), true);
-    await evaluate(`document.querySelector('#dispatch-close').click()`);
+    const fire = (type, x, y) => `document.querySelector('#dispatch-dialog').dispatchEvent(new PointerEvent('${type}',{bubbles:true,clientX:${x},clientY:${y}}))`;
+    const click = (x, y) => `document.querySelector('#dispatch-dialog').dispatchEvent(new MouseEvent('click',{bubbles:true,clientX:${x},clientY:${y}}))`;
+    const inPadding = `(()=>{const r=document.querySelector('#dispatch-dialog').getBoundingClientRect(); return [r.left+5, r.top+5]})()`;
+    const [px, py] = await evaluate(inPadding);
+    // Press and release in the padding: target is the dialog but inside its box.
+    await evaluate(`${fire('pointerdown', px, py)}; ${click(px, py)}`);
+    assert.equal(await evaluate(`document.querySelector('#dispatch-dialog').open`), true);
+    // Press inside the box, release outside (drag-select): stays open.
+    await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:${px},clientY:${py}})); ${click(2, 2)}`);
+    assert.equal(await evaluate(`document.querySelector('#dispatch-dialog').open`), true);
+    // Press and release on the backdrop closes it.
+    await evaluate(`${fire('pointerdown', 2, 2)}; ${click(2, 2)}`);
+    assert.equal(await evaluate(`document.querySelector('#dispatch-dialog').open`), false);
 });
 
 test('stale workflow loads never restore and non-dispatchable workflows cannot start', { skip: !CHROME && 'Chrome not found' }, async () => {

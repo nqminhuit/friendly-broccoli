@@ -33,6 +33,16 @@
     function setSettingsMessage(message, kind = '') { const target = $('settings-message'); target.textContent = message; target.className = `settings-message ${kind}`; }
     function reportStorageError(message) { setFeedback(message, 'error'); $('monitor-label').textContent = 'Settings storage error'; }
     function currentProfiles() { return state.profiles.filter((profile) => profile.token && profile.repos.length); }
+    function matchesStatus(run, statusFilter, hidden) {
+        const completed = run.status === COMPLETED;
+        if (hidden.has('active') && activeStates.has(run.status)) return false;
+        if (completed && hidden.has(statusOf(run).conclusion)) return false;
+        return statusFilter === ALL || (statusFilter === 'active' ? activeStates.has(run.status) : statusFilter === COMPLETED ? completed : statusOf(run).conclusion === statusFilter);
+    }
+    function updateStatusHide() {
+        const count = document.querySelectorAll('#status-hide input:checked').length;
+        $('status-hide').querySelector('summary').textContent = count ? `Hide statuses (${count})` : 'Hide statuses';
+    }
     function statusOf(run) {
         if (run.status === COMPLETED) {
             const conclusion = run.conclusion || 'unknown';
@@ -72,7 +82,7 @@
         const errors = $('repo-errors'); errors.replaceChildren();
         for (const [key, message] of state.errors) { const [id, repo] = key.split(KEY_SEPARATOR); const profile = state.profiles.find((item) => item.id === id); if (profile) text(errors, 'div', `${profile.name} · ${repo}: ${message}`, 'repo-error'); }
         updateFilterOptions();
-        const search = $('search').value.trim().toLocaleLowerCase(); const profileFilter = $('profile-filter').value; const repoFilter = $('repo-filter').value; const workflowFilter = $('workflow-filter').value; const branchFilter = $('branch-filter').value; const statusFilter = $('status-filter').value;
+        const search = $('search').value.trim().toLocaleLowerCase(); const profileFilter = $('profile-filter').value; const repoFilter = $('repo-filter').value; const workflowFilter = $('workflow-filter').value; const branchFilter = $('branch-filter').value; const statusFilter = $('status-filter').value; const hiddenStatuses = new Set([...document.querySelectorAll('#status-hide input:checked')].map((input) => input.value));
         list.replaceChildren();
         if (!entries.length && state.initialLoading) text(list, 'div', 'Loading workflow runs…', 'history-note');
         let visibleCount = 0;
@@ -83,7 +93,7 @@
             if (repoFilter !== ALL && repo !== repoFilter) continue;
             if (workflowFilter !== ALL && (run.name || run.display_title || 'Workflow run') !== workflowFilter) continue;
             if (branchFilter !== ALL && (run.head_branch || 'Unknown') !== branchFilter) continue;
-            if (statusFilter !== ALL && (statusFilter === 'active' ? !activeStates.has(run.status) : statusFilter === COMPLETED ? run.status !== COMPLETED : status.conclusion !== statusFilter)) continue;
+            if (!matchesStatus(run, statusFilter, hiddenStatuses)) continue;
             const card = document.createElement('article'); card.className = 'run-card';
             const titleValue = run.display_title || run.name || 'Workflow run';
             const statusNode = document.createElement('div'); statusNode.className = `run-status status-${status.kind}`; const icon = document.createElement('span'); icon.className = 'status-icon'; icon.setAttribute('aria-hidden', 'true'); statusNode.append(icon); text(statusNode, 'span', status.label, 'run-status-label');
@@ -110,7 +120,7 @@
         }
         reconcileDetails(entries.filter(([, item]) => {
             const haystack = [item.repo, item.profileName, item.run.name, item.run.display_title, item.run.head_branch, item.run.event, item.run.actor?.login].join(' ').toLocaleLowerCase();
-            return (!search || haystack.includes(search)) && (repoFilter === ALL || item.repo === repoFilter) && (workflowFilter === ALL || (item.run.name || item.run.display_title || 'Workflow run') === workflowFilter) && (branchFilter === ALL || (item.run.head_branch || 'Unknown') === branchFilter) && (statusFilter === ALL || (statusFilter === 'active' ? activeStates.has(item.run.status) : statusFilter === COMPLETED ? item.run.status === COMPLETED : statusOf(item.run).conclusion === statusFilter));
+            return (!search || haystack.includes(search)) && (repoFilter === ALL || item.repo === repoFilter) && (workflowFilter === ALL || (item.run.name || item.run.display_title || 'Workflow run') === workflowFilter) && (branchFilter === ALL || (item.run.head_branch || 'Unknown') === branchFilter) && matchesStatus(item.run, statusFilter, hiddenStatuses);
         }).map(([key]) => key));
         $('no-runs').hidden = entries.length > 0 || state.initialLoading || state.errors.size > 0;
         $('filtered-empty').hidden = visibleCount > 0 || entries.length === 0;
@@ -670,6 +680,9 @@
     $('remember').addEventListener('change', () => state.testOperation?.controller.abort());
     $('profile-filter').addEventListener('change', () => { state.profileFilter = $('profile-filter').value; render(); }); $('refresh').addEventListener('click', () => { for (const entry of state.clients.values()) entry.suspendedRepos.clear(); state.forceDetailsRefresh = true; void monitor.refresh(); });
     $('older').addEventListener('click', () => { void loadOlder(); });
+    $('status-hide').addEventListener('change', () => { updateStatusHide(); render(); });
+    $('status-hide').addEventListener('keydown', (event) => { if (event.key === 'Escape' && $('status-hide').open) { $('status-hide').open = false; $('status-hide').querySelector('summary').focus(); } });
+    document.addEventListener('click', (event) => { if (!$('status-hide').contains(event.target)) $('status-hide').open = false; });
     for (const id of ['search', 'status-filter', 'repo-filter', 'workflow-filter', 'branch-filter']) $(id).addEventListener(id === 'search' ? 'input' : 'change', render);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { monitor.pause(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); for (const [, op] of state.pinOperations) op.controller.abort(); state.pinOperations.clear(); try { state.dispatchController?.handleHidden(); } catch { /* Uncertain POSTs gate until acknowledged. */ } render(); } else void monitor.resume(); updateMonitorLabel(); });
     window.addEventListener('pagehide', () => { monitor.stop(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); for (const [, op] of state.pinOperations) op.controller.abort(); state.pinOperations.clear(); try { state.dispatchController?.handleHidden(); } catch { /* Closing never declares the workflow stopped. */ } });

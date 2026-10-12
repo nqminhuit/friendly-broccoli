@@ -478,9 +478,6 @@
             if (Schema.isPayloadTooLarge(selection.ref, checked.inputs)) { setStatus('Workflow inputs exceed the 65535 character payload limit.', 'error'); return; }
             const gateKey = gateKeyFor(selection, checked.inputs);
             if (state.uncertain.has(gateKey)) { setStatus('This exact request is uncertain. Check GitHub, then acknowledge to allow another request.', 'error'); return; }
-            const warning = `Start workflow?\n\n${profile.name} · ${selection.repo}\n${workflowName} · ref ${selection.ref}\n\nGitHub runs use this profile’s workflow privileges and may incur Actions usage charges.`;
-            if (!globalThis.confirm(warning)) return;
-            if (!dialogOpen() || !visible()) { setStatus('Reopen the dialog while the dashboard is visible to start.', 'error'); return; }
             // Snapshot immutable target+PAT; recheck ownership before and after sending.
             const captured = { profileId: profile.id, token: entry.token, repo: selection.repo, workflowId: selection.workflowId, workflowPath, ref: selection.ref, inputs: checked.inputs, workflowName };
             const owned = () => {
@@ -632,6 +629,19 @@
         document.getElementById('dispatch-ref')?.addEventListener('change', refChanged);
         document.getElementById('dispatch-form')?.addEventListener('submit', (event) => { void submit(event); });
         document.getElementById('dispatch-close')?.addEventListener('click', () => close());
+        // closedby="any" needs Chrome 134; backdrop clicks only count when press and release are both outside the box (padding/scrollbar clicks also target the dialog).
+        const dialogEl = document.getElementById('dispatch-dialog');
+        const outsideBox = (event) => {
+            const r = dialogEl.getBoundingClientRect();
+            return event.target === dialogEl && (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom);
+        };
+        let pressedOutside = false;
+        dialogEl?.addEventListener('pointerdown', (event) => { pressedOutside = outsideBox(event); });
+        dialogEl?.addEventListener('click', (event) => {
+            const wasOutside = pressedOutside;
+            pressedOutside = false;
+            if (wasOutside && outsideBox(event)) close();
+        });
         // Escape stops the lifetime synchronously; close only acts while still closed.
         document.getElementById('dispatch-dialog')?.addEventListener('cancel', () => { noteClosed(); });
         document.getElementById('dispatch-dialog')?.addEventListener('close', () => {
