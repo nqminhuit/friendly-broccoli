@@ -197,6 +197,82 @@ test('already-aborted request never fetches and queued cancellation releases ser
     release(); await first; assert.equal(calls, 1); assert.equal(peak, 1);
 });
 
+test('GET-only ETags, safe POST JSON, empty accepted responses, and mutation cache invalidation', async () => {
+    const calls = [];
+    const client = new GitHubClient({ fetchImpl: async (url, options) => {
+        calls.push({ url, options });
+        if (url.endsWith('/empty')) return response(204, null);
+        if (options.method === 'POST') return options.body ? response(200, { workflow_run_id: 55 }) : response(201, null, { 'Content-Length': '0' });
+        return runResponse([{ id: 12 }]);
+    } });
+    client.reset('token');
+    await client.listRuns('a', 'b');
+    assert.equal(client.cache.size, 1);
+    const accepted = await client.rerun('a', 'b', 12, false);
+    assert.equal(accepted.status, 201);
+    assert.equal(accepted.data, null);
+    assert.equal(calls[1].options.method, 'POST');
+    assert.equal(calls[1].options.body, undefined);
+    assert.equal(calls[1].options.headers['If-None-Match'], undefined);
+    assert.equal(client.cache.size, 0);
+    const dispatchShape = await client.request('https://api.github.com/repos/a/b/actions/runs', { method: 'POST', body: { choice: 'safe' }, expectedPath: '/repos/a/b/actions/runs' });
+    assert.deepEqual(dispatchShape.data, { workflow_run_id: 55 });
+    assert.equal(calls[2].options.body, JSON.stringify({ choice: 'safe' }));
+    assert.equal(calls[2].options.headers['Content-Type'], 'application/json');
+    assert.equal(calls[2].options.redirect, 'error');
+    const empty = await client.request('https://api.github.com/empty', { expectedPath: '/empty' });
+    assert.equal(empty.status, 204);
+    assert.equal(empty.data, null);
+});
+
+test('mutations pace per client and distinguish queued cancellation from ambiguous sent failures', async () => {
+    let now = 5000, scheduled = null, calls = 0;
+    const client = new GitHubClient({ now: () => now, setTimer: (fn, delay) => { scheduled = { fn, delay }; return 1; }, clearTimer: () => {}, fetchImpl: async () => { calls++; return response(201, null, { 'Content-Length': '0' }); } });
+    client.reset('token');
+    await client.rerun('a', 'b', 1, false);
+    const second = client.rerun('a', 'b', 2, false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(scheduled.delay, 1000);
+    assert.equal(calls, 1);
+    now += scheduled.delay; scheduled.fn(); await second;
+    assert.equal(calls, 2);
+
+    const queuedClient = new GitHubClient({ fetchImpl: async () => { throw new Error('must not send'); } });
+    queuedClient.reset('token'); queuedClient.lastMutationAt = Date.now();
+    const pre = new AbortController(); const waiting = queuedClient.rerun('a', 'b', 3, false, { signal: pre.signal }); pre.abort();
+    await assert.rejects(waiting, (error) => error.kind === 'cancelled' && !error.ambiguous);
+
+    let sent = 0;
+    const uncertain = new GitHubClient({ fetchImpl: async () => { sent++; throw new Error('connection lost'); } }); uncertain.reset('token');
+    await assert.rejects(uncertain.rerun('a', 'b', 4, true), (error) => error.kind === 'network' && error.ambiguous);
+    assert.equal(sent, 1);
+
+    const afterSend = new AbortController(); let sentSignal;
+    const aborting = new GitHubClient({ fetchImpl: (_url, options) => { sentSignal = options.signal; return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('aborted after send')), { once: true })); } }); aborting.reset('token');
+    const uncertainAbort = aborting.rerun('a', 'b', 5, false, { signal: afterSend.signal }); await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(sentSignal.aborted, false); afterSend.abort();
+    await assert.rejects(uncertainAbort, (error) => error.kind === 'cancelled' && error.ambiguous);
+});
+
+test('run and attempt-job routes are pinned to safe repository paths; POST 403 does not invalidate token', async () => {
+    const seen = [];
+    const client = new GitHubClient({ fetchImpl: async (url, options) => { seen.push([url, options.method]); return options.method === 'POST' ? response(403, { message: 'Resource not accessible by integration' }) : response(200, { run_attempt: 2, jobs: [], total_count: 0 }); } });
+    client.reset('token');
+    await client.getRun('owner', 'repo', 8);
+    await client.listAttemptJobs('owner', 'repo', 8, 2);
+    await client.listLatestJobs('owner', 'repo', 8);
+    await assert.rejects(client.rerun('owner', 'repo', 8, true), (error) => error.status === 403 && error.kind === 'permission');
+    assert.equal(client.authInvalid, false);
+    await client.listRuns('owner', 'repo');
+    assert.deepEqual(seen.map(([url, method]) => [new URL(url).pathname + new URL(url).search, method]), [
+        ['/repos/owner/repo/actions/runs/8', 'GET'],
+        ['/repos/owner/repo/actions/runs/8/attempts/2/jobs?per_page=100', 'GET'],
+        ['/repos/owner/repo/actions/runs/8/jobs?filter=latest&per_page=100', 'GET'],
+        ['/repos/owner/repo/actions/runs/8/rerun-failed-jobs', 'POST'],
+        ['/repos/owner/repo/actions/runs?per_page=30', 'GET']
+    ]);
+});
+
 test('credential reset during delayed JSON rejects old data and does not cache it', async () => {
     let parse;
     const client = new GitHubClient({ fetchImpl: async () => ({ status: 200, ok: true, headers: new Headers(), json: () => new Promise((resolve) => { parse = resolve; }) }) });

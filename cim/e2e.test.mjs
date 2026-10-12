@@ -69,14 +69,23 @@ before(async () => {
     const mock = `(() => {
       globalThis.__cimRequests = [];
       globalThis.__slowSignals = [];
+      globalThis.__rerunAttempt = 1;
       globalThis.fetch = async (input, options = {}) => {
         const url = String(input), auth = options.headers?.Authorization;
-        globalThis.__cimRequests.push({ url, auth });
+        globalThis.__cimRequests.push({ url, auth, method: options.method || 'GET', body: options.body || '' });
         if (!url.startsWith('https://api.github.com/')) throw new Error('Blocked unexpected network URL');
         if (!['Bearer e2e-token','Bearer work-pat','Bearer expired-pat'].includes(auth)) throw new Error('Unexpected or missing token');
         if (auth === 'Bearer expired-pat') return new Response('{"message":"Bad credentials"}', {status:401});
         if (url.includes('/repos/acme/slow/')) { globalThis.__slowSignals.push(options.signal); await new Promise(resolve=>setTimeout(resolve,700)); return new Response(JSON.stringify({total_count:1,workflow_runs:[{id:90,name:'Slow',display_title:'Slow private result',status:'completed',conclusion:'success',created_at:'2025-01-01T00:00:00Z'}]}),{status:200,headers:{'content-type':'application/json'}}); }
         if (url.includes('/repos/acme/forbidden/')) return new Response('{"message":"Not Found"}', {status:404});
+        if (url.endsWith('/actions/runs/1/rerun') || url.endsWith('/actions/runs/1/rerun-failed-jobs')) { setTimeout(()=>globalThis.__rerunAttempt++,600); return new Response(null, {status:201}); }
+        if (url.endsWith('/actions/runs/1') && !url.includes('/jobs')) return new Response(JSON.stringify({id:1,run_attempt:globalThis.__rerunAttempt,status:'completed',conclusion:globalThis.__rerunAttempt === 1 ? 'failure' : 'success',name:'Build',head_branch:'main',head_sha:'abc123',created_at:'2026-10-11T00:00:00Z'}), {status:200,headers:{'content-type':'application/json','etag':'"run-'+globalThis.__rerunAttempt+'"'}});
+        if (url.includes('/actions/runs/1/attempts/') && url.includes('/jobs')) {
+          const page = Number(new URL(url).searchParams.get('page') || '1'), headers = new Headers({'content-type':'application/json'});
+          if (page === 1) headers.set('Link','<https://api.github.com/repos/acme/app/actions/runs/1/attempts/'+globalThis.__rerunAttempt+'/jobs?per_page=100&page=2>; rel="next"');
+          const jobs = page === 1 ? [{id:100+globalThis.__rerunAttempt,name:'Compile <script>',status:'completed',conclusion:globalThis.__rerunAttempt === 1 ? 'failure' : 'success',started_at:'2025-02-01T00:00:00Z',completed_at:'2025-02-01T00:00:30Z',runner_name:'ubuntu-latest',html_url:'https://github.com/acme/app/actions/runs/1/job/101',steps:[{name:'Checkout',status:'completed',conclusion:'success'},{name:'Build',status:'completed',conclusion:'success'}]}] : [{id:200+globalThis.__rerunAttempt,name:'Package checks',status:'completed',conclusion:'success',steps:[]}];
+          return new Response(JSON.stringify({total_count:2,jobs}), {status:200,headers});
+        }
          const page = Number(new URL(url).searchParams.get('page') || '1');
          if (page === 4) { globalThis.__slowSignals.push(options.signal); await new Promise(resolve=>setTimeout(resolve,700)); }
          const runId = auth === 'Bearer work-pat' ? 20 : page + 2;
@@ -186,4 +195,25 @@ test('profiles route their own PATs, filter identity, paginate without rewind, a
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange'))`);
     await waitFor(`globalThis.__cimRequests.length > ${hiddenCount}`);
     assert.equal(await evaluate(`globalThis.__cimRequests.every(x=>x.url.startsWith('https://api.github.com/') && ['Bearer e2e-token','Bearer work-pat','Bearer expired-pat'].includes(x.auth))`), true);
+});
+
+test('expanded details stay text-safe and a failed-only rerun waits for a fresh attempt', { skip: !CHROME && 'Chrome not found' }, async () => {
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
+    await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).querySelector('.details-toggle').click()`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Compile <script>')`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('2 of 2 jobs loaded') && document.querySelector('#run-list').textContent.includes('Package checks')`);
+    assert.equal(await evaluate(`document.querySelector('#run-list script') === null`), true);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Runner: ubuntu-latest') && document.querySelector('#run-list').textContent.includes('Checkout')`), true);
+    await evaluate(`window.confirm=()=>false; [...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).querySelector('.rerun-controls button:nth-child(2)').click()`);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`), 0);
+    await evaluate(`window.confirm=()=>true`);
+    await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).querySelector('.rerun-controls button:nth-child(2)').click(); [...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).querySelector('.rerun-controls button:nth-child(2)').click()`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Rerun requested')`);
+    await sleep(700);
+    await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).querySelector('.run-details .detail-heading button').click()`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('attempt 2') && document.querySelector('#run-list').textContent.includes('Compile <script>')`);
+    assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).textContent.includes('failure')`), false);
+    assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.endsWith('/rerun-failed-jobs')).length`), 1);
+    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Rerun requested')`), false);
 });

@@ -33,7 +33,7 @@
       <label class="field-label" for="repositories">Repositories</label><textarea id="repositories" rows="5" spellcheck="false" placeholder="owner/repository, one per line"></textarea><p class="help">Use one <code>owner/repository</code> per line. Duplicate entries are ignored within this profile.</p>
       <label class="field-label" for="token">Personal access token</label><input id="token" type="password" autocomplete="new-password" placeholder="ghp_…"><p class="help">Blank keeps this profile’s current token. Forget token removes only this profile’s PAT.</p>
       <label class="remember"><input id="remember" type="checkbox"><span><strong>Remember on this device</strong><small>Unchecked by default. Remembered tokens are stored unencrypted in local browser storage.</small></span></label>
-      <div class="token-warning">Use a fine-grained token with Actions: read-only access for each selected repository.</div>
+      <div class="token-warning">Use a fine-grained token with Actions: read access for monitoring. Rerun controls require Actions: write permission on that repository.</div>
       <div id="settings-message" class="settings-message" role="status" aria-live="polite"></div>
       <p class="help">Opening a private run uses your browser’s GitHub web session, not this PAT; switch GitHub accounts there if needed.</p><div class="dialog-actions"><button id="forget-token" class="button danger" type="button">Forget token</button><button id="profile-delete" class="button danger" type="button">Remove profile</button><span class="spacer"></span><button id="test-access" class="button quiet" type="button">Test access</button><button id="save-settings" class="button primary" type="submit">Save</button></div>
     </form>
