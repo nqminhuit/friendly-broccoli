@@ -5,7 +5,12 @@
     const KEY_SEPARATOR = '\u0000';
     const COMPLETED = 'completed';
     const CANCELLED = 'cancelled';
-    const state = { profiles: [], selected: '', editingId: null, profileFilter: ALL, runs: new Map(), latestLinks: new Map(), historyLinks: new Map(), historyStarted: new Set(), errors: new Map(), clients: new Map(), operations: new Set(), details: new Map(), detailOperations: new Map(), loading: false, initialLoading: false, epoch: 0, settingsBusy: false, writeBusy: false };
+    const RERUN_PENDING = 'Rerun requested—waiting for new attempt.';
+    const RERUN_UNCERTAIN = 'Request may have been accepted; check GitHub before retrying.';
+    const RunState = globalThis.CimRunState || null;
+    const attemptAdvance = (previous, next) => RunState ? RunState.isAttemptAdvance(previous, next) : (next !== null && Number(next) > Number(previous || 0));
+    const mergeRun = (current, incoming) => RunState ? RunState.mergeRunMetadata(current, incoming) : { run: { ...current, ...incoming }, advanced: false, downgraded: false };
+    const state = { profiles: [], selected: '', editingId: null, profileFilter: ALL, runs: new Map(), latestLinks: new Map(), historyLinks: new Map(), historyStarted: new Set(), errors: new Map(), clients: new Map(), operations: new Set(), details: new Map(), detailOperations: new Map(), pendingReruns: new Map(), loading: false, initialLoading: false, epoch: 0, settingsBusy: false, writeBusy: false };
     const profileKey = (id, repo) => `${id}${KEY_SEPARATOR}${repo.toLocaleLowerCase('en-US')}`;
     const runKey = (id, repo, run) => `${profileKey(id, repo)}${KEY_SEPARATOR}${run.id}`;
     const repoKey = (repo) => repo.toLocaleLowerCase('en-US');
@@ -91,6 +96,8 @@
             let githubUrl; try { githubUrl = new URL(run.html_url); } catch { githubUrl = null; }
             if (githubUrl?.origin === 'https://github.com' && githubUrl.protocol === 'https:' && !githubUrl.username && !githubUrl.password) { const link = document.createElement('a'); link.href = githubUrl.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = 'Open on GitHub ↗'; link.dataset.focusKey = `${runKey(profileId, repo, run)}:github`; side.append(link); }
             const key = runKey(profileId, repo, run); const detail = state.details.get(key);
+            const pending = state.pendingReruns.get(key) || (detail?.pending ? { message: detail.pending, ambiguous: detail.ambiguous } : null);
+            if (pending) text(statusNode, 'span', pending.ambiguous ? 'Rerun uncertain' : 'Rerun pending', 'rerun-pending');
             const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'button quiet details-toggle'; toggle.dataset.focusKey = `${key}:toggle`; toggle.setAttribute('aria-expanded', String(detail?.expanded === true)); toggle.textContent = detail?.expanded ? 'Hide jobs' : 'Show jobs and steps'; toggle.addEventListener('click', () => toggleDetails(key));
             const panel = document.createElement('section'); panel.className = 'run-details'; panel.hidden = detail?.expanded !== true;
             if (detail?.expanded) renderDetails(panel, item, detail);
@@ -157,90 +164,113 @@
         const created = Date.parse(item.run.created_at || ''), tooOld = Number.isFinite(created) && Date.now() - created > 30 * 86400000;
         const exhausted = Number(item.run.run_attempt) >= 51;
         const active = activeStates.has(item.run.status);
+        const key = runKey(item.profileId, item.repo, item.run);
+        const tracked = state.pendingReruns.get(key);
+        if (tracked && !detail.pending) { detail.pending = tracked.message; detail.pendingAttempt = tracked.baseAttempt; detail.ambiguous = tracked.ambiguous; }
         const controls = document.createElement('div'); controls.className = 'rerun-controls';
         for (const [failedOnly, label] of [[false, 'Re-run all jobs'], [true, 'Re-run failed jobs']]) {
-            const button = document.createElement('button'); button.type = 'button'; button.className = 'button quiet'; button.textContent = label; button.dataset.focusKey = `${runKey(item.profileId, item.repo, item.run)}:${failedOnly ? 'failed' : 'all'}`;
+            const button = document.createElement('button'); button.type = 'button'; button.className = 'button quiet'; button.textContent = label; button.dataset.focusKey = `${key}:${failedOnly ? 'failed' : 'all'}`;
             const reason = tooOld ? 'Runs older than 30 days cannot be rerun.' : active ? 'This run is still active.' : exhausted ? 'GitHub allows at most 50 reruns.' : item.run.status !== COMPLETED ? 'Only completed runs can be rerun.' : failedOnly && item.run.conclusion !== 'failure' && item.run.conclusion !== 'timed_out' && !failedJobs ? 'No failed or timed-out jobs are available.' : '';
-            button.disabled = Boolean(reason || detail.rerunBusy || detail.pending); if (reason || detail.pending) button.title = reason || 'Waiting for GitHub to confirm a new attempt.';
+            const blocked = Boolean(tracked) || detail.rerunBusy || detail.pending;
+            button.disabled = Boolean(reason || blocked); if (reason || detail.pending || tracked) button.title = reason || 'Waiting for GitHub to confirm a new attempt.';
             button.addEventListener('click', () => rerun(item, failedOnly)); controls.append(button); if (reason) text(controls, 'span', reason, 'rerun-reason');
         }
         if (detail.pending && detail.ambiguous) {
-            const acknowledge = document.createElement('button'); acknowledge.type = 'button'; acknowledge.className = 'button quiet'; acknowledge.dataset.focusKey = `${runKey(item.profileId, item.repo, item.run)}:acknowledge`; acknowledge.textContent = 'I checked GitHub; allow another request'; acknowledge.addEventListener('click', () => { detail.pending = ''; detail.ambiguous = false; detail.rerunBusy = false; render(); }); controls.append(acknowledge);
+            const acknowledge = document.createElement('button'); acknowledge.type = 'button'; acknowledge.className = 'button quiet'; acknowledge.dataset.focusKey = `${key}:acknowledge`; acknowledge.textContent = 'I checked GitHub; allow another request'; acknowledge.addEventListener('click', () => { detail.pending = ''; detail.ambiguous = false; detail.rerunBusy = false; state.pendingReruns.delete(key); render(); }); controls.append(acknowledge);
         }
         panel.append(controls);
     }
+    function clearPending(key) { state.pendingReruns.delete(key); const detail = state.details.get(key); if (detail && !detail.rerunBusy) { detail.pending = ''; detail.pendingAttempt = null; detail.ambiguous = false; } }
+    function trackPending(key, info) { state.pendingReruns.set(key, info); const detail = state.details.get(key); if (detail) { detail.pending = info.message; detail.pendingAttempt = info.baseAttempt; detail.ambiguous = info.ambiguous; } }
     function reconcileDetails(visibleKeys) {
         const visible = new Set(visibleKeys);
         state.visibleKeys = visible;
-        for (const [key, op] of state.detailOperations) if (!visible.has(key) && op.controller) { op.controller.abort(); state.detailOperations.delete(key); }
+        // Abort hidden job fetches but keep pending exact-ID tracking; clear stale loading UI.
+        for (const [key, op] of state.detailOperations) if (!visible.has(key) && op.controller) { op.controller.abort(); state.detailOperations.delete(key); const detail = state.details.get(key); if (detail) detail.loading = false; }
     }
     function toggleDetails(key) {
         const detail = state.details.get(key) || { expanded: false, jobs: [], total: 0, attempt: null, pending: '', loading: false, error: '' };
         detail.expanded = !detail.expanded; state.details.set(key, detail);
         if (detail.expanded) void loadDetails(key, true);
-        else { state.detailOperations.get(key)?.controller.abort(); state.detailOperations.delete(key); }
+        else { state.detailOperations.get(key)?.controller.abort(); state.detailOperations.delete(key); detail.loading = false; }
         render();
     }
     async function loadDetails(key, force = false) {
-        const item = state.runs.get(key), detail = state.details.get(key);
-        if (!item || !detail?.expanded || (detail.permissionDenied && !detail.pending && !activeStates.has(item.run.status)) || document.visibilityState !== 'visible' || state.detailOperations.has(key)) return;
-        if (!force && detail.loaded && !detail.pending && !activeStates.has(item.run.status)) return;
-        const profile = state.profiles.find((candidate) => candidate.id === item.profileId), entry = profile && clientFor(profile);
-        if (!profile || !entry || entry.client.authInvalid || entry.suspendedRepos.has(repoKey(item.repo))) return;
-        const controller = new AbortController(), op = { controller, epoch: state.epoch, profileId: item.profileId };
+        const live = state.runs.get(key), detail = state.details.get(key);
+        if (!live || !detail?.expanded || (detail.permissionDenied && !detail.pending && !state.pendingReruns.get(key) && !activeStates.has(live.run.status)) || document.visibilityState !== 'visible' || state.detailOperations.has(key)) return;
+        if (!force && detail.loaded && !detail.pending && !state.pendingReruns.get(key) && !activeStates.has(live.run.status)) return;
+        const profile = state.profiles.find((candidate) => candidate.id === live.profileId), entry = profile && clientFor(profile);
+        if (!profile || !entry || entry.client.authInvalid || entry.suspendedRepos.has(repoKey(live.repo))) return;
+        const target = { profileId: live.profileId, token: profile.token, repo: live.repo, runId: live.run.id };
+        const controller = new AbortController(), op = { controller, profileId: target.profileId, token: target.token, repo: target.repo, runId: target.runId };
         state.detailOperations.set(key, op); detail.loading = true; detail.error = ''; detail.stale = Boolean(detail.loaded); render();
-        const [owner, repo] = item.repo.split('/');
-        const current = () => !controller.signal.aborted && op.epoch === state.epoch && state.detailOperations.get(key) === op && state.clients.get(item.profileId) === entry && state.runs.get(key) === item;
+        const [owner, repo] = target.repo.split('/');
+        // Independent operations use target credential ownership, never the global settings epoch.
+        const current = () => {
+            if (controller.signal.aborted || state.detailOperations.get(key) !== op) return false;
+            if (state.clients.get(target.profileId) !== entry || entry.token !== target.token) return false;
+            const item = state.runs.get(key);
+            return Boolean(item && item.profileId === target.profileId && item.repo === target.repo && String(item.run.id) === String(target.runId));
+        };
         try {
-            const metadata = await entry.client.getRun(owner, repo, item.run.id, { signal: controller.signal });
+            const metadata = await entry.client.getRun(owner, repo, target.runId, { signal: controller.signal });
             if (!current()) return;
-            const attempt = metadata.run_attempt ?? null;
-            if (attempt !== detail.attempt) { detail.jobs = []; detail.total = 0; detail.loaded = false; detail.attempt = attempt; }
-            item.run = { ...item.run, ...metadata };
-            if (detail.pending && attempt !== null && Number(attempt) > Number(detail.pendingAttempt || 0) && detail.permissionDenied) { detail.pending = ''; detail.pendingAttempt = null; detail.error = 'A new attempt started, but GitHub denied access to its job details.'; detail.ambiguous = false; return; }
-            if (detail.pending && (attempt === null || Number(attempt) <= Number(detail.pendingAttempt || 0))) { detail.jobs = []; detail.total = 0; detail.loaded = false; detail.stale = false; return; }
-            if (detail.permissionDenied) return;
+            const merged = mergeRun(state.runs.get(key).run, metadata);
+            if (!merged.downgraded) state.runs.get(key).run = merged.run;
+            const attempt = merged.downgraded ? detail.attempt : (metadata.run_attempt ?? detail.attempt);
+            if (attemptAdvance(detail.attempt, attempt)) { detail.jobs = []; detail.total = 0; detail.loaded = false; detail.attempt = attempt; }
+            else if (detail.attempt === null || detail.attempt === undefined) detail.attempt = attempt;
+            const tracked = state.pendingReruns.get(key);
+            const pendingAttempt = tracked?.baseAttempt ?? detail.pendingAttempt;
+            const hasPending = Boolean(tracked || detail.pending);
+            if (hasPending && pendingAttempt !== undefined && pendingAttempt !== null && !attemptAdvance(pendingAttempt, attempt)) { detail.jobs = []; detail.total = 0; detail.loaded = false; detail.stale = false; return; }
+            if (hasPending && attemptAdvance(pendingAttempt, attempt) && detail.permissionDenied) { clearPending(key); detail.error = 'A new attempt started, but GitHub denied access to its job details.'; detail.ambiguous = false; return; }
+            if (detail.permissionDenied && !hasPending) return;
+            const expectedAttempt = detail.attempt;
             const pages = new Set(), jobs = new Map(); let url = null, total = 0;
             do {
-                const pageUrl = url || (attempt ? `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(item.run.id)}/attempts/${encodeURIComponent(attempt)}/jobs?per_page=100` : `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(item.run.id)}/jobs?filter=latest&per_page=100`);
+                const pageUrl = url || (expectedAttempt ? `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(target.runId)}/attempts/${encodeURIComponent(expectedAttempt)}/jobs?per_page=100` : `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(target.runId)}/jobs?filter=latest&per_page=100`);
                 if (pages.has(pageUrl)) throw new Error('GitHub returned a repeated jobs page; details are incomplete.');
                 pages.add(pageUrl);
-                const result = attempt ? await entry.client.listAttemptJobs(owner, repo, item.run.id, attempt, { url: pageUrl, signal: controller.signal }) : await entry.client.listLatestJobs(owner, repo, item.run.id, { url: pageUrl, signal: controller.signal });
-                if (!current()) return;
+                const result = expectedAttempt ? await entry.client.listAttemptJobs(owner, repo, target.runId, expectedAttempt, { url: pageUrl, signal: controller.signal }) : await entry.client.listLatestJobs(owner, repo, target.runId, { url: pageUrl, signal: controller.signal });
+                // Drop old-attempt pages that finished after a newer attempt invalidated them.
+                if (!current() || detail.attempt !== expectedAttempt) return;
                 total = Math.max(total, result.total); for (const job of result.jobs) if (job?.id !== undefined) jobs.set(job.id, job);
                 url = result.links.next || null;
             } while (url);
-            if (!current()) return;
+            if (!current() || detail.attempt !== expectedAttempt) return;
             detail.jobs = [...jobs.values()]; detail.total = Math.max(total, detail.jobs.length); detail.loaded = true; detail.stale = false; detail.error = ''; detail.refreshAfterAttempt = false;
-            if (detail.pending && attempt !== null && Number(attempt) > Number(detail.pendingAttempt || 0)) { detail.pending = ''; detail.pendingAttempt = null; detail.ambiguous = false; }
+            if (hasPending && attemptAdvance(pendingAttempt, detail.attempt)) clearPending(key);
         } catch (error) {
             if (current() && error.kind !== CANCELLED) { detail.error = error.message || 'Could not load run details.'; if (error.kind === 'permission' || error.kind === 'not-found') detail.permissionDenied = true; }
         } finally {
-            if (state.detailOperations.get(key) === op) state.detailOperations.delete(key);
-            if (op.epoch === state.epoch) { detail.loading = false; if (state.details.get(key) === detail) render(); }
+            if (state.detailOperations.get(key) === op) { state.detailOperations.delete(key); detail.loading = false; if (state.details.get(key) === detail) render(); }
         }
     }
     async function rerun(item, failedOnly) {
         const key = runKey(item.profileId, item.repo, item.run), detail = state.details.get(key), profile = state.profiles.find((candidate) => candidate.id === item.profileId);
-        if (!detail || detail.rerunBusy || !profile || document.visibilityState !== 'visible') return;
+        if (!detail || detail.rerunBusy || detail.pending || state.pendingReruns.has(key) || !profile || document.visibilityState !== 'visible') return;
         const target = { profileId: profile.id, token: profile.token, repo: item.repo, runId: item.run.id, attempt: item.run.run_attempt, run: { ...item.run } };
         const warning = `Request ${failedOnly ? 'failed jobs' : 'all jobs'} to rerun?\n\n${profile.name} · ${target.repo}\n${target.run.name || target.run.display_title || 'Workflow run'} · ${target.run.head_branch || 'ref unavailable'} · ${target.run.head_sha || 'commit unavailable'}\n\nGitHub reruns use the original actor's workflow privileges and may incur Actions usage charges.`;
         if (!confirm(warning)) return;
-        const entry = clientFor(profile), controller = new AbortController(), op = { profileId: target.profileId, controller, epoch: state.epoch };
+        const entry = clientFor(profile), controller = new AbortController(), op = { profileId: target.profileId, controller };
+        const valid = () => state.clients.get(target.profileId) === entry && entry.token === target.token && !controller.signal.aborted;
         detail.rerunBusy = true; detail.pendingAttempt = target.attempt; state.operations.add(op); render();
         try {
-            if (entry.token !== target.token || state.clients.get(target.profileId) !== entry) throw new Error('The selected profile changed. Reopen the run before retrying.');
+            if (!valid()) throw new Error('The selected profile changed. Reopen the run before retrying.');
             await entry.client.rerun(target.repo.split('/')[0], target.repo.split('/')[1], target.runId, failedOnly, { signal: controller.signal });
-            if (op.epoch !== state.epoch || state.clients.get(target.profileId) !== entry || controller.signal.aborted) return;
-            detail.pending = 'Rerun requested—waiting for new attempt.'; detail.pendingAttempt = target.attempt; detail.rerunBusy = false;
+            if (!valid()) return;
+            trackPending(key, { profileId: target.profileId, repo: target.repo, runId: target.runId, baseAttempt: target.attempt, token: target.token, ambiguous: false, message: RERUN_PENDING });
+            detail.rerunBusy = false;
             detail.jobs = []; detail.total = 0; detail.loaded = false; detail.stale = false;
             void loadDetails(key, true);
         } catch (error) {
-            if (op.epoch !== state.epoch || state.clients.get(target.profileId) !== entry) return;
+            if (!valid() && error.message === 'The selected profile changed. Reopen the run before retrying.') { if (state.details.get(key) === detail) { detail.rerunBusy = false; render(); } return; }
+            if (!valid()) return;
             detail.rerunBusy = false;
-            if (error.ambiguous) { detail.pending = 'Request may have been accepted; check GitHub before retrying.'; detail.pendingAttempt = target.attempt; detail.ambiguous = true; detail.jobs = []; detail.total = 0; detail.loaded = false; detail.stale = false; }
+            if (error.ambiguous) { trackPending(key, { profileId: target.profileId, repo: target.repo, runId: target.runId, baseAttempt: target.attempt, token: target.token, ambiguous: true, message: RERUN_UNCERTAIN }); detail.jobs = []; detail.total = 0; detail.loaded = false; detail.stale = false; }
             else if (error.kind !== CANCELLED) detail.error = error.message;
-        } finally { done(op); if (op.epoch === state.epoch) render(); }
+        } finally { done(op); if (state.details.get(key) === detail) render(); }
     }
     function updateFilterOptions() {
         const filter = (id, values, label) => { const select = $(id), prior = select.value; select.replaceChildren(new Option(`All ${label}`, ALL), ...[...new Set(values)].sort().map((value) => new Option(value, value))); if ([...select.options].some((option) => option.value === prior)) select.value = prior; };
@@ -249,8 +279,9 @@
         filter('workflow-filter', visible.map(({ run }) => run.name || run.display_title || 'Workflow run'), 'workflows');
         filter('branch-filter', visible.map(({ run }) => run.head_branch || 'Unknown'), 'branches');
     }
-    function operation(profileId) { const controller = new AbortController(); const op = { profileId, controller, epoch: state.epoch }; state.operations.add(op); return op; }
+    function operation(profileId) { const controller = new AbortController(); const op = { profileId, controller }; state.operations.add(op); return op; }
     function done(op) { state.operations.delete(op); }
+    function detailVisible(key) { return !state.visibleKeys || state.visibleKeys.has(key); }
     function clientFor(profile) {
         let entry = state.clients.get(profile.id);
         if (!entry) { const client = new CimApi.GitHubClient(); client.reset(profile.token); entry = { client, token: profile.token, repos: new Set(profile.repos.map(repoKey)), suspendedRepos: new Set() }; state.clients.set(profile.id, entry); }
@@ -264,6 +295,24 @@
     async function refreshLatest(signal) {
         const results = new Map(); const profiles = currentProfiles(); const cycleEpoch = state.epoch; let expectedRequests = 0;
         const latestRuns = [];
+        const mergeIncoming = (profileId, profileName, repo, run) => {
+            const key = runKey(profileId, repo, run);
+            const previous = state.runs.get(key);
+            const details = state.details.get(key);
+            if (previous) {
+                const merged = mergeRun(previous.run, run);
+                if (merged.downgraded) return { key, advanced: false };
+                if (merged.advanced) {
+                    if (details) { details.jobs = []; details.total = 0; details.loaded = false; details.attempt = merged.run.run_attempt ?? null; details.stale = false; details.refreshAfterAttempt = details.expanded; }
+                    state.runs.set(key, { profileId, profileName, repo, run: merged.run });
+                    return { key, advanced: true };
+                }
+                state.runs.set(key, { profileId, profileName: previous.profileName !== profileName ? profileName : previous.profileName, repo, run: merged.run });
+                return { key, advanced: false };
+            }
+            state.runs.set(key, { profileId, profileName, repo, run });
+            return { key, advanced: false };
+        };
         for (const profile of profiles) {
             if (signal.aborted || cycleEpoch !== state.epoch) break;
             const entry = clientFor(profile);
@@ -276,7 +325,7 @@
                 try {
                     const value = await entry.client.listRuns(owner, name, { signal });
                     if (signal.aborted || cycleEpoch !== state.epoch || state.clients.get(profile.id) !== entry) continue;
-                    for (const run of value.runs) { const key = runKey(profile.id, repo, run), previous = state.runs.get(key), details = state.details.get(key); if (details && previous && previous.run.run_attempt !== run.run_attempt) { details.jobs = []; details.total = 0; details.loaded = false; details.attempt = run.run_attempt ?? null; details.stale = false; details.refreshAfterAttempt = details.expanded; } state.runs.set(key, { profileId: profile.id, profileName: profile.name, repo, run }); latestRuns.push(run); }
+                    for (const run of value.runs) { mergeIncoming(profile.id, profile.name, repo, run); latestRuns.push(run); }
                     state.latestLinks.set(key, value.links.next || null);
                     if (!state.historyStarted.has(key)) state.historyLinks.set(key, value.links.next || null);
                     results.set(key, { runs: value.runs });
@@ -287,7 +336,35 @@
                 }
             }
         }
-        const visibleDetailKeys = [...state.details.entries()].filter(([key, detail]) => detail.expanded && detailVisible(key) && (state.forceDetailsRefresh || detail.pending || detail.refreshAfterAttempt || activeStates.has(state.runs.get(key)?.run.status))).map(([key]) => key);
+        // Pending reruns track exact-ID metadata independently of expansion/filter; jobs only while visible.
+        if (document.visibilityState === 'visible') {
+            for (const [key, tracked] of [...state.pendingReruns]) {
+                if (signal.aborted || cycleEpoch !== state.epoch) break;
+                const profile = state.profiles.find((item) => item.id === tracked.profileId);
+                const entry = profile && state.clients.get(tracked.profileId);
+                if (!profile || !entry || entry.token !== tracked.token || entry.client.authInvalid || entry.client.retryAt > Date.now() || entry.suspendedRepos.has(repoKey(tracked.repo))) continue;
+                const [owner, name] = tracked.repo.split('/');
+                try {
+                    expectedRequests++;
+                    const metadata = await entry.client.getRun(owner, name, tracked.runId, { signal });
+                    if (signal.aborted || cycleEpoch !== state.epoch || state.clients.get(tracked.profileId) !== entry) continue;
+                    const live = state.runs.get(key);
+                    const base = live ? mergeRun(live.run, metadata) : { run: metadata, advanced: false, downgraded: false };
+                    if (base.downgraded) continue;
+                    if (live) live.run = base.run;
+                    else state.runs.set(key, { profileId: tracked.profileId, profileName: profile.name, repo: tracked.repo, run: base.run });
+                    if (attemptAdvance(tracked.baseAttempt, base.run.run_attempt)) {
+                        clearPending(key);
+                        const detail = state.details.get(key);
+                        if (detail) { detail.jobs = []; detail.total = 0; detail.loaded = false; detail.attempt = base.run.run_attempt ?? detail.attempt; detail.stale = false; detail.refreshAfterAttempt = detail.expanded; }
+                    }
+                } catch (error) {
+                    if (error.kind === CANCELLED || signal.aborted || cycleEpoch !== state.epoch) continue;
+                    if (error.kind === 'permission' || error.kind === 'not-found') entry.suspendedRepos.add(repoKey(tracked.repo));
+                }
+            }
+        }
+        const visibleDetailKeys = [...state.details.entries()].filter(([key, detail]) => detail.expanded && detailVisible(key) && (state.forceDetailsRefresh || detail.pending || state.pendingReruns.get(key) || detail.refreshAfterAttempt || activeStates.has(state.runs.get(key)?.run.status))).map(([key]) => key);
         let forceRefreshPending = false;
         for (const key of visibleDetailKeys) {
             if (signal.aborted || cycleEpoch !== state.epoch) break;
@@ -390,7 +467,8 @@
         if (!changed.size && state.profiles.length) { state.profiles = profiles; for (const item of state.runs.values()) item.profileName = incoming.get(item.profileId)?.name || item.profileName; render(); syncProfileUI(); updateMonitorLabel(); return; }
         monitor.stop(); state.epoch++;
         for (const op of state.operations) if (changed.has(op.profileId) || op.profileIds?.some((id) => changed.has(id)) || op.profileId === 'pending') op.controller.abort();
-        for (const [key, op] of state.detailOperations) if (changed.has(op.profileId)) { op.controller.abort(); state.detailOperations.delete(key); }
+        // Abort only changed-profile detail fetches; unrelated profiles keep credential-owned ops.
+        for (const [key, op] of state.detailOperations) if (changed.has(op.profileId)) { op.controller.abort(); state.detailOperations.delete(key); const detail = state.details.get(key); if (detail) detail.loading = false; }
         for (const id of changed) {
             const old = previous.get(id), next = incoming.get(id); const entry = state.clients.get(id);
             if (!next) state.clients.delete(id);
@@ -406,6 +484,7 @@
             else if (entry) { const oldRepos = new Set(old.repos.map(repoKey)); const newRepos = new Set(next.repos.map(repoKey)); for (const repo of new Set([...oldRepos, ...newRepos])) if (oldRepos.has(repo) !== newRepos.has(repo)) { clearRepoCache(entry, repo); entry.suspendedRepos.delete(repo); for (const key of [...state.runs.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}${repo}${KEY_SEPARATOR}`)) state.runs.delete(key); for (const key of [...state.details.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}${repo}${KEY_SEPARATOR}`)) state.details.delete(key); state.errors.delete(`${id}${KEY_SEPARATOR}${repo}`); state.latestLinks.delete(`${id}${KEY_SEPARATOR}${repo}`); state.historyLinks.delete(`${id}${KEY_SEPARATOR}${repo}`); state.historyStarted.delete(`${id}${KEY_SEPARATOR}${repo}`); } entry.repos = new Set(next.repos.map(repoKey)); }
             for (const key of [...state.runs.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key.startsWith(`${profileKey(id, repo)}${KEY_SEPARATOR}`)))) state.runs.delete(key);
             for (const key of [...state.details.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key.startsWith(`${profileKey(id, repo)}${KEY_SEPARATOR}`)))) state.details.delete(key);
+            for (const key of [...state.pendingReruns.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key.startsWith(`${profileKey(id, repo)}${KEY_SEPARATOR}`)))) state.pendingReruns.delete(key);
             for (const map of [state.errors, state.latestLinks, state.historyLinks]) for (const key of [...map.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key === profileKey(id, repo)))) map.delete(key);
             for (const key of [...state.historyStarted]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key === profileKey(id, repo)))) state.historyStarted.delete(key);
         }
@@ -416,14 +495,27 @@
     const loadSettings = CimSettings.createSnapshotLoader(() => store.load(), applySettings);
     async function loadOlder() {
         if (state.loading) return;
-        state.loading = true; render(); const selected = $('profile-filter').value; const targets = [...state.historyLinks.entries()].filter(([key, url]) => url && (selected === ALL || key.startsWith(`${selected}${KEY_SEPARATOR}`))); const errors = []; const epoch = state.epoch;
-        const controller = new AbortController(); const op = { profileId: selected === ALL ? '*' : selected, profileIds: targets.map(([key]) => key.split(KEY_SEPARATOR)[0]), controller, epoch }; state.operations.add(op);
+        state.loading = true; render(); const selected = $('profile-filter').value; const targets = [...state.historyLinks.entries()].filter(([key, url]) => url && (selected === ALL || key.startsWith(`${selected}${KEY_SEPARATOR}`))); const errors = [];
+        const controller = new AbortController(); const op = { profileId: selected === ALL ? '*' : selected, profileIds: targets.map(([key]) => key.split(KEY_SEPARATOR)[0]), controller }; state.operations.add(op);
         try {
             for (const [key, url] of targets) {
-                if (controller.signal.aborted || document.visibilityState !== 'visible' || epoch !== state.epoch) break;
+                if (controller.signal.aborted || document.visibilityState !== 'visible') break;
                 const [id, repo] = key.split(KEY_SEPARATOR); const profile = state.profiles.find((item) => item.id === id); const entry = state.clients.get(id); if (!profile || !entry || entry.client.authInvalid || entry.suspendedRepos.has(repoKey(repo))) continue;
                 const [owner, name] = repo.split('/');
-                try { const value = await entry.client.listRuns(owner, name, { url, signal: controller.signal }); if (controller.signal.aborted || epoch !== state.epoch || state.clients.get(id) !== entry) continue; for (const run of value.runs) { const runId = runKey(id, repo, run), previous = state.runs.get(runId), details = state.details.get(runId); if (details && previous && previous.run.run_attempt !== run.run_attempt) { details.jobs = []; details.total = 0; details.loaded = false; details.attempt = run.run_attempt ?? null; details.stale = false; details.refreshAfterAttempt = details.expanded; } state.runs.set(runId, { profileId: id, profileName: profile.name, repo, run }); } state.historyLinks.set(key, value.links.next || null); state.historyStarted.add(key); }
+                try {
+                    const value = await entry.client.listRuns(owner, name, { url, signal: controller.signal });
+                    if (controller.signal.aborted || state.clients.get(id) !== entry || entry.token !== profile.token) continue;
+                    for (const run of value.runs) {
+                        const runId = runKey(id, repo, run), previous = state.runs.get(runId), details = state.details.get(runId);
+                        if (previous) {
+                            const merged = mergeRun(previous.run, run);
+                            if (merged.downgraded) continue;
+                            if (merged.advanced && details) { details.jobs = []; details.total = 0; details.loaded = false; details.attempt = merged.run.run_attempt ?? null; details.stale = false; details.refreshAfterAttempt = details.expanded; }
+                            state.runs.set(runId, { profileId: id, profileName: profile.name, repo, run: merged.run });
+                        } else state.runs.set(runId, { profileId: id, profileName: profile.name, repo, run });
+                    }
+                    state.historyLinks.set(key, value.links.next || null); state.historyStarted.add(key);
+                }
                 catch (error) { if (error.kind === CANCELLED) break; if (error.kind === 'permission' || error.kind === 'not-found') entry.suspendedRepos.add(repoKey(repo)); errors.push(`${profile.name} · ${repo}: ${error.message}`); }
             }
         } finally { done(op); state.loading = false; render(); }
@@ -455,8 +547,8 @@
     $('profile-filter').addEventListener('change', () => { state.profileFilter = $('profile-filter').value; render(); }); $('refresh').addEventListener('click', () => { for (const entry of state.clients.values()) entry.suspendedRepos.clear(); state.forceDetailsRefresh = true; void monitor.refresh(); });
     $('older').addEventListener('click', () => { void loadOlder(); });
     for (const id of ['search', 'status-filter', 'repo-filter', 'workflow-filter', 'branch-filter']) $(id).addEventListener(id === 'search' ? 'input' : 'change', render);
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { monitor.pause(); for (const op of state.operations) op.controller.abort(); for (const op of state.detailOperations.values()) op.controller.abort(); state.detailOperations.clear(); } else void monitor.resume(); updateMonitorLabel(); });
-    window.addEventListener('pagehide', () => { monitor.stop(); for (const op of state.operations) op.controller.abort(); for (const op of state.detailOperations.values()) op.controller.abort(); state.detailOperations.clear(); });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { monitor.pause(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); render(); } else void monitor.resume(); updateMonitorLabel(); });
+    window.addEventListener('pagehide', () => { monitor.stop(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); });
     let storageTimer = null;
     chrome.storage.onChanged.addListener((changes, area) => {
         if (!['local', 'session'].includes(area) || !Object.keys(changes).some((key) => key.startsWith(CimSettings.PROFILE_PREFIX) || key.startsWith(CimSettings.TOKEN_PREFIX) || CimSettings.LEGACY_KEYS.includes(key))) return;

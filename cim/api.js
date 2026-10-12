@@ -157,7 +157,11 @@
                     throw new ApiError(method === 'POST' ? 'GitHub denied the rerun; this profile needs Actions: write permission.' : 'GitHub denied access to this resource.', { status: 403, kind: 'permission' });
                 }
                 if (response.status === 404) throw new ApiError('Repository is absent or inaccessible to this token.', { status: 404, kind: 'not-found' });
-                if (!response.ok) throw new ApiError(`GitHub returned an unexpected error (${response.status}).`, { status: response.status, kind: 'http' });
+                if (!response.ok) {
+                    // A 5xx after a sent POST may have executed; callers must not safely repeat it.
+                    const uncertain = method === 'POST' && sent && response.status >= 500;
+                    throw new ApiError(`GitHub returned an unexpected error (${response.status}).`, { status: response.status, kind: 'http', ambiguous: uncertain });
+                }
                 let data = null;
                 const hasJsonBody = response.headers.get('Content-Length') !== '0' && response.headers.get('Content-Type')?.includes('json');
                 if ((response.status !== 204 && response.status !== 201) || hasJsonBody) {

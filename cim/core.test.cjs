@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { parseRepositories, createSnapshotLoader, SettingsStore } = require('./settings.js');
 const { API_VERSION, GitHubClient, ApiError, paginationLinks } = require('./api.js');
+const { attemptNumber, isAttemptAdvance, mergeRunMetadata, shouldInvalidateJobs } = require('./run-state.js');
 const { ForegroundMonitor, nextPollAt } = require('./monitor.js');
 
 test('repository input trims, deduplicates case-insensitively, and rejects unsafe syntax', () => {
@@ -354,4 +355,65 @@ test('toolbar reuses only the dashboard tab, restores focus, and coalesces click
     tabUrl = 'chrome-extension://id/dashboard.html';
     await context.module.exports.openDashboard();
     assert.equal(calls.filter(([name]) => name === 'create').length, 1);
+});
+
+test('sent POST 5xx is uncertain while explicit denials stay definite', async () => {
+    const forStatus = (status) => new GitHubClient({ fetchImpl: async () => response(status, { message: 'boom' }) });
+    for (const status of [500, 502, 503]) {
+        const client = forStatus(status); client.reset('token');
+        await assert.rejects(client.rerun('a', 'b', 1, false), (error) => error.kind === 'http' && error.status === status && error.ambiguous === true);
+    }
+    const denied = new GitHubClient({ fetchImpl: async () => response(422, { message: 'Validation failed' }) }); denied.reset('token');
+    await assert.rejects(denied.rerun('a', 'b', 1, false), (error) => error.kind === 'http' && error.ambiguous === false);
+    const forbidden = new GitHubClient({ fetchImpl: async () => response(403, { message: 'Denied' }) }); forbidden.reset('token');
+    await assert.rejects(forbidden.rerun('a', 'b', 1, false), (error) => error.kind === 'permission' && !error.ambiguous);
+    assert.equal(forbidden.authInvalid, false);
+    await assert.rejects(forbidden.listRuns('a', 'b'), (error) => error.kind === 'permission');
+});
+
+test('unrelated profile credential reset never strands the other profile request', async () => {
+    let personalResolve;
+    const personal = new GitHubClient({ fetchImpl: () => new Promise((resolve) => { personalResolve = resolve; }) });
+    let workCalls = 0;
+    const work = new GitHubClient({ fetchImpl: async () => { workCalls++; return runResponse([{ id: 2 }]); } });
+    personal.reset('personal-pat'); work.reset('work-pat');
+    const personalGet = personal.listRuns('acme', 'app');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(personalResolve);
+    // Unrelated Work token rotation aborts only Work-owned work, never Personal.
+    const workRequest = work.listRuns('acme', 'other');
+    work.reset('work-rotated');
+    await assert.rejects(workRequest, (error) => error.kind === 'cancelled');
+    personalResolve(runResponse([{ id: 7, run_attempt: 1 }]));
+    assert.equal((await personalGet).runs[0].id, 7);
+    // Personal POST still sends once with its own PAT after the unrelated change.
+    let postAuth = '';
+    const poster = new GitHubClient({ fetchImpl: async (url, options) => { postAuth = options.headers.Authorization; return response(201, null, { 'Content-Length': '0' }); } });
+    poster.reset('personal-pat');
+    await poster.rerun('acme', 'app', 7, false);
+    assert.equal(postAuth, 'Bearer personal-pat');
+});
+
+test('run metadata merges monotonically and only real advances invalidate jobs', () => {
+    assert.equal(isAttemptAdvance(1, 2), true);
+    assert.equal(isAttemptAdvance(2, 1), false);
+    assert.equal(isAttemptAdvance(2, 2), false);
+    assert.equal(attemptNumber('bad'), null);
+    // Expansion while latest poll replaces the same run object keeps attempt identity.
+    const expanded = { id: 1, run_attempt: 1, status: 'completed' };
+    const replaced = { id: 1, run_attempt: 1, status: 'completed', conclusion: 'failure' };
+    assert.deepEqual(mergeRunMetadata(expanded, replaced).run.conclusion, 'failure');
+    // Lagging list/304 returning attempt1 never downgrades known attempt2.
+    const known = { id: 1, run_attempt: 2, status: 'completed' };
+    const lagging = { id: 1, run_attempt: 1, status: 'completed' };
+    const kept = mergeRunMetadata(known, lagging);
+    assert.equal(kept.downgraded, true);
+    assert.equal(kept.run.run_attempt, 2);
+    assert.equal(shouldInvalidateJobs(1, 2), true);
+    assert.equal(shouldInvalidateJobs(2, 1), false);
+    assert.equal(shouldInvalidateJobs(2, 2), false);
+    // Pending exact-ID advance clears only when metadata proves a higher attempt.
+    assert.equal(isAttemptAdvance(1, 2), true);
+    assert.equal(isAttemptAdvance(1, 1), false);
+    assert.equal(isAttemptAdvance(null, 1), true);
 });
