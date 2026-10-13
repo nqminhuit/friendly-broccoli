@@ -355,6 +355,23 @@ test('filters except search are remembered across reloads and never leak into ot
     assert.equal(await statusSummary(), 'All statuses');
 });
 
+test('saved filters whose option never appears are dropped after the first load', { skip: !CHROME && 'Chrome not found' }, async () => {
+    try {
+        await evaluate(`localStorage.setItem(${JSON.stringify(FILTERS_KEY)}, JSON.stringify({ profile: 'all', repo: 'acme/app', workflow: 'all', branch: 'gone/branch', statusMode: 'show', statuses: [] }))`);
+        await send('Page.reload', {}, pageSession);
+        await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
+        await waitFor(`JSON.parse(localStorage.getItem(${JSON.stringify(FILTERS_KEY)})).branch === 'all'`);
+        assert.equal(await evaluate(`(() => { const v = (id) => document.querySelector(id).selectedOptions[0].text; return [v('#repo-filter'), v('#branch-filter')].join('|'); })()`), 'acme/app|All branches');
+        const stored = JSON.parse(await evaluate(`localStorage.getItem(${JSON.stringify(FILTERS_KEY)})`));
+        assert.equal(stored.repo, 'acme/app');
+        assert.equal(JSON.stringify(stored).includes('gone/branch'), false);
+    } finally {
+        await evaluate(`localStorage.removeItem(${JSON.stringify(FILTERS_KEY)})`);
+        await send('Page.reload', {}, pageSession);
+        await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
+    }
+});
+
 test('run summaries stay compact, truncate safely, and disclose details accessibly at narrow widths', { skip: !CHROME && 'Chrome not found' }, async () => {
     await evaluate(`if(document.querySelector('#settings-dialog').open) document.querySelector('#settings-close').click(); if(document.querySelector('#dispatch-dialog').open) document.querySelector('#dispatch-close').click()`);
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, pageSession);

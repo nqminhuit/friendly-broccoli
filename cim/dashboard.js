@@ -30,7 +30,7 @@
             }
             render();
         }
-        updateMonitorLabel();
+        dropPendingFilters(); updateMonitorLabel();
     }, isVisible: () => document.visibilityState === 'visible' });
 
     function setFeedback(message, kind = '') { const target = $('feedback'); target.textContent = message; target.className = `feedback ${kind}`; target.hidden = !message; }
@@ -65,6 +65,12 @@
             const { mode, checked } = readStatusMenu();
             localStorage.setItem(FILTERS_KEY, JSON.stringify({ ...saved, statusMode: mode, statuses: [...checked] }));
         } catch { /* Filters just are not remembered. */ }
+    }
+    // Saved values only apply during the first load; leftovers would be unclearable and could apply unexpectedly later.
+    function dropPendingFilters() {
+        if (!Object.keys(pendingFilters).length) return;
+        for (const key of Object.keys(pendingFilters)) delete pendingFilters[key];
+        render(); saveFilters();
     }
     function restoreFilters() {
         let saved = null;
@@ -665,6 +671,7 @@
         // reads new profiles; every changed target (token, repos, deletion) is covered.
         for (const id of changed) { try { state.dispatchController?.handleProfileChange(id); } catch { /* Dispatch form clears only its changed target. */ } }
         state.initialLoading = profiles.some((profile) => profile.token && profile.repos.length) && document.visibilityState === 'visible'; render(); syncProfileUI(); updateMonitorLabel();
+        if (!state.initialLoading && (document.visibilityState === 'visible' || !currentProfiles().length)) dropPendingFilters();
         if (currentProfiles().length) void monitor.start();
     }
     const loadSettings = CimSettings.createSnapshotLoader(() => store.load(), applySettings);
