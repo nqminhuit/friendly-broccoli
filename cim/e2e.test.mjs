@@ -39,6 +39,12 @@ async function platformInfo() {
     } catch (error) { return `diagnostic failed: ${error.message}`; }
 }
 const runtimeErrors = [];
+const FILTERS_KEY = 'cim.filters';
+const statusMenuScript = (mode, statuses) => `(() => { const menu = document.querySelector('#status-menu'); menu.querySelector('input[name=status-mode][value=${mode}]').checked = true; menu.querySelectorAll('input[type=checkbox]').forEach((i) => { i.checked = ${JSON.stringify(statuses)}.includes(i.value); }); menu.dispatchEvent(new Event('change', {bubbles: true})); })();`;
+const setStatusMenu = (mode, statuses) => evaluate(statusMenuScript(mode, statuses));
+const statusSummary = () => evaluate(`document.querySelector('#status-menu summary').textContent`);
+const runListText = () => evaluate(`document.querySelector('#run-list').textContent`);
+
 async function waitFor(expression, timeout = 7000) {
     const until = Date.now() + timeout;
     while (Date.now() < until) {
@@ -258,13 +264,26 @@ test('profiles route their own PATs, filter identity, paginate without rewind, a
     assert.equal(await evaluate(`document.querySelector('#repo-filter').value === 'all' && document.querySelector('#run-list').textContent.includes('Work-only result')`), true);
     await evaluate(`document.querySelector('#profile-filter').value=[...document.querySelector('#profile-filter').options].find(o=>o.text==='Personal').value; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Work-only result')`), false);
-    await evaluate(`document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#status-filter').value='action_required'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
-    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Work-only result')`), true);
-    await evaluate(`document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#status-hide input[value=active]').checked=true; document.querySelector('#status-hide input[value=action_required]').checked=true; document.querySelector('#status-hide').dispatchEvent(new Event('change',{bubbles:true}))`);
-    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return !t.includes('Work-only result') && !t.includes('Deploy to preview') && t.includes('Compile app') && document.querySelector('#status-hide summary').textContent==='Hide statuses (2)'})()`), true);
-    await evaluate(`document.querySelector('#status-hide input[value=active]').checked=false; document.querySelector('#status-hide input[value=action_required]').checked=false; document.querySelector('#status-hide').dispatchEvent(new Event('change',{bubbles:true}))`);
-    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return t.includes('Work-only result') && t.includes('Deploy to preview') && t.includes('Compile app') && document.querySelector('#status-hide summary').textContent==='Hide statuses'})()`), true);
-    await evaluate(`document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#profile-new').click(); document.querySelector('#profile-name').value='Expired'; document.querySelector('#repositories').value='acme/app'; document.querySelector('#token').value='expired-pat'; document.querySelector('#settings-form').requestSubmit()`);
+    await evaluate(`document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await setStatusMenu('show', ['action_required']);
+    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return t.includes('Work-only result') && !t.includes('Compile app') && !t.includes('Deploy to preview')})()`), true);
+    assert.equal(await statusSummary(), 'Show: Action required');
+    await setStatusMenu('show', ['active', 'action_required']);
+    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return t.includes('Work-only result') && t.includes('Deploy to preview') && !t.includes('Compile app')})()`), true);
+    assert.equal(await statusSummary(), 'Show: Active, Action required');
+    await setStatusMenu('hide', ['active', 'action_required']);
+    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return !t.includes('Work-only result') && !t.includes('Deploy to preview') && t.includes('Compile app')})()`), true);
+    assert.equal(await statusSummary(), 'Hide: Active, Action required');
+    await setStatusMenu('hide', ['active', 'success', 'failure']);
+    assert.equal(await statusSummary(), 'Hide 3 statuses');
+    await setStatusMenu('show', ['success', 'failure', 'skipped']);
+    assert.equal(await statusSummary(), 'Show 3 statuses');
+    for (const mode of ['show', 'hide']) {
+        await setStatusMenu(mode, []);
+        assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return t.includes('Work-only result') && t.includes('Deploy to preview') && t.includes('Compile app')})()`), true);
+        assert.equal(await statusSummary(), 'All statuses');
+    }
+    await evaluate(`document.querySelector('#profile-new').click(); document.querySelector('#profile-name').value='Expired'; document.querySelector('#repositories').value='acme/app'; document.querySelector('#token').value='expired-pat'; document.querySelector('#settings-form').requestSubmit()`);
     await waitFor(`document.querySelector('#repo-errors').textContent.includes('invalid or expired')`);
     const expiredCount = await evaluate(`globalThis.__cimRequests.length`);
     await evaluate(`document.querySelector('#profile-select').value=[...document.querySelector('#profile-select').options].find(o=>o.text.startsWith('Expired')).value; document.querySelector('#profile-select').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#test-access').click()`);
@@ -390,7 +409,7 @@ test('toolbar discovers only its own dashboard context and reuses the open page'
 });
 
 test('expanded details stay text-safe and a failed-only rerun waits for a fresh attempt', { skip: !CHROME && 'Chrome not found' }, async () => {
-    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelectorAll('#status-hide input').forEach(i=>{i.checked=false}); document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); ${statusMenuScript('show', [])} document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
     await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).querySelector('.details-toggle').click()`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile <script>')`);

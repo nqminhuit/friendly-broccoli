@@ -4,6 +4,8 @@
     const ALL = 'all';
     const KEY_SEPARATOR = '\u0000';
     const COMPLETED = 'completed';
+    const SHOW = 'show';
+    const HIDE = 'hide';
     const CANCELLED = 'cancelled';
     const RERUN_PENDING = 'Rerun requested—waiting for new attempt.';
     const RERUN_UNCERTAIN = 'Request may have been accepted; check GitHub before retrying.';
@@ -43,15 +45,19 @@
     }
     function reportStorageError(message) { setFeedback(message, 'error'); setMonitorLabel('Settings storage error', false); }
     function currentProfiles() { return state.profiles.filter((profile) => profile.token && profile.repos.length); }
-    function matchesStatus(run, statusFilter, hidden) {
-        const completed = run.status === COMPLETED;
-        if (hidden.has('active') && activeStates.has(run.status)) return false;
-        if (completed && hidden.has(statusOf(run).conclusion)) return false;
-        return statusFilter === ALL || (statusFilter === 'active' ? activeStates.has(run.status) : statusFilter === COMPLETED ? completed : statusOf(run).conclusion === statusFilter);
+    function readStatusMenu() {
+        const checkedInputs = [...document.querySelectorAll('#status-menu input[type=checkbox]:checked')];
+        return { mode: document.querySelector('#status-menu input[name=status-mode]:checked')?.value === HIDE ? HIDE : SHOW, checked: new Set(checkedInputs.map((input) => input.value)), labels: checkedInputs.map((input) => input.parentElement.textContent.trim()) };
     }
-    function updateStatusHide() {
-        const count = document.querySelectorAll('#status-hide input:checked').length;
-        $('status-hide').querySelector('summary').textContent = count ? `Hide statuses (${count})` : 'Hide statuses';
+    // Single predicate for the render loop and reconcileDetails: no checked status means everything is visible.
+    function matchesStatus(run, mode, checked) {
+        if (!checked.size) return true;
+        const hit = (checked.has('active') && activeStates.has(run.status)) || (run.status === COMPLETED && checked.has(statusOf(run).conclusion));
+        return hit !== (mode === HIDE);
+    }
+    function updateStatusMenu() {
+        const { mode, labels } = readStatusMenu(); const verb = mode === HIDE ? 'Hide' : 'Show';
+        $('status-menu').querySelector('summary').textContent = !labels.length ? 'All statuses' : labels.length <= 2 ? `${verb}: ${labels.join(', ')}` : `${verb} ${labels.length} statuses`;
     }
     function statusOf(run) {
         if (run.status === COMPLETED) {
@@ -92,7 +98,7 @@
         const errors = $('repo-errors'); errors.replaceChildren();
         for (const [key, message] of state.errors) { const [id, repo] = key.split(KEY_SEPARATOR); const profile = state.profiles.find((item) => item.id === id); if (profile) text(errors, 'div', `${profile.name} · ${repo}: ${message}`, 'repo-error'); }
         updateFilterOptions();
-        const search = $('search').value.trim().toLocaleLowerCase(); const profileFilter = $('profile-filter').value; const repoFilter = $('repo-filter').value; const workflowFilter = $('workflow-filter').value; const branchFilter = $('branch-filter').value; const statusFilter = $('status-filter').value; const hiddenStatuses = new Set([...document.querySelectorAll('#status-hide input:checked')].map((input) => input.value));
+        const search = $('search').value.trim().toLocaleLowerCase(); const profileFilter = $('profile-filter').value; const repoFilter = $('repo-filter').value; const workflowFilter = $('workflow-filter').value; const branchFilter = $('branch-filter').value; const { mode: statusMode, checked: checkedStatuses } = readStatusMenu();
         list.replaceChildren();
         if (!entries.length && state.initialLoading) text(list, 'div', 'Loading workflow runs…', 'history-note');
         let visibleCount = 0;
@@ -103,7 +109,7 @@
             if (repoFilter !== ALL && repo !== repoFilter) continue;
             if (workflowFilter !== ALL && (run.name || run.display_title || 'Workflow run') !== workflowFilter) continue;
             if (branchFilter !== ALL && (run.head_branch || 'Unknown') !== branchFilter) continue;
-            if (!matchesStatus(run, statusFilter, hiddenStatuses)) continue;
+            if (!matchesStatus(run, statusMode, checkedStatuses)) continue;
             const card = document.createElement('article'); card.className = 'run-card';
             const titleValue = run.display_title || run.name || 'Workflow run';
             const statusNode = document.createElement('div'); statusNode.className = `run-status status-${status.kind}`; const icon = document.createElement('span'); icon.className = 'status-icon'; icon.setAttribute('aria-hidden', 'true'); statusNode.append(icon); text(statusNode, 'span', status.label, 'run-status-label');
@@ -130,7 +136,7 @@
         }
         reconcileDetails(entries.filter(([, item]) => {
             const haystack = [item.repo, item.profileName, item.run.name, item.run.display_title, item.run.head_branch, item.run.event, item.run.actor?.login].join(' ').toLocaleLowerCase();
-            return (!search || haystack.includes(search)) && (repoFilter === ALL || item.repo === repoFilter) && (workflowFilter === ALL || (item.run.name || item.run.display_title || 'Workflow run') === workflowFilter) && (branchFilter === ALL || (item.run.head_branch || 'Unknown') === branchFilter) && matchesStatus(item.run, statusFilter, hiddenStatuses);
+            return (!search || haystack.includes(search)) && (repoFilter === ALL || item.repo === repoFilter) && (workflowFilter === ALL || (item.run.name || item.run.display_title || 'Workflow run') === workflowFilter) && (branchFilter === ALL || (item.run.head_branch || 'Unknown') === branchFilter) && matchesStatus(item.run, statusMode, checkedStatuses);
         }).map(([key]) => key));
         $('no-runs').hidden = entries.length > 0 || state.initialLoading || state.errors.size > 0;
         $('filtered-empty').hidden = visibleCount > 0 || entries.length === 0;
@@ -691,10 +697,10 @@
     $('remember').addEventListener('change', () => state.testOperation?.controller.abort());
     $('profile-filter').addEventListener('change', () => { state.profileFilter = $('profile-filter').value; render(); }); $('refresh').addEventListener('click', () => { for (const entry of state.clients.values()) entry.suspendedRepos.clear(); state.forceDetailsRefresh = true; void monitor.refresh(); });
     $('older').addEventListener('click', () => { void loadOlder(); });
-    $('status-hide').addEventListener('change', () => { updateStatusHide(); render(); });
-    $('status-hide').addEventListener('keydown', (event) => { if (event.key === 'Escape' && $('status-hide').open) { $('status-hide').open = false; $('status-hide').querySelector('summary').focus(); } });
-    document.addEventListener('click', (event) => { if (!$('status-hide').contains(event.target)) $('status-hide').open = false; });
-    for (const id of ['search', 'status-filter', 'repo-filter', 'workflow-filter', 'branch-filter']) $(id).addEventListener(id === 'search' ? 'input' : 'change', render);
+    $('status-menu').addEventListener('change', () => { updateStatusMenu(); render(); });
+    $('status-menu').addEventListener('keydown', (event) => { if (event.key === 'Escape' && $('status-menu').open) { $('status-menu').open = false; $('status-menu').querySelector('summary').focus(); } });
+    document.addEventListener('click', (event) => { if (!$('status-menu').contains(event.target)) $('status-menu').open = false; });
+    for (const id of ['search', 'repo-filter', 'workflow-filter', 'branch-filter']) $(id).addEventListener(id === 'search' ? 'input' : 'change', render);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { monitor.pause(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); for (const [, op] of state.pinOperations) op.controller.abort(); state.pinOperations.clear(); try { state.dispatchController?.handleHidden(); } catch { /* Uncertain POSTs gate until acknowledged. */ } render(); } else void monitor.resume(); updateMonitorLabel(); });
     window.addEventListener('pagehide', () => { monitor.stop(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); for (const [, op] of state.pinOperations) op.controller.abort(); state.pinOperations.clear(); try { state.dispatchController?.handleHidden(); } catch { /* Closing never declares the workflow stopped. */ } });
     let storageTimer = null;
