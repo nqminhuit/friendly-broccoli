@@ -496,6 +496,9 @@ test('new run loads schema defaults validates and pins the exact returned run', 
     await waitFor(`document.querySelector('#dispatch-inputs').textContent.includes('greeting')`);
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value`), 'Hello');
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').tagName`), 'TEXTAREA');
+    // The close button stays inside the dialog's visible rect after scrolling.
+    assert.equal(await evaluate(`(()=>{const d=document.querySelector('#dispatch-dialog'); const pad=document.createElement('div'); pad.style.height='2000px'; pad.id='e2e-pad'; d.querySelector('form').append(pad); d.scrollTop=1500; const c=document.querySelector('#dispatch-close').getBoundingClientRect(), r=d.getBoundingClientRect(); const ok=d.scrollTop>0 && c.top>=r.top && c.bottom<=r.bottom; pad.remove(); d.scrollTop=0; return ok})()`), true);
+    assert.equal(await evaluate(`document.querySelector('.dialog-notes').open`), false);
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs input[name=flag]').checked`), false);
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs input[name=count]').value`), '0');
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs select[name=env_choice]').value`), 'dev');
