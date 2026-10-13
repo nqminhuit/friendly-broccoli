@@ -39,6 +39,12 @@ async function platformInfo() {
     } catch (error) { return `diagnostic failed: ${error.message}`; }
 }
 const runtimeErrors = [];
+const FILTERS_KEY = 'cim.filters';
+const statusMenuScript = (mode, statuses) => `(() => { const menu = document.querySelector('#status-menu'); menu.querySelector('input[name=status-mode][value=${mode}]').checked = true; menu.querySelectorAll('input[type=checkbox]').forEach((i) => { i.checked = ${JSON.stringify(statuses)}.includes(i.value); }); menu.dispatchEvent(new Event('change', {bubbles: true})); })();`;
+const setStatusMenu = (mode, statuses) => evaluate(statusMenuScript(mode, statuses));
+const statusSummary = () => evaluate(`document.querySelector('#status-menu summary').textContent`);
+const runListText = () => evaluate(`document.querySelector('#run-list').textContent`);
+
 async function waitFor(expression, timeout = 7000) {
     const until = Date.now() + timeout;
     while (Date.now() < until) {
@@ -258,13 +264,26 @@ test('profiles route their own PATs, filter identity, paginate without rewind, a
     assert.equal(await evaluate(`document.querySelector('#repo-filter').value === 'all' && document.querySelector('#run-list').textContent.includes('Work-only result')`), true);
     await evaluate(`document.querySelector('#profile-filter').value=[...document.querySelector('#profile-filter').options].find(o=>o.text==='Personal').value; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Work-only result')`), false);
-    await evaluate(`document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#status-filter').value='action_required'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
-    assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Work-only result')`), true);
-    await evaluate(`document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#status-hide input[value=active]').checked=true; document.querySelector('#status-hide input[value=action_required]').checked=true; document.querySelector('#status-hide').dispatchEvent(new Event('change',{bubbles:true}))`);
-    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return !t.includes('Work-only result') && !t.includes('Deploy to preview') && t.includes('Compile app') && document.querySelector('#status-hide summary').textContent==='Hide statuses (2)'})()`), true);
-    await evaluate(`document.querySelector('#status-hide input[value=active]').checked=false; document.querySelector('#status-hide input[value=action_required]').checked=false; document.querySelector('#status-hide').dispatchEvent(new Event('change',{bubbles:true}))`);
-    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return t.includes('Work-only result') && t.includes('Deploy to preview') && t.includes('Compile app') && document.querySelector('#status-hide summary').textContent==='Hide statuses'})()`), true);
-    await evaluate(`document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#profile-new').click(); document.querySelector('#profile-name').value='Expired'; document.querySelector('#repositories').value='acme/app'; document.querySelector('#token').value='expired-pat'; document.querySelector('#settings-form').requestSubmit()`);
+    await evaluate(`document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await setStatusMenu('show', ['action_required']);
+    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return t.includes('Work-only result') && !t.includes('Compile app') && !t.includes('Deploy to preview')})()`), true);
+    assert.equal(await statusSummary(), 'Show: Action required');
+    await setStatusMenu('show', ['active', 'action_required']);
+    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return t.includes('Work-only result') && t.includes('Deploy to preview') && !t.includes('Compile app')})()`), true);
+    assert.equal(await statusSummary(), 'Show: Active, Action required');
+    await setStatusMenu('hide', ['active', 'action_required']);
+    assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return !t.includes('Work-only result') && !t.includes('Deploy to preview') && t.includes('Compile app')})()`), true);
+    assert.equal(await statusSummary(), 'Hide: Active, Action required');
+    await setStatusMenu('hide', ['active', 'success', 'failure']);
+    assert.equal(await statusSummary(), 'Hide 3 statuses');
+    await setStatusMenu('show', ['success', 'failure', 'skipped']);
+    assert.equal(await statusSummary(), 'Show 3 statuses');
+    for (const mode of ['show', 'hide']) {
+        await setStatusMenu(mode, []);
+        assert.equal(await evaluate(`(()=>{const t=document.querySelector('#run-list').textContent; return t.includes('Work-only result') && t.includes('Deploy to preview') && t.includes('Compile app')})()`), true);
+        assert.equal(await statusSummary(), 'All statuses');
+    }
+    await evaluate(`document.querySelector('#profile-new').click(); document.querySelector('#profile-name').value='Expired'; document.querySelector('#repositories').value='acme/app'; document.querySelector('#token').value='expired-pat'; document.querySelector('#settings-form').requestSubmit()`);
     await waitFor(`document.querySelector('#repo-errors').textContent.includes('invalid or expired')`);
     const expiredCount = await evaluate(`globalThis.__cimRequests.length`);
     await evaluate(`document.querySelector('#profile-select').value=[...document.querySelector('#profile-select').options].find(o=>o.text.startsWith('Expired')).value; document.querySelector('#profile-select').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#test-access').click()`);
@@ -302,6 +321,55 @@ test('profiles route their own PATs, filter identity, paginate without rewind, a
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange'))`);
     await waitFor(`globalThis.__cimRequests.length > ${hiddenCount}`);
     assert.equal(await evaluate(`globalThis.__cimRequests.every(x=>x.url.startsWith('https://api.github.com/') && ['Bearer e2e-token','Bearer work-pat','Bearer expired-pat'].includes(x.auth))`), true);
+});
+
+test('filters except search are remembered across reloads and never leak into other tests', { skip: !CHROME && 'Chrome not found' }, async () => {
+    const setSelect = (id, value) => evaluate(`(() => { const s = document.querySelector('${id}'); s.value = [...s.options].find((o) => o.value === ${JSON.stringify(value)} || o.text === ${JSON.stringify(value)}).value; s.dispatchEvent(new Event('change', {bubbles: true})); })()`);
+    const resetFilters = async () => {
+        await evaluate(`document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true}))`);
+        for (const id of ['#profile-filter', '#repo-filter', '#workflow-filter', '#branch-filter']) await setSelect(id, 'all');
+        await setStatusMenu('show', []);
+        await evaluate(`localStorage.removeItem(${JSON.stringify(FILTERS_KEY)})`);
+    };
+    try {
+        await resetFilters();
+        await setSelect('#profile-filter', 'Personal');
+        await setSelect('#repo-filter', 'acme/app');
+        await setSelect('#workflow-filter', 'Deploy');
+        await setSelect('#branch-filter', 'feature/demo');
+        await setStatusMenu('show', ['active', 'failure']);
+        await evaluate(`document.querySelector('#search').value='preview'; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true}))`);
+        const stored = JSON.parse(await evaluate(`localStorage.getItem(${JSON.stringify(FILTERS_KEY)})`));
+        assert.equal(stored.repo, 'acme/app');
+        assert.deepEqual(stored.statuses.sort(), ['active', 'failure']);
+        assert.equal(JSON.stringify(stored).includes('preview'), false);
+        await send('Page.reload', {}, pageSession);
+        await waitFor(`document.querySelector('#run-list').textContent.includes('Deploy to preview')`);
+        assert.equal(await evaluate(`(() => { const v = (id) => document.querySelector(id).selectedOptions[0].text; return [v('#profile-filter'), v('#repo-filter'), v('#workflow-filter'), v('#branch-filter'), document.querySelector('#search').value].join('|'); })()`), 'Personal|acme/app|Deploy|feature/demo|');
+        assert.equal(await statusSummary(), 'Show: Active, Failure');
+        assert.equal(await evaluate(`document.querySelector('#status-menu input[value=show]').checked`), true);
+        assert.equal(await evaluate(`document.querySelectorAll('#run-list .run-card').length`), 1);
+        assert.equal((await runListText()).includes('Compile app'), false);
+    } finally { await resetFilters(); }
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
+    assert.equal(await statusSummary(), 'All statuses');
+});
+
+test('saved filters whose option never appears are dropped after the first load', { skip: !CHROME && 'Chrome not found' }, async () => {
+    try {
+        await evaluate(`localStorage.setItem(${JSON.stringify(FILTERS_KEY)}, JSON.stringify({ profile: 'all', repo: 'acme/app', workflow: 'all', branch: 'gone/branch', statusMode: 'show', statuses: [] }))`);
+        await send('Page.reload', {}, pageSession);
+        await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
+        await waitFor(`JSON.parse(localStorage.getItem(${JSON.stringify(FILTERS_KEY)})).branch === 'all'`);
+        assert.equal(await evaluate(`(() => { const v = (id) => document.querySelector(id).selectedOptions[0].text; return [v('#repo-filter'), v('#branch-filter')].join('|'); })()`), 'acme/app|All branches');
+        const stored = JSON.parse(await evaluate(`localStorage.getItem(${JSON.stringify(FILTERS_KEY)})`));
+        assert.equal(stored.repo, 'acme/app');
+        assert.equal(JSON.stringify(stored).includes('gone/branch'), false);
+    } finally {
+        await evaluate(`localStorage.removeItem(${JSON.stringify(FILTERS_KEY)})`);
+        await send('Page.reload', {}, pageSession);
+        await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
+    }
 });
 
 test('run summaries stay compact, truncate safely, and disclose details accessibly at narrow widths', { skip: !CHROME && 'Chrome not found' }, async () => {
@@ -390,7 +458,7 @@ test('toolbar discovers only its own dashboard context and reuses the open page'
 });
 
 test('expanded details stay text-safe and a failed-only rerun waits for a fresh attempt', { skip: !CHROME && 'Chrome not found' }, async () => {
-    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelectorAll('#status-hide input').forEach(i=>{i.checked=false}); document.querySelector('#status-filter').value='all'; document.querySelector('#status-filter').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); ${statusMenuScript('show', [])} document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
     await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).querySelector('.details-toggle').click()`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile <script>')`);
@@ -496,6 +564,9 @@ test('new run loads schema defaults validates and pins the exact returned run', 
     await waitFor(`document.querySelector('#dispatch-inputs').textContent.includes('greeting')`);
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value`), 'Hello');
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').tagName`), 'TEXTAREA');
+    // The close button stays inside the dialog's visible rect after scrolling.
+    assert.equal(await evaluate(`(()=>{const d=document.querySelector('#dispatch-dialog'); const pad=document.createElement('div'); pad.style.height='2000px'; pad.id='e2e-pad'; d.querySelector('form').append(pad); d.scrollTop=1500; const c=document.querySelector('#dispatch-close').getBoundingClientRect(), r=d.getBoundingClientRect(); const ok=d.scrollTop>0 && c.top>=r.top && c.bottom<=r.bottom; pad.remove(); d.scrollTop=0; return ok})()`), true);
+    assert.equal(await evaluate(`document.querySelector('.dialog-notes').open`), false);
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs input[name=flag]').checked`), false);
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs input[name=count]').value`), '0');
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs select[name=env_choice]').value`), 'dev');
