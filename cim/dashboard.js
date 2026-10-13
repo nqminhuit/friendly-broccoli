@@ -6,6 +6,8 @@
     const COMPLETED = 'completed';
     const SHOW = 'show';
     const HIDE = 'hide';
+    const FILTERS_KEY = 'cim.filters';
+    const FILTER_SELECTS = { profile: 'profile-filter', repo: 'repo-filter', workflow: 'workflow-filter', branch: 'branch-filter' };
     const CANCELLED = 'cancelled';
     const RERUN_PENDING = 'Rerun requested—waiting for new attempt.';
     const RERUN_UNCERTAIN = 'Request may have been accepted; check GitHub before retrying.';
@@ -55,6 +57,26 @@
         const hit = (checked.has('active') && activeStates.has(run.status)) || (run.status === COMPLETED && checked.has(statusOf(run).conclusion));
         return hit !== (mode === HIDE);
     }
+    // Saved select values wait here until a matching option exists; a manual change drops the entry.
+    const pendingFilters = {};
+    function saveFilters() {
+        try {
+            const saved = {}; for (const [key, id] of Object.entries(FILTER_SELECTS)) saved[key] = pendingFilters[key] ?? $(id).value;
+            const { mode, checked } = readStatusMenu();
+            localStorage.setItem(FILTERS_KEY, JSON.stringify({ ...saved, statusMode: mode, statuses: [...checked] }));
+        } catch { /* Filters just are not remembered. */ }
+    }
+    function restoreFilters() {
+        let saved = null;
+        try { saved = JSON.parse(localStorage.getItem(FILTERS_KEY)); } catch { /* Corrupt data falls back to defaults. */ }
+        if (!saved || typeof saved !== 'object') return;
+        for (const key of Object.keys(FILTER_SELECTS)) if (typeof saved[key] === 'string' && saved[key] !== ALL) pendingFilters[key] = saved[key];
+        const statuses = Array.isArray(saved.statuses) ? saved.statuses : [];
+        for (const input of document.querySelectorAll('#status-menu input[type=checkbox]')) input.checked = statuses.includes(input.value);
+        const modeInput = document.querySelector(`#status-menu input[name=status-mode][value=${saved.statusMode === HIDE ? HIDE : SHOW}]`); modeInput.checked = true;
+        updateStatusMenu();
+    }
+    function onFilterChange(key) { delete pendingFilters[key]; saveFilters(); render(); }
     function updateStatusMenu() {
         const { mode, labels } = readStatusMenu(); const verb = mode === HIDE ? 'Hide' : 'Show';
         $('status-menu').querySelector('summary').textContent = !labels.length ? 'All statuses' : labels.length <= 2 ? `${verb}: ${labels.join(', ')}` : `${verb} ${labels.length} statuses`;
@@ -84,7 +106,9 @@
         $('setup-empty').hidden = profiles.length > 0;
         $('dashboard-content').hidden = profiles.length === 0;
         $('profile-filter').replaceChildren(new Option('All profiles', ALL), ...state.profiles.map((profile) => new Option(profile.name, profile.id)));
-        if (![...$('profile-filter').options].some((option) => option.value === state.profileFilter)) state.profileFilter = ALL;
+        const hasProfile = (value) => [...$('profile-filter').options].some((option) => option.value === value);
+        if (pendingFilters.profile && hasProfile(pendingFilters.profile)) { state.profileFilter = pendingFilters.profile; delete pendingFilters.profile; }
+        if (!hasProfile(state.profileFilter)) state.profileFilter = ALL;
         $('profile-filter').value = state.profileFilter;
         $('profile-filter').disabled = state.profiles.length === 0;
         const chosen = $('profile-filter').value;
@@ -382,11 +406,11 @@
         }
     }
     function updateFilterOptions() {
-        const filter = (id, values, label) => { const select = $(id), prior = select.value; select.replaceChildren(new Option(`All ${label}`, ALL), ...[...new Set(values)].sort().map((value) => new Option(value, value))); if ([...select.options].some((option) => option.value === prior)) select.value = prior; };
+        const filter = (key, values, label) => { const select = $(FILTER_SELECTS[key]); let prior = select.value; select.replaceChildren(new Option(`All ${label}`, ALL), ...[...new Set(values)].sort().map((value) => new Option(value, value))); const has = (value) => [...select.options].some((option) => option.value === value); if (pendingFilters[key] !== undefined && has(pendingFilters[key])) { prior = pendingFilters[key]; delete pendingFilters[key]; } if (has(prior)) select.value = prior; };
         const visible = [...state.runs.values()].filter((item) => $('profile-filter').value === ALL || item.profileId === $('profile-filter').value);
-        filter('repo-filter', visible.map(({ repo }) => repo), 'repositories');
-        filter('workflow-filter', visible.map(({ run }) => run.name || run.display_title || 'Workflow run'), 'workflows');
-        filter('branch-filter', visible.map(({ run }) => run.head_branch || 'Unknown'), 'branches');
+        filter('repo', visible.map(({ repo }) => repo), 'repositories');
+        filter('workflow', visible.map(({ run }) => run.name || run.display_title || 'Workflow run'), 'workflows');
+        filter('branch', visible.map(({ run }) => run.head_branch || 'Unknown'), 'branches');
     }
     function operation(profileId) { const controller = new AbortController(); const op = { profileId, controller }; state.operations.add(op); return op; }
     function done(op) { state.operations.delete(op); }
@@ -695,12 +719,13 @@
     $('profile-new').addEventListener('click', () => { state.testOperation?.controller.abort(); state.editingId = null; syncProfileUI(); $('profile-select').value = ''; $('profile-id').value = ''; $('profile-name').value = ''; $('repositories').value = ''; $('token').value = ''; $('remember').checked = false; $('forget-token').disabled = true; $('profile-delete').disabled = true; $('settings-mode').textContent = 'New connection'; setSettingsMessage('Enter a PAT for this new profile. Blank PAT keeps only this profile’s existing token.', ''); if (!$('settings-dialog').open) $('settings-dialog').showModal(); });
     for (const id of ['profile-name', 'repositories', 'token', 'remember']) $(id).addEventListener('input', () => state.testOperation?.controller.abort());
     $('remember').addEventListener('change', () => state.testOperation?.controller.abort());
-    $('profile-filter').addEventListener('change', () => { state.profileFilter = $('profile-filter').value; render(); }); $('refresh').addEventListener('click', () => { for (const entry of state.clients.values()) entry.suspendedRepos.clear(); state.forceDetailsRefresh = true; void monitor.refresh(); });
+    $('profile-filter').addEventListener('change', () => { state.profileFilter = $('profile-filter').value; onFilterChange('profile'); }); $('refresh').addEventListener('click', () => { for (const entry of state.clients.values()) entry.suspendedRepos.clear(); state.forceDetailsRefresh = true; void monitor.refresh(); });
     $('older').addEventListener('click', () => { void loadOlder(); });
-    $('status-menu').addEventListener('change', () => { updateStatusMenu(); render(); });
+    $('status-menu').addEventListener('change', () => { updateStatusMenu(); saveFilters(); render(); });
     $('status-menu').addEventListener('keydown', (event) => { if (event.key === 'Escape' && $('status-menu').open) { $('status-menu').open = false; $('status-menu').querySelector('summary').focus(); } });
     document.addEventListener('click', (event) => { if (!$('status-menu').contains(event.target)) $('status-menu').open = false; });
-    for (const id of ['search', 'repo-filter', 'workflow-filter', 'branch-filter']) $(id).addEventListener(id === 'search' ? 'input' : 'change', render);
+    $('search').addEventListener('input', render);
+    for (const [key, id] of Object.entries(FILTER_SELECTS)) if (key !== 'profile') $(id).addEventListener('change', () => onFilterChange(key));
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { monitor.pause(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); for (const [, op] of state.pinOperations) op.controller.abort(); state.pinOperations.clear(); try { state.dispatchController?.handleHidden(); } catch { /* Uncertain POSTs gate until acknowledged. */ } render(); } else void monitor.resume(); updateMonitorLabel(); });
     window.addEventListener('pagehide', () => { monitor.stop(); for (const op of state.operations) op.controller.abort(); for (const [key, op] of state.detailOperations) { op.controller.abort(); const detail = state.details.get(key); if (detail) detail.loading = false; } state.detailOperations.clear(); for (const [, op] of state.pinOperations) op.controller.abort(); state.pinOperations.clear(); try { state.dispatchController?.handleHidden(); } catch { /* Closing never declares the workflow stopped. */ } });
     let storageTimer = null;
@@ -715,5 +740,6 @@
         } catch { /* Dispatch stays unavailable without breaking monitoring. */ }
     }
     $('new-run')?.addEventListener('click', () => { try { state.dispatchController?.open(); } catch { setFeedback('New run is unavailable.', 'error'); } });
+    restoreFilters();
     void loadSettings().catch(() => reportStorageError('Could not load profile settings from browser storage.'));
 })();

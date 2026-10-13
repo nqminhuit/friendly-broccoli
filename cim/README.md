@@ -24,7 +24,7 @@ Each profile's PAT is kept in extension session storage by default and is cleare
 
 ## Use
 
-- Filter loaded history by profile, repository, workflow, branch and result, or search it. The newest 30 runs per repository load first; **Load older runs** browses further. The **Status** menu shows only or hides the checked statuses, combined with the other filters.
+- Filter loaded history by profile, repository, workflow, branch and result, or search it. The newest 30 runs per repository load first; **Load older runs** browses further. The **Status** menu shows only or hides the checked statuses, and filters (except search) are remembered in this browser.
 - Runs use compact, single-line summaries; long labels truncate visually but remain available in full on hover. Narrow windows scroll the run list horizontally. **Jobs** expands a run's current attempt and metadata; active expanded runs refresh, while completed details remain cached until refreshed or reopened. Status and step results reflect GitHub data, not an estimated completion percentage.
 - **New run** selects a profile, repository, workflow and branch/tag, defaulting to the repository's default branch. The workflow must declare `workflow_dispatch` on its default branch. **Load inputs** reads the selected ref's YAML and generates string, boolean, number, choice and environment fields. Environment inputs accept a GitHub environment name. Strings preserve multiline text; required `false` and `0` values are valid. Clicking outside the dialog or pressing Escape closes it.
 - **Re-run all jobs** or **Re-run failed jobs** repeats an existing run with its original commit, ref and actor permissions. GitHub enforces the 30-day and 50-rerun limits. Dispatch starts a new execution instead.

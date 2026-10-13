@@ -323,6 +323,38 @@ test('profiles route their own PATs, filter identity, paginate without rewind, a
     assert.equal(await evaluate(`globalThis.__cimRequests.every(x=>x.url.startsWith('https://api.github.com/') && ['Bearer e2e-token','Bearer work-pat','Bearer expired-pat'].includes(x.auth))`), true);
 });
 
+test('filters except search are remembered across reloads and never leak into other tests', { skip: !CHROME && 'Chrome not found' }, async () => {
+    const setSelect = (id, value) => evaluate(`(() => { const s = document.querySelector('${id}'); s.value = [...s.options].find((o) => o.value === ${JSON.stringify(value)} || o.text === ${JSON.stringify(value)}).value; s.dispatchEvent(new Event('change', {bubbles: true})); })()`);
+    const resetFilters = async () => {
+        await evaluate(`document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true}))`);
+        for (const id of ['#profile-filter', '#repo-filter', '#workflow-filter', '#branch-filter']) await setSelect(id, 'all');
+        await setStatusMenu('show', []);
+        await evaluate(`localStorage.removeItem(${JSON.stringify(FILTERS_KEY)})`);
+    };
+    try {
+        await resetFilters();
+        await setSelect('#profile-filter', 'Personal');
+        await setSelect('#repo-filter', 'acme/app');
+        await setSelect('#workflow-filter', 'Deploy');
+        await setSelect('#branch-filter', 'feature/demo');
+        await setStatusMenu('show', ['active', 'failure']);
+        await evaluate(`document.querySelector('#search').value='preview'; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true}))`);
+        const stored = JSON.parse(await evaluate(`localStorage.getItem(${JSON.stringify(FILTERS_KEY)})`));
+        assert.equal(stored.repo, 'acme/app');
+        assert.deepEqual(stored.statuses.sort(), ['active', 'failure']);
+        assert.equal(JSON.stringify(stored).includes('preview'), false);
+        await send('Page.reload', {}, pageSession);
+        await waitFor(`document.querySelector('#run-list').textContent.includes('Deploy to preview')`);
+        assert.equal(await evaluate(`(() => { const v = (id) => document.querySelector(id).selectedOptions[0].text; return [v('#profile-filter'), v('#repo-filter'), v('#workflow-filter'), v('#branch-filter'), document.querySelector('#search').value].join('|'); })()`), 'Personal|acme/app|Deploy|feature/demo|');
+        assert.equal(await statusSummary(), 'Show: Active, Failure');
+        assert.equal(await evaluate(`document.querySelector('#status-menu input[value=show]').checked`), true);
+        assert.equal(await evaluate(`document.querySelectorAll('#run-list .run-card').length`), 1);
+        assert.equal((await runListText()).includes('Compile app'), false);
+    } finally { await resetFilters(); }
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
+    assert.equal(await statusSummary(), 'All statuses');
+});
+
 test('run summaries stay compact, truncate safely, and disclose details accessibly at narrow widths', { skip: !CHROME && 'Chrome not found' }, async () => {
     await evaluate(`if(document.querySelector('#settings-dialog').open) document.querySelector('#settings-close').click(); if(document.querySelector('#dispatch-dialog').open) document.querySelector('#dispatch-close').click()`);
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, pageSession);
