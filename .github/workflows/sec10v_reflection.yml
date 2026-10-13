@@ -26,19 +26,21 @@
 # Thumbnail failure alone is not a failed video upload. Requires sec10v
 # scripts/video_fallback.py at the selected sec10v_ref (two-repo dependency).
 #
-# This repo is public: write image refs as names relative to the bucket (IMAGE_BASE_URL), never as
+# This repo is public: write image refs as names relative to the image bucket prefix, never as
 # bucket URLs.
 # The voice comes from the file's `voice:`; the dispatch's voice input overrides it for voice tests.
 # Review the private upload in YouTube Studio before publishing it.
 #
 # Secrets — those of sec10v_chapter.yml (see there for details):
-#   IMAGE_BASE_URL        image bucket prefix, no trailing slash; relative image refs resolve against it (required)
+#   REFLECTION_IMAGE_BUCKET  image bucket name only (no scheme, no slash); relative image refs resolve against it (required)
+#   REFLECTION_IMAGE_PREFIX  optional key prefix inside that bucket, no trailing slash
 #   SEC10V_ACCESS_TOKEN   also used by sec10v.yml
 #   YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REFRESH_TOKEN
 #   HF_TOKEN
 #   BUCKET_S3_ENDPOINT, BUCKET_S3_URI, BUCKET_ACCESS_KEY_ID, BUCKET_SECRET_ACCESS_KEY
 #                        failed-upload bundles only (read/write; deletion optional, best-effort
 #                        after the success receipt). The prefix must deny anonymous read.
+#                        The same keys also read the images, so they need read access on the image bucket.
 name: sec10v reflection
 run-name: ${{ inputs.file || github.event.head_commit.message }}
 
@@ -188,7 +190,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      # Never prints IMAGE_BASE_URL: it is a secret, and only the filenames are needed.
+      # Never prints the image bucket or prefix: they are secrets, and only the filenames are needed.
       - name: Show workflow inputs
         if: always()
         env:
@@ -310,19 +312,35 @@ jobs:
           ffmpeg -version | head -n1
 
       # The file's image names are listed here; the uploads arrive later, while the chunks synthesize.
-      # Image refs resolve against IMAGE_BASE_URL (a secret, never printed).
+      # Image refs resolve against the image bucket and prefix (secrets, never printed).
       - name: Check the image configuration from your file
         if: ${{ steps.fallback.outputs.status == 'miss' }}
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
           FILE: ${{ matrix.file }}
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+          IMAGE_BUCKET: ${{ secrets.REFLECTION_IMAGE_BUCKET }}
+          IMAGE_PREFIX: ${{ secrets.REFLECTION_IMAGE_PREFIX }}
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          BUCKET_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
         run: |
-          if [ -z "$IMAGE_BASE_URL" ]; then
-            echo "❌ the IMAGE_BASE_URL secret is not set — the file's image names resolve against the image bucket"
+          if [ -z "$IMAGE_BUCKET" ]; then
+            echo "❌ the REFLECTION_IMAGE_BUCKET secret is not set — the file's image names resolve against the image bucket"
             exit 1
           fi
+          missing=""
+          for name in BUCKET_S3_ENDPOINT BUCKET_ACCESS_KEY_ID BUCKET_SECRET_ACCESS_KEY; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "❌ missing secret(s) needed to read the images:$missing"
+            exit 1
+          fi
+          # Fixed message: a malformed secret must never leak back into the log.
+          case "$IMAGE_BUCKET" in
+            */*|*://*) echo "❌ REFLECTION_IMAGE_BUCKET must be a bare bucket name (no slash, no scheme)"; exit 1 ;;
+          esac
           python - <<'EOF'
           import json
           import os
@@ -334,15 +352,6 @@ jobs:
               if parts.scheme in ("http", "https"):
                   return os.path.basename(parts.path)
               return ref.split("?", 1)[0].split("#", 1)[0]
-
-          # Fixed message: a malformed secret must never leak back into the log.
-          try:
-              parts = urlsplit(os.environ.get("IMAGE_BASE_URL", "").strip())
-              valid_url = parts.scheme in ("http", "https") and bool(parts.hostname)
-          except ValueError:
-              valid_url = False
-          if not valid_url:
-              raise SystemExit("❌ IMAGE_BASE_URL must be an http(s) URL with a hostname")
 
           with open("out/chapter.json") as f:
               chapter = json.load(f)
@@ -469,7 +478,11 @@ jobs:
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+          IMAGE_BUCKET: ${{ secrets.REFLECTION_IMAGE_BUCKET }}
+          IMAGE_PREFIX: ${{ secrets.REFLECTION_IMAGE_PREFIX }}
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          BUCKET_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
         run: |
           wait_minutes=${IMAGE_EARLY_WAIT_MINUTES%%.*}
           if [ "${wait_minutes:-0}" -eq 0 ]; then
@@ -477,13 +490,13 @@ jobs:
             echo "⏭️ skipping the early image wait (IMAGE_EARLY_WAIT_MINUTES=0)"
             exit 0
           fi
-          if [ -z "$IMAGE_BASE_URL" ]; then
+          if [ -z "$IMAGE_BUCKET" ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️ no IMAGE_BASE_URL secret — skipping the early image wait"
+            echo "⏭️ no REFLECTION_IMAGE_BUCKET secret — skipping the early image wait"
             exit 0
           fi
           set +e
-          python scripts/reflection_images.py --base-url "$IMAGE_BASE_URL" --timeout "$((wait_minutes * 60))" --poll-interval 20
+          python scripts/reflection_images.py --timeout "$((wait_minutes * 60))" --poll-interval 20
           rc=$?
           set -e
           if [ "$rc" -eq 0 ]; then
@@ -570,7 +583,11 @@ jobs:
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+          IMAGE_BUCKET: ${{ secrets.REFLECTION_IMAGE_BUCKET }}
+          IMAGE_PREFIX: ${{ secrets.REFLECTION_IMAGE_PREFIX }}
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          BUCKET_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
         run: |
           wait_minutes=${IMAGE_WAIT_MINUTES%%.*}
           if [ "${wait_minutes:-0}" -eq 0 ]; then
@@ -578,13 +595,13 @@ jobs:
             echo "⏭️ image wait disabled (IMAGE_WAIT_MINUTES=0)"
             exit 0
           fi
-          if [ -z "$IMAGE_BASE_URL" ]; then
+          if [ -z "$IMAGE_BUCKET" ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️ no IMAGE_BASE_URL secret — skipping the video"
+            echo "⏭️ no REFLECTION_IMAGE_BUCKET secret — skipping the video"
             exit 0
           fi
           set +e
-          python scripts/reflection_images.py --base-url "$IMAGE_BASE_URL" --timeout "$((wait_minutes * 60))" --poll-interval 20
+          python scripts/reflection_images.py --timeout "$((wait_minutes * 60))" --poll-interval 20
           rc=$?
           set -e
           if [ "$rc" -eq 0 ]; then

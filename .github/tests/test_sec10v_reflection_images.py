@@ -23,9 +23,13 @@ FOUND_FALSE = "found=false"
 POLL_ARG = "--poll-interval 20"
 TIMEOUT_FLAG = "--timeout"
 BASE_URL_FLAG = "--base-url"
-BASE_URL_QUOTED = '"$IMAGE_BASE_URL"'
 GITHUB_OUTPUT = "GITHUB_OUTPUT"
-IMAGE_BASE_URL = "IMAGE_BASE_URL"
+GOOD_BUCKET = "my-images"
+IMAGE_BUCKET = "IMAGE_BUCKET"
+IMAGE_PREFIX = "IMAGE_PREFIX"
+BUCKET_KEYS = ("BUCKET_S3_ENDPOINT", "BUCKET_ACCESS_KEY_ID", "BUCKET_SECRET_ACCESS_KEY")
+BUCKET_ENV = {k: "v" for k in BUCKET_KEYS}
+CONFIG_ENV = {IMAGE_BUCKET: GOOD_BUCKET, **BUCKET_ENV}
 EARLY_ENV = "IMAGE_EARLY_WAIT_MINUTES"
 LATE_ENV = "IMAGE_WAIT_MINUTES"
 FAKE_RC = "FAKE_IMAGE_RC"
@@ -38,7 +42,7 @@ NO_VIDEO = "no video was built"
 RERUN_HINT = "rerun"
 SECRET_TOKEN = "secret-token-123"
 BUCKET_HOST = "bucket.example.com"
-GOOD_BUCKET = "https://x.example/pic"
+FILE_ENV = {"BASE": BASE, "FILE": "reflections/a.md"}
 CHAPTER_JSON = "out/chapter.json"
 MANIFEST_JSON = "out/workflow-input.json"
 
@@ -134,15 +138,10 @@ def make_sec10v_work(tmp, chapter, pics=None, empty=None, run_ids="[]", manifest
     return work
 
 
-def downloader_argv(argv, timeout, base_url):
-    """True when the stub saw one downloader call with exact timeout/poll/base-url."""
+def downloader_argv(argv, timeout):
+    """True when the stub saw one downloader call with exact timeout/poll and no --base-url."""
     text = "\n".join(argv)
-    if SCRIPT_NAME not in text:
-        return False
-    for i, arg in enumerate(argv):
-        if arg == BASE_URL_FLAG and i + 1 < len(argv) and argv[i + 1] == base_url:
-            break
-    else:
+    if SCRIPT_NAME not in text or BASE_URL_FLAG in argv:
         return False
     for i, arg in enumerate(argv):
         if arg == TIMEOUT_FLAG and i + 1 < len(argv) and argv[i + 1] == timeout:
@@ -200,8 +199,7 @@ class ReflectionImagesTest(unittest.TestCase):
             body = self.shells[name]
             self.assertIn(SCRIPT_NAME, body)
             self.assertIn(POLL_ARG, body)
-            self.assertIn(BASE_URL_FLAG, body)
-            self.assertIn(BASE_URL_QUOTED, body)
+            self.assertNotIn(BASE_URL_FLAG, body)
             self.assertNotIn("${{", body)
         self.assertIn("IMAGE_EARLY_WAIT_MINUTES", self.shells[EARLY_NAME])
         self.assertIn("IMAGE_WAIT_MINUTES", self.shells[LATE_NAME])
@@ -238,33 +236,33 @@ class ReflectionImagesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_LEGACY)
             proc, out, argv = run_shell(self.shells[EARLY_NAME], work,
-                                        {EARLY_ENV: "20", IMAGE_BASE_URL: GOOD_BUCKET}, fake_rc=0)
+                                        {EARLY_ENV: "20", **CONFIG_ENV}, fake_rc=0)
             self.assertEqual(0, proc.returncode, proc.stderr)
             self.assertIn(FOUND_TRUE, out)
-            self.assertTrue(downloader_argv(argv, EARLY_TIMEOUT, GOOD_BUCKET), argv)
+            self.assertTrue(downloader_argv(argv, EARLY_TIMEOUT), argv)
 
     def test_early_timeout_proceeds_to_collection(self):
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_LEGACY)
             proc, out, argv = run_shell(self.shells[EARLY_NAME], work,
-                                        {EARLY_ENV: "20", IMAGE_BASE_URL: GOOD_BUCKET}, fake_rc=10)
+                                        {EARLY_ENV: "20", **CONFIG_ENV}, fake_rc=10)
             self.assertEqual(0, proc.returncode, proc.stderr)
             self.assertIn(FOUND_FALSE, out)
             self.assertIn("second chance", proc.stdout)
-            self.assertTrue(downloader_argv(argv, EARLY_TIMEOUT, GOOD_BUCKET), argv)
+            self.assertTrue(downloader_argv(argv, EARLY_TIMEOUT), argv)
 
     def test_early_unexpected_exit_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_LEGACY)
             proc, _, _ = run_shell(self.shells[EARLY_NAME], work,
-                                   {EARLY_ENV: "20", IMAGE_BASE_URL: GOOD_BUCKET}, fake_rc=1)
+                                   {EARLY_ENV: "20", **CONFIG_ENV}, fake_rc=1)
             self.assertNotEqual(0, proc.returncode)
 
     def test_early_disabled(self):
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_LEGACY)
             proc, out, argv = run_shell(self.shells[EARLY_NAME], work,
-                                        {EARLY_ENV: "0", IMAGE_BASE_URL: GOOD_BUCKET}, fake_rc=0)
+                                        {EARLY_ENV: "0", **CONFIG_ENV}, fake_rc=0)
             self.assertEqual(0, proc.returncode)
             self.assertIn(FOUND_FALSE, out)
             self.assertFalse(any(SCRIPT_NAME in a for a in argv))
@@ -273,30 +271,30 @@ class ReflectionImagesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_LEGACY)
             proc, out, argv = run_shell(self.shells[LATE_NAME], work,
-                                        {LATE_ENV: "60", IMAGE_BASE_URL: GOOD_BUCKET}, fake_rc=0)
+                                        {LATE_ENV: "60", **CONFIG_ENV}, fake_rc=0)
             self.assertEqual(0, proc.returncode)
             self.assertIn(FOUND_TRUE, out)
-            self.assertTrue(downloader_argv(argv, LATE_TIMEOUT, GOOD_BUCKET), argv)
+            self.assertTrue(downloader_argv(argv, LATE_TIMEOUT), argv)
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_LEGACY)
             proc, out, argv = run_shell(self.shells[LATE_NAME], work,
-                                        {LATE_ENV: "60", IMAGE_BASE_URL: GOOD_BUCKET}, fake_rc=10)
+                                        {LATE_ENV: "60", **CONFIG_ENV}, fake_rc=10)
             self.assertEqual(0, proc.returncode)
             self.assertIn(FOUND_FALSE, out)
-            self.assertTrue(downloader_argv(argv, LATE_TIMEOUT, GOOD_BUCKET), argv)
+            self.assertTrue(downloader_argv(argv, LATE_TIMEOUT), argv)
 
     def test_late_disabled_and_unexpected(self):
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_LEGACY)
             proc, out, argv = run_shell(self.shells[LATE_NAME], work,
-                                        {LATE_ENV: "0", IMAGE_BASE_URL: GOOD_BUCKET}, fake_rc=0)
+                                        {LATE_ENV: "0", **CONFIG_ENV}, fake_rc=0)
             self.assertEqual(0, proc.returncode)
             self.assertIn(FOUND_FALSE, out)
             self.assertFalse(any(SCRIPT_NAME in a for a in argv))
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_LEGACY)
             proc, _, _ = run_shell(self.shells[LATE_NAME], work,
-                                   {LATE_ENV: "60", IMAGE_BASE_URL: GOOD_BUCKET}, fake_rc=2)
+                                   {LATE_ENV: "60", **CONFIG_ENV}, fake_rc=2)
             self.assertNotEqual(0, proc.returncode)
 
     def test_check_lists_without_downloading(self):
@@ -308,7 +306,7 @@ class ReflectionImagesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_LEGACY)
             proc, _, _ = run_shell(body, work,
-                                   {IMAGE_BASE_URL: GOOD_BUCKET, "BASE": BASE, "FILE": "reflections/a.md"},
+                                   {**CONFIG_ENV, **FILE_ENV},
                                    fake_rc=0)
             self.assertEqual(0, proc.returncode, proc.stderr)
             self.assertIn("sec-1", proc.stdout)
@@ -319,7 +317,7 @@ class ReflectionImagesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_NAMED)
             proc, _, _ = run_shell(self.shells[CHECK_NAME], work,
-                                   {IMAGE_BASE_URL: GOOD_BUCKET, "BASE": BASE, "FILE": "reflections/a.md"})
+                                   {**CONFIG_ENV, **FILE_ENV})
             self.assertEqual(0, proc.returncode, proc.stderr)
             self.assertIn("book-thumb.jpg", proc.stdout)
 
@@ -328,24 +326,35 @@ class ReflectionImagesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_LEGACY)
             proc, _, _ = run_shell(body, work,
-                                   {IMAGE_BASE_URL: "", "BASE": BASE, "FILE": "reflections/a.md"})
+                                   {**CONFIG_ENV, IMAGE_BUCKET: "", **FILE_ENV})
             self.assertNotEqual(0, proc.returncode)
-        for bad_url in ("ftp://x.example/pic", "https://", "https:///pics", "not-a-url",
-                        "https://[::1", f"ftp://{BUCKET_HOST}/pic?token={SECRET_TOKEN}"):
+        for bad_bucket in ("s3://x", "a/b", f"https://{BUCKET_HOST}/pic?token={SECRET_TOKEN}"):
             with tempfile.TemporaryDirectory() as tmp:
                 work = make_sec10v_work(tmp, CHAPTER_LEGACY)
-                proc, _, _ = run_shell(body, work,
-                                       {IMAGE_BASE_URL: bad_url, "BASE": BASE, "FILE": "reflections/a.md"})
-                self.assertNotEqual(0, proc.returncode, bad_url)
+                proc, _, _ = run_shell(body, work, {**CONFIG_ENV, IMAGE_BUCKET: bad_bucket, **FILE_ENV})
+                self.assertNotEqual(0, proc.returncode, bad_bucket)
                 self.assertNotIn(SECRET_TOKEN, proc.stdout + proc.stderr)
                 self.assertNotIn(BUCKET_HOST, proc.stdout + proc.stderr)
-        # Trailing slash and surrounding whitespace keep prior downloader tolerance.
-        for good_url in (GOOD_BUCKET + "/", f"  {GOOD_BUCKET}  "):
+                self.assertNotIn(bad_bucket, proc.stdout + proc.stderr)
+
+    def test_check_reports_missing_bucket_keys(self):
+        body = self.shells[CHECK_NAME]
+        for missing in ((BUCKET_KEYS[0],), BUCKET_KEYS[1:]):
             with tempfile.TemporaryDirectory() as tmp:
                 work = make_sec10v_work(tmp, CHAPTER_LEGACY)
-                proc, _, _ = run_shell(body, work,
-                                       {IMAGE_BASE_URL: good_url, "BASE": BASE, "FILE": "reflections/a.md"})
-                self.assertEqual(0, proc.returncode, proc.stderr + good_url)
+                env = {**CONFIG_ENV, **FILE_ENV, **{k: "" for k in missing}}
+                proc, _, _ = run_shell(body, work, env)
+                self.assertNotEqual(0, proc.returncode)
+                for key in BUCKET_KEYS:
+                    self.assertEqual(key in missing, key in proc.stdout, key)
+
+    def test_check_accepts_optional_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = make_sec10v_work(tmp, CHAPTER_LEGACY)
+            proc, _, _ = run_shell(self.shells[CHECK_NAME], work,
+                                   {**CONFIG_ENV, IMAGE_PREFIX: "private/dir", **FILE_ENV})
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            self.assertNotIn("private/dir", proc.stdout)
 
     def test_check_rejects_invalid_chapter_and_manifest(self):
         body = self.shells[CHECK_NAME]
@@ -365,13 +374,13 @@ class ReflectionImagesTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 work = make_sec10v_work(tmp, chapter)
                 proc, _, _ = run_shell(body, work,
-                                       {IMAGE_BASE_URL: GOOD_BUCKET, "BASE": BASE, "FILE": "reflections/a.md"})
+                                       {**CONFIG_ENV, **FILE_ENV})
                 self.assertNotEqual(0, proc.returncode, chapter)
         for manifest in ('[]', '{"chunk": 1}', '"x"', '{}'):
             with tempfile.TemporaryDirectory() as tmp:
                 work = make_sec10v_work(tmp, CHAPTER_LEGACY, manifest=manifest)
                 proc, _, _ = run_shell(body, work,
-                                       {IMAGE_BASE_URL: GOOD_BUCKET, "BASE": BASE, "FILE": "reflections/a.md"})
+                                       {**CONFIG_ENV, **FILE_ENV})
                 self.assertNotEqual(0, proc.returncode, manifest)
         # Evil refs fail validation without leaking the secret when chunks are malformed.
         evil_bad = json.dumps({"base_name": BASE,
@@ -381,9 +390,15 @@ class ReflectionImagesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, evil_bad)
             proc, _, _ = run_shell(body, work,
-                                   {IMAGE_BASE_URL: GOOD_BUCKET, "BASE": BASE, "FILE": "reflections/a.md"})
+                                   {**CONFIG_ENV, **FILE_ENV})
             self.assertNotEqual(0, proc.returncode)
             self.assertNotIn(SECRET_TOKEN, proc.stdout + proc.stderr)
+
+    def test_no_image_base_url_left(self):
+        self.assertNotIn("IMAGE_BASE_URL", self.text)
+        for name in (EARLY_NAME, LATE_NAME):
+            self.assertIn("secrets.REFLECTION_IMAGE_BUCKET", self.blocks[name])
+            self.assertIn("secrets.REFLECTION_IMAGE_PREFIX", self.blocks[name])
 
     def test_no_bucket_query_leakage(self):
         for name in (CHECK_NAME, EARLY_NAME, LATE_NAME):
@@ -395,7 +410,7 @@ class ReflectionImagesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v_work(tmp, CHAPTER_EVIL)
             proc, _, _ = run_shell(self.shells[CHECK_NAME], work,
-                                   {IMAGE_BASE_URL: GOOD_BUCKET, "BASE": BASE, "FILE": "reflections/a.md"})
+                                   {**CONFIG_ENV, **FILE_ENV})
             self.assertEqual(0, proc.returncode)
             self.assertNotIn(SECRET_TOKEN, proc.stdout)
             self.assertNotIn(BUCKET_HOST, proc.stdout)

@@ -6,7 +6,7 @@
 #   prepare_chapter.py → Gemini writes the image prompt + SEO → THE PROMPT IS PRINTED IN THE
 #   LOG of the "Print the image prompt" step → trigger_workflow.py fans out N chunk runs + 1 intro
 #   run of sec10v.yml → import_artifacts_mp3s.py collects them (retrying stragglers) →
-#   fetch_image.py waits for <IMAGE_BASE_URL>/<BaseName>.jpg → automate_audiobook.py builds
+#   fetch_image.py waits for <CHAPTER_IMAGE_PREFIX>/<BaseName>.jpg in the image bucket → automate_audiobook.py builds
 #   the video → video_fallback.py uploads it to the channel as a private video.
 #
 # Fallback-only saved-video retries: YouTube is tried first; a successful first upload
@@ -39,12 +39,12 @@
 # unverifiable and regenerated once.
 #
 # Secrets needed — Settings → Secrets and variables → Actions → Secrets:
-#   IMAGE_BASE_URL       prefix you upload images to, no trailing slash. GET
-#                        <IMAGE_BASE_URL>/<BaseName>.jpg must work with plain unauthenticated
-#                        curl, but the prefix itself stays out of this public repo's logs:
-#                        GitHub masks secrets, so it prints as *** in the log and the summary.
-#                        That is why the summary tells you the FILENAME to upload rather than
-#                        the whole URL — the prefix is yours to remember.
+#   CHAPTER_IMAGE_BUCKET  bucket name only (no scheme, no slash) you upload the images to. They are
+#                        read through the S3 API with the BUCKET_* keys below, which need read
+#                        access on this bucket.
+#   CHAPTER_IMAGE_PREFIX  optional key prefix inside that bucket, no trailing slash; the object is
+#                        <prefix>/<BaseName>.jpg. It may stay private: GitHub masks secrets, so the
+#                        log and summary tell you the FILENAME to upload, not the location.
 #   SEC10V_ACCESS_TOKEN  also used by sec10v.yml
 #   YOUTUBE_CLIENT_ID    OAuth client of a Google Cloud project with the YouTube Data API v3
 #   YOUTUBE_CLIENT_SECRET  enabled, plus a refresh token for that client scoped
@@ -60,6 +60,8 @@
 #                        receipt is best-effort). The prefix must actually deny anonymous read;
 #                        the helper verifies on saving only (prefix name/ACL alone is not enough)
 #                        and normal runs write nothing to storage. No credentials/URLs in logs.
+#                        The same keys also read the images (CHAPTER_IMAGE_BUCKET), so they need
+#                        read access there too.
 name: sec10v chapter
 run-name: ${{ inputs.se_url }}
 
@@ -376,29 +378,36 @@ jobs:
           fi
 
       # Detect an existing image before the LLM step. A direct image_url is already known to exist;
-      # otherwise probe the conventional image names in IMAGE_BASE_URL. This lets a re-run with an
-      # image already uploaded to the bucket generate SEO only, even when image_url is left blank.
+      # otherwise probe the image bucket for the conventional names. This lets a re-run with an
+      # image already uploaded generate SEO only, even when image_url is left blank. Never fatal.
       - name: Detect existing background image
         id: image_available
         if: ${{ steps.fallback.outputs.status == 'miss' }}
         working-directory: sec10v
         env:
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+          PYTHONPATH: scripts
           IMAGE_URL: ${{ inputs.image_url }}
+          IMAGE_BUCKET: ${{ secrets.CHAPTER_IMAGE_BUCKET }}
+          IMAGE_PREFIX: ${{ secrets.CHAPTER_IMAGE_PREFIX }}
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          BUCKET_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
         run: |
           found=false
           if [ -n "$IMAGE_URL" ]; then
             found=true
             echo "✅ direct image_url supplied — skipping image-prompt generation"
-          elif [ -n "$IMAGE_BASE_URL" ]; then
-            for extension in jpg jpeg png webp; do
-              if curl --fail --silent --location --max-time 10 \
-                -o /dev/null "$IMAGE_BASE_URL/${BASE}.${extension}"; then
-                found=true
-                echo "✅ existing .$extension background image found — skipping image-prompt generation"
-                break
-              fi
-            done
+          elif [ -n "$IMAGE_BUCKET" ]; then
+            set +e
+            python scripts/fetch_image.py --base-name "$BASE" --probe
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              found=true
+              echo "✅ existing background image found — skipping image-prompt generation"
+            elif [ "$rc" -ne 10 ]; then
+              echo "⚠️ could not check the image bucket (exit $rc)"
+            fi
           fi
           echo "found=$found" >> "$GITHUB_OUTPUT"
           if [ "$found" != "true" ]; then
@@ -653,12 +662,12 @@ jobs:
         if: ${{ always() && steps.fallback.outputs.status == 'miss' && steps.image_available.outputs.found != 'true' }}
         working-directory: sec10v
         env:
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
+          IMAGE_BUCKET: ${{ secrets.CHAPTER_IMAGE_BUCKET }}
         run: |
           prompt="out/prompts/${BASE}.prompt.txt"
-          # IMAGE_BASE_URL is a secret, so anything echoing it shows as ***; the filename is
+          # The bucket is a secret, so anything echoing it shows as ***; the filename is
           # the part you actually need, and it is not sensitive.
-          if [ -n "$IMAGE_BASE_URL" ]; then target="your image bucket"; else target="your image bucket (set the IMAGE_BASE_URL secret)"; fi
+          if [ -n "$IMAGE_BUCKET" ]; then target="your image bucket"; else target="your image bucket (set the CHAPTER_IMAGE_BUCKET secret)"; fi
           echo "=== image prompt — ${BOOK_TITLE} / ${CHAPTER_TITLE} ==="
           if [ -s "$prompt" ]; then
             cat "$prompt"; echo
@@ -767,17 +776,21 @@ jobs:
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
           IMAGE_URL: ${{ inputs.image_url }}
+          IMAGE_BUCKET: ${{ secrets.CHAPTER_IMAGE_BUCKET }}
+          IMAGE_PREFIX: ${{ secrets.CHAPTER_IMAGE_PREFIX }}
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          BUCKET_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
         run: |
           wait_minutes=${IMAGE_EARLY_WAIT_MINUTES%%.*}
-          if [ "${wait_minutes:-0}" -eq 0 ] || { [ -z "$IMAGE_URL" ] && [ -z "$IMAGE_BASE_URL" ]; }; then
+          if [ "${wait_minutes:-0}" -eq 0 ] || { [ -z "$IMAGE_URL" ] && [ -z "$IMAGE_BUCKET" ]; }; then
             echo "found=false" >> "$GITHUB_OUTPUT"
             echo "⏭️ skipping the early image wait"
             exit 0
           fi
           args=(--base-name "$BASE" --timeout "$((wait_minutes * 60))" --poll-interval 20)
-          if [ -n "$IMAGE_URL" ]; then args+=(--url "$IMAGE_URL"); else args+=(--base-url "$IMAGE_BASE_URL"); fi
+          if [ -n "$IMAGE_URL" ]; then args+=(--url "$IMAGE_URL"); fi
           set +e
           python scripts/fetch_image.py "${args[@]}"
           rc=$?
@@ -905,8 +918,12 @@ jobs:
         working-directory: sec10v
         env:
           PYTHONPATH: scripts
-          IMAGE_BASE_URL: ${{ secrets.IMAGE_BASE_URL }}
           IMAGE_URL: ${{ inputs.image_url }}   # via env: a dispatch input must never be spliced into the script
+          IMAGE_BUCKET: ${{ secrets.CHAPTER_IMAGE_BUCKET }}
+          IMAGE_PREFIX: ${{ secrets.CHAPTER_IMAGE_PREFIX }}
+          BUCKET_S3_ENDPOINT: ${{ secrets.BUCKET_S3_ENDPOINT }}
+          BUCKET_ACCESS_KEY_ID: ${{ secrets.BUCKET_ACCESS_KEY_ID }}
+          BUCKET_SECRET_ACCESS_KEY: ${{ secrets.BUCKET_SECRET_ACCESS_KEY }}
         run: |
           wait_minutes=${IMAGE_WAIT_MINUTES%%.*}
           if [ "${wait_minutes:-0}" -eq 0 ]; then
@@ -914,17 +931,13 @@ jobs:
             echo "⏭️ image wait disabled (IMAGE_WAIT_MINUTES=0)"
             exit 0
           fi
-          if [ -z "$IMAGE_URL" ] && [ -z "$IMAGE_BASE_URL" ]; then
+          if [ -z "$IMAGE_URL" ] && [ -z "$IMAGE_BUCKET" ]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️ no IMAGE_BASE_URL secret and no image_url input — skipping the video"
+            echo "⏭️ no CHAPTER_IMAGE_BUCKET secret and no image_url input — skipping the video"
             exit 0
           fi
           args=(--base-name "$BASE" --timeout "$((wait_minutes * 60))" --poll-interval 20)
-          if [ -n "$IMAGE_URL" ]; then
-            args+=(--url "$IMAGE_URL")
-          else
-            args+=(--base-url "$IMAGE_BASE_URL")
-          fi
+          if [ -n "$IMAGE_URL" ]; then args+=(--url "$IMAGE_URL"); fi
           set +e
           python scripts/fetch_image.py "${args[@]}"
           rc=$?
