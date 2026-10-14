@@ -41,7 +41,7 @@ Keep prompts in a companion text file, put each PNG filename on its own line, fo
 - Required for new reflections: `book`, `author`, `title`, `description`, `thumbnail`. Only optional keys: `part` (chapter/passage), `voice` (sec10v `resources/voices/` file). Hashtags recommended.
 - `thumbnail` must name a dedicated image, separate from the first image and all other section images. Put its prompt in the companion text file; do not add a narration image line or section for it. The pipeline still accepts legacy files without `thumbnail`; new reflections must specify one explicitly.
 - `book`, `author`, `part` are single-line. `key: value` consumes the rest of the line, including `:`; `key: |` takes following lines indented at least two spaces.
-- `## Heading` starts a section; blank lines separate paragraphs. Standalone `[Pause]` = 3 seconds. Narration starts immediately, without a generated intro; keep it under 15 minutes including pauses.
+- `## Heading` starts a section; blank lines separate paragraphs. Standalone `[Pause:<N>s]` inserts explicitly timed silence. Narration starts immediately, without a generated intro; keep it under 15 minutes including pauses.
 - Each section needs a standalone `![](ref)` before its paragraphs and a matching prompt in the companion text file. First image precedes narration; it persists until the next image and is never spoken. Each change starts a chunk; avoid fewer than about 40 words/image.
 - Use bucket-relative image/thumbnail names, resolved against the reflection image bucket (`REFLECTION_IMAGE_BUCKET` + `REFLECTION_IMAGE_PREFIX`). This repo is public: no bucket/presigned URLs or credentials. All required section images plus the named thumbnail must arrive to build: an early 20-minute wait runs while the chunks synthesize, then a 60-minute second window after audio collection; a timeout skips the build/upload with a warning. Prompts do not create images.
 - Generated `Reflection.<FileName>` names must be unique across subdirectories and punctuation variants: `gift-of-the-magi.md` becomes `Reflection.GiftOfTheMagi`; `the-magi.md` and `the_magi.md` collide. Renaming starts a fresh name.
@@ -58,14 +58,19 @@ Keep prompts in a companion text file, put each PNG filename on its own line, fo
 Put each cue on its own line, between narration paragraphs. Cues are never spoken or included in the narration transcript.
 
 ```text
-[Pause]
+[Pause:1s]
+
+[Pause:5s]
+
+[Pause:1.5s]
 
 [Music:interlude.mp3:10s]
 
 [Music:AFoolsTheme_BrianBolger.mp3:start=123s:end=133s:fade-in=1s:fade-out=2s]
 ```
 
-- `[Pause]` keeps its existing behaviour: 3 seconds of silence at normal narration speed.
+- Silence requires `[Pause:<N>s]`, where `N` is positive finite integer or decimal seconds and the lowercase `s` is required. Times are rounded to the nearest millisecond; values rounding to zero or too large to render are rejected. Bare `[Pause]` has no default and is rejected, along with malformed or inline cues. To preserve an old three-second pause, write `[Pause:3s]`.
+- The rendered pause duration is inserted silence in the final audio, independent of narration speed. Leading, trailing and consecutive timed pauses retain their durations; runtime estimates sum the millisecond-rounded durations rather than assigning every pause the same length.
 - When combining pauses and music, keep each pause with spoken text in the same image run. An isolated pause-only block between music cues, or between a cue and the edge of an image run, is rejected rather than silently dropped.
 - Music cues create music-only breaks: narration stops, the current image remains visible, and narration resumes afterwards. Existing camera motion may continue; music is not mixed underneath speech.
 - The shorthand `:10s` plays the first 10 seconds of the track. Alternatively, specify both `start` and `end` to select a source-track excerpt; do not combine a duration with `start`/`end`.
@@ -73,7 +78,8 @@ Put each cue on its own line, between narration paragraphs. Cues are never spoke
 - `fade-in` and `fade-out` each default to 1 second; use `0` to disable a fade. Their sum must not exceed the excerpt's duration. Fade durations are not added to the break.
 - Options may appear in any order. Times are nonnegative decimal seconds with an optional `s` suffix, so `start=123:end=133` is also valid. Require `0 ≤ start < end ≤ track length`; invalid, duplicate, or unknown options fail with a clear error.
 - Music files must be present in `sec10v/resources/music/`. Use a filename, not a URL or directory path; missing, empty, unreadable, or escaping files fail rather than silently shortening or skipping a break.
-- Include music duration when checking the reflection's 10–15-minute runtime. Music cues need a supporting `sec10v` version; do not send them directly to a TTS backend as narration text.
+- Include the sum of rendered pause durations and music duration when checking the reflection's 10–15-minute runtime. Timed pauses and music cues need a supporting `sec10v` version; do not send music cues directly to a TTS backend as narration text.
+- Changing a pause duration requires regenerating the affected narration audio; do not reuse audio rendered with the old timing.
 - Local resumes verify music provenance. If cues or tracks change, follow the reported rebuild instructions; preserve verified unchanged narration audio, not old music clips or narration audio whose segment numbering/text has changed.
 
 # Pipeline

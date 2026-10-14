@@ -13,7 +13,8 @@
 #   transitions and fades (only when every required image arrived) → reflection_chapters.py adds YouTube
 #   chapters → video_fallback.py uploads the video to YouTube as private.
 #   A missing image skips the build/upload with a warning; upload the images then rerun.
-#   A [Pause] line is 3 s of silence; the video starts with the script's own words.
+#   A [Pause:<N>s] line inserts N seconds of silence; the duration is always explicit.
+#   The video starts with the script's own words.
 #
 # Fallback-only saved-video retries: YouTube is tried first; a successful first upload
 # stores NO bundle/receipt in storage. Only when the VIDEO upload fails is the finished

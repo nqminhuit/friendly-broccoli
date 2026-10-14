@@ -38,7 +38,7 @@ The story contains graphic violence, although I won't describe it. Its darkness 
 
 This isn't simply the same charming detective in a new location. Chesterton changes the emotional temperature. What begins as a social occasion becomes a mystery that is difficult to treat as harmless entertainment.
 
-[Pause]
+[Pause:3s]
 
 ## The Dinner Party — Politeness and Private Tensions
 
@@ -82,7 +82,7 @@ The story leaves room for both experiences. It doesn't become a celebration in w
 
 For me, that is an important change of emphasis. Father Brown belongs to the disturbance of the evening, not just to its intellectual machinery. His task takes place in rooms that other people must occupy with him. The investigation is a shared experience, even though its burdens are not shared equally.
 
-[Pause]
+[Pause:3s]
 
 ## Conversation — When Every Voice Changes the Room
 
@@ -162,7 +162,7 @@ Still, the discomfort has a literary purpose. It gives weight to a gathering tha
 
 We don't have to stop enjoying the puzzle. But we can notice when enjoyment becomes uneasy. That mixture is one of the story's distinctive achievements: it asks for our curiosity without making the circumstances of that curiosity entirely pleasant.
 
-[Pause]
+[Pause:3s]
 
 ## Closing — What Happens to a Beautiful Place
 

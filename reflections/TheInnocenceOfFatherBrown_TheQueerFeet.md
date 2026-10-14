@@ -28,7 +28,7 @@ The exterior of a small, discreetly elegant hotel on the corner of a Belgravia s
 
 This reflection contains full spoilers for "The Queer Feet," including the thief's identity, the method of the theft, and the ending.
 
-[Pause]
+[Pause:3s]
 
 Imagine a dinner where everything arrives so smoothly that nobody has to think about the work behind it. The plates appear. The glasses are filled. The room seems to look after its guests by itself.
 
@@ -80,7 +80,7 @@ The darkness is important, too. Deprived of a clear view, we listen with him. Th
 
 Here, "queer" means strange or peculiar. But the footsteps are strange because they suggest two different people inhabiting one body. Chesterton has turned social behaviour into something we can hear.
 
-[Pause]
+[Pause:3s]
 
 ## One Black Coat — Two Different People
 
@@ -149,7 +149,7 @@ There is also a boundary we should respect. Brown explains the theft to Colonel 
 
 We might reasonably question his decision to let the man go. Yet the story asks us to consider repair and possible change alongside punishment. It will not let curiosity turn confession into entertainment.
 
-[Pause]
+[Pause:3s]
 
 ## The Shape of the Story — Laughter Around a Serious Centre
 

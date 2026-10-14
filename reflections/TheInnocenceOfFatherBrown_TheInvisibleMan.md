@@ -28,7 +28,7 @@ A spoiler-free wide street-level view of two steep streets meeting at a corner i
 
 This is a spoiler-free reflection on "The Invisible Man." We'll explore the opening situation and the story's atmosphere, without revealing the solution or the ending.
 
-[Pause]
+[Pause:3s]
 
 Imagine coming up a cold London street and finding one shop window alive with colour. There are shining sweet wrappers, reflections in mirrors, and a wedding cake so white and enormous that Chesterton compares it to an edible North Pole.
 
@@ -88,7 +88,7 @@ As she speaks, the playful scene becomes more serious. Angus must stop arranging
 
 That change matters: romance becomes more convincing when the joke makes room for somebody else's trouble.
 
-[Pause]
+[Pause:3s]
 
 ## Smythe's Machines — Success Cannot Do Everything
 
@@ -140,7 +140,7 @@ Laura's unease enters a place where she is working, talking, and trying to make 
 
 For me, this is what good atmosphere does. It changes the feeling of the space around the characters until a familiar room no longer offers quite the reassurance it did before.
 
-[Pause]
+[Pause:3s]
 
 ## Faces and Feelings — The Limits of Caricature
 
@@ -209,4 +209,4 @@ There is still a discovery waiting for you. But even at the threshold, this stor
 
 Thank you for joining me. At what point does this cheerful beginning start to feel uneasy to you?
 
-[Pause]
+[Pause:3s]

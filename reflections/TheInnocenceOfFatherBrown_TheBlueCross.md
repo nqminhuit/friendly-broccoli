@@ -313,4 +313,4 @@ If you've read "The Blue Cross," I'd love to hear your thoughts on Father Brown.
 
 Until next time, keep reading, keep wondering, and never underestimate the wisdom hidden in ordinary people.
 
-[Pause]
+[Pause:3s]

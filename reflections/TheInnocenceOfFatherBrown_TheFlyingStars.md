@@ -28,7 +28,7 @@ A comfortable middle-class house near Putney, London, around 1910, on a clear wi
 
 This reflection contains full spoilers for "The Flying Stars," including the thief's identity, the method of the theft, and the ending.
 
-[Pause]
+[Pause:3s]
 
 There is a particular pleasure in a winter evening when a bright room seems to hold the darkness outside. Somebody is making jokes. Somebody has an idea for a game. For a little while, being together feels like enough.
 
@@ -130,7 +130,7 @@ That reversal changes the meaning of what we have watched. A stage can make an o
 
 The applause does not make the officer less injured. Nor does Flambeau's charm make the household's trust less abused. The trick has consequences beyond the missing stones.
 
-[Pause]
+[Pause:3s]
 
 ## Father Brown's Appeal — A Way Out, Not an Excuse
 
