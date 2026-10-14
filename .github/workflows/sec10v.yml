@@ -291,9 +291,15 @@ jobs:
           OUTPUT_NAME: ${{ github.event.inputs.output_name }}
         run: |
           if [ -f "out/audiobook.mp3" ]; then
-            mv out/audiobook.mp3 "out/$OUTPUT_NAME.mp3"
+            mv "out/audiobook.mp3" "out/${OUTPUT_NAME}.mp3"
             if [ -f "out/audiobook.srt" ]; then
-              mv out/audiobook.srt "out/$OUTPUT_NAME.srt"
+              mv "out/audiobook.srt" "out/${OUTPUT_NAME}.srt"
+            fi
+            # Optional warning-only pause QA sidecar; older sec10v may not emit it.
+            if [ -f "out/audiobook.pause-qa.json" ]; then
+              if ! mv "out/audiobook.pause-qa.json" "out/${OUTPUT_NAME}.pause-qa.json"; then
+                echo "⚠️ pause QA sidecar could not be renamed — continuing without it"
+              fi
             fi
           fi
 
@@ -330,6 +336,15 @@ jobs:
         with:
           path: sec10v/out/${{ inputs.output_name }}.audio.json
           if-no-files-found: error
+          retention-days: 1
+          archive: false
+
+      - name: Upload pause QA sidecar
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          path: sec10v/out/${{ inputs.output_name }}.pause-qa.json
+          if-no-files-found: ignore
           retention-days: 1
           archive: false
 
