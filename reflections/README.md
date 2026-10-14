@@ -53,6 +53,29 @@ Keep prompts in a companion text file, put each PNG filename on its own line, fo
 - Default: semi-realistic cinematic oil painting, natural proportions, restrained expressive faces. Match lighting, palette, clothing and setting to the book's era/mood, not a universal Victorian aesthetic.
 - Override when requested or better suited to the work; cartoonish styles suit satire, whimsy, fables or children's literature. Keep each video's images/thumbnail consistent; different books may differ. Every prompt must specify the full style, scene, composition, colors/symbols, Full-HD, 16:9 and no text.
 
+# Audio cues
+
+Put each cue on its own line, between narration paragraphs. Cues are never spoken or included in the narration transcript.
+
+```text
+[Pause]
+
+[Music:interlude.mp3:10s]
+
+[Music:interlude.mp3:start=123s:end=133s:fade-in=1s:fade-out=2s]
+```
+
+- `[Pause]` keeps its existing behaviour: 3 seconds of silence at normal narration speed.
+- When combining pauses and music, keep each pause with spoken text in the same image run. An isolated pause-only block between music cues, or between a cue and the edge of an image run, is rejected rather than silently dropped.
+- Music cues create music-only breaks: narration stops, the current image remains visible, and narration resumes afterwards. Existing camera motion may continue; music is not mixed underneath speech.
+- The shorthand `:10s` plays the first 10 seconds of the track. Alternatively, specify both `start` and `end` to select a source-track excerpt; do not combine a duration with `start`/`end`.
+- `start=123s:end=133s` selects source seconds 123–133, not positions in the video. Its total duration is 10 seconds, including any fades; music timing is independent of narration speed.
+- `fade-in` and `fade-out` each default to 1 second; use `0` to disable a fade. Their sum must not exceed the excerpt's duration. Fade durations are not added to the break.
+- Options may appear in any order. Times are nonnegative decimal seconds with an optional `s` suffix, so `start=123:end=133` is also valid. Require `0 ≤ start < end ≤ track length`; invalid, duplicate, or unknown options fail with a clear error.
+- Music files must be present in `sec10v/resources/music/`. Use a filename, not a URL or directory path; missing, empty, unreadable, or escaping files fail rather than silently shortening or skipping a break.
+- Include music duration when checking the reflection's 10–15-minute runtime. Music cues need a supporting `sec10v` version; do not send them directly to a TTS backend as narration text.
+- Local resumes verify music provenance. If cues or tracks change, follow the reported rebuild instructions; preserve verified unchanged narration audio, not old music clips or narration audio whose segment numbering/text has changed.
+
 # Pipeline
 
 - `.github/workflows/sec10v_reflection.yml`: reflection changes pushed to `master` trigger builds; README/AGENTS are excluded. `[skip ci]` suppresses runs. Manual dispatch: `file: reflections/<name>.md`, optional voice override and `fresh` (rebuild from scratch, bypassing a saved failed-upload video).
