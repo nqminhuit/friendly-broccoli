@@ -55,7 +55,7 @@ Chesterton’s narrator makes broad claims about Scotland, aristocratic blood, a
 
 Glengyle’s history gives us context, but not permission to assume that every person connected to the castle must repeat the past. Inherited stories influence judgment; they do not replace the work of meeting someone on their own terms.
 
-[Pause]
+[Pause:2s]
 
 ## Israel Gow — A Person Is More Than an Impression
 
