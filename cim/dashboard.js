@@ -156,15 +156,16 @@
             if (pending) { const pendingNode = text(statusNode, 'span', pending.ambiguous ? 'Rerun uncertain' : 'Rerun pending', 'rerun-pending'); pendingNode.title = pending.message; }
             const cancel = state.pendingCancels.get(key);
             if (cancel && !cancel.inFlight) text(statusNode, 'span', CANCEL_REQUESTED, 'rerun-pending');
-            const cancelCell = document.createElement('div'); cancelCell.className = 'run-cancel';
-            if (activeStates.has(run.status)) { const cancelButton = document.createElement('button'); cancelButton.type = 'button'; cancelButton.className = 'button quiet cancel-run'; cancelButton.dataset.focusKey = `${key}:cancel`; cancelButton.setAttribute('aria-label', `Cancel run ${titleValue}`); cancelButton.textContent = cancel?.inFlight ? 'Cancelling…' : 'Cancel'; cancelButton.disabled = Boolean(cancel) && (cancel.inFlight || Date.now() - cancel.at < CANCEL_COOLDOWN_MS); cancelButton.addEventListener('click', () => cancelRun(item)); cancelCell.append(cancelButton); }
+            // Cancel shares the Jobs cell so the row keeps its original width.
+            const actions = document.createElement('div'); actions.className = 'run-actions';
+            if (activeStates.has(run.status)) { const cancelButton = document.createElement('button'); cancelButton.type = 'button'; cancelButton.className = 'button quiet cancel-run'; cancelButton.dataset.focusKey = `${key}:cancel`; cancelButton.setAttribute('aria-label', `Cancel run ${titleValue}`); cancelButton.textContent = cancel?.inFlight ? 'Cancelling…' : 'Cancel'; cancelButton.disabled = Boolean(cancel) && (cancel.inFlight || Date.now() - cancel.at < CANCEL_COOLDOWN_MS); cancelButton.addEventListener('click', () => cancelRun(item)); actions.append(cancelButton); }
             const githubUrl = safeGitHubLink(run.html_url);
             const linkCell = document.createElement('div'); linkCell.className = 'run-link';
             if (githubUrl) { const link = document.createElement('a'); link.href = githubUrl; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = 'GitHub ↗'; link.title = 'Open run on GitHub'; link.dataset.focusKey = `${key}:github`; linkCell.append(link); }
-            const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'button quiet details-toggle'; toggle.dataset.focusKey = `${key}:toggle`; toggle.setAttribute('aria-expanded', String(detail?.expanded === true)); toggle.setAttribute('aria-label', `${detail?.expanded ? 'Hide' : 'Show'} jobs and steps for ${titleValue}`); toggle.textContent = detail?.expanded ? 'Jobs ▾' : 'Jobs ▸'; toggle.addEventListener('click', () => toggleDetails(key));
+            const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'button quiet details-toggle'; toggle.dataset.focusKey = `${key}:toggle`; toggle.setAttribute('aria-expanded', String(detail?.expanded === true)); toggle.setAttribute('aria-label', `${detail?.expanded ? 'Hide' : 'Show'} jobs and steps for ${titleValue}`); toggle.textContent = detail?.expanded ? 'Jobs ▾' : 'Jobs ▸'; toggle.addEventListener('click', () => toggleDetails(key)); actions.append(toggle);
             const panel = document.createElement('section'); panel.className = 'run-details'; panel.hidden = detail?.expanded !== true;
             if (detail?.expanded) renderDetails(panel, item, detail);
-            card.prepend(statusNode, identity); card.append(runNumber, time, cancelCell, toggle, linkCell, panel); list.append(card); visibleCount++;
+            card.prepend(statusNode, identity); card.append(runNumber, time, actions, linkCell, panel); list.append(card); visibleCount++;
         }
         if (focusKey) {
             const focused = [...list.querySelectorAll('[data-focus-key]')].find((node) => node.dataset.focusKey === focusKey);
