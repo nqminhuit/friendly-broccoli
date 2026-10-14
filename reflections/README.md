@@ -62,7 +62,7 @@ Put each cue on its own line, between narration paragraphs. Cues are never spoke
 
 [Music:interlude.mp3:10s]
 
-[Music:interlude.mp3:start=123s:end=133s:fade-in=1s:fade-out=2s]
+[Music:AFoolsTheme_BrianBolger.mp3:start=123s:end=133s:fade-in=1s:fade-out=2s]
 ```
 
 - `[Pause]` keeps its existing behaviour: 3 seconds of silence at normal narration speed.
