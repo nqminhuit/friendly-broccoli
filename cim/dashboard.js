@@ -186,6 +186,8 @@
         try { const url = new URL(value); return url.protocol === 'https:' && url.origin === 'https://github.com' && !url.username && !url.password ? url.href : ''; } catch { return ''; }
     }
     function jobState(job) { return job.conclusion || job.status || 'unknown'; }
+    const STEP_FAILURES = new Set(['failure', 'timed_out', 'cancelled', 'startup_failure', 'action_required']);
+    function stepTone(step) { return step.status === 'in_progress' ? 'step-current' : step.conclusion === 'success' ? 'step-success' : STEP_FAILURES.has(step.conclusion) ? 'step-failure' : step.conclusion ? 'step-skipped' : 'step-pending'; }
     function durationFor(started, completed) {
         const start = Date.parse(started || ''), end = Date.parse(completed || '');
         if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return '';
@@ -224,8 +226,9 @@
                 const list = document.createElement('ol'); list.className = 'step-list';
                 for (const step of steps) {
                     const line = document.createElement('li'); const stepStatus = step.conclusion || step.status || 'unknown';
-                    text(line, 'span', step.name || 'Unnamed step'); text(line, 'span', stepStatus, step.status === 'in_progress' ? 'step-current' : '');
-                    const stepDuration = durationFor(step.started_at, step.completed_at); if (stepDuration) text(line, 'span', stepDuration);
+                    const stepName = step.name || 'Unnamed step'; text(line, 'span', stepName, 'step-name').title = stepName; text(line, 'span', stepStatus, `step-status ${stepTone(step)}`);
+                    // Always emit the duration cell so every row keeps the same three columns.
+                    text(line, 'span', durationFor(step.started_at, step.completed_at), 'step-duration');
                     list.append(line);
                 }
                 box.append(list);
