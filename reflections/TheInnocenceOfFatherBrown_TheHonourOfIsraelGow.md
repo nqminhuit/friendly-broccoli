@@ -27,7 +27,7 @@ Into that dramatic landscape comes a very undramatic visitor: a small priest wra
 
 The first question is not simply what happened at the castle. It is how much the castle seems to tell us before we know its people. A landscape can make suspicion feel natural, a family name can make a guess sound like history, and a quiet person can quickly become whatever others expect.
 
-[Music:AFoolsTheme_BrianBolger.mp3:start=10s:end=20s:fade-in=1s:fade-out=2s]
+[Music:Videodrome_NationalSweetheart.mp3:start=4s:end=16s:fade-in=1s:fade-out=2s]
 
 ## Glengyle Castle — Weather That Shapes Judgment
 
@@ -99,7 +99,7 @@ Chesterton makes the distinction funny, but it is not merely a joke about detect
 
 For me, this is the intellectual heart of the opening: not a clever solution, but a reminder to keep several possibilities open. The castle seems to invite a dramatic story. Brown’s demonstration gently asks us not to confuse a story that fits with the truth that has been established.
 
-[Music:AFoolsTheme_BrianBolger.mp3:start=30s:end=40s:fade-in=1s:fade-out=2s]
+[Music:AFoolsTheme_BrianBolger.mp3:start=83s:end=93s:fade-in=1s:fade-out=2s]
 
 ## Chesterton’s Style — Gothic Energy and Comic Relief
 
@@ -128,3 +128,5 @@ Carry that into a first reading without taking away the pleasure of discovery. L
 The question I would leave with you is this: when a place feels threatening and a person seems difficult to read, how do atmosphere and reputation change the judgments we make?
 
 Thank you for joining me. I hope you enjoy discovering the story in your own time, with room to notice its humour, its language, and the many ways it invites us to look again.
+
+[Music:AFoolsTheme_BrianBolger.mp3:start=148s:end=158s:fade-in=1s:fade-out=2s]
