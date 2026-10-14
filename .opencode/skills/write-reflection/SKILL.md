@@ -16,7 +16,7 @@ description: Write, revise or review reflections/video scripts, metadata, image 
     - Include a spoken opening warning only for spoiler reflections, followed immediately by a standalone music cue. Do not add a spoken spoiler notice to spoiler-free reflections. Avoid revealing spoilers too soon, and keep spoilers out of metadata, thumbnails and pre-warning images.
     - Do not add a spoken spoiler notice to a spoiler-free reflection. Avoid revealing spoilers too soon, and keep spoilers out of metadata, thumbnails and pre-warning images.
 
-5. Select music cues using `../../../reflections/book_reflection_music_metadata.json`:
+5. Select music cues using `book_reflection_music_metadata.json` from `sec10v/resources/music/` (ask if you don't know where sec10v is):
     - Read the metadata and choose from `tracks[].segments[]`. Do not invent tracks, filenames, timestamps or musical characteristics.
     - Select music based primarily on the emotional tone, themes and storytelling purpose of the surrounding narration, rather than just the overall genre.
     - Consider each track's `moods`, `storytelling_tags`, `description`, `energy`, `instrumentation` and `musical_characteristics`. For individual excerpts, prioritize `mood`, `purpose`, `description` and `speech_friendly`.
