@@ -545,3 +545,24 @@ test('unknown attempts never wipe a known run attempt', () => {
     assert.equal(missing.run.run_attempt, 2);
     assert.equal(mergeRunMetadata({ id: 1, run_attempt: 1 }, { id: 1, run_attempt: 2 }).advanced, true);
 });
+
+test('cancelRun POSTs the exact cancel route, accepts 202 {}, and classifies failures', async () => {
+    const seen = []; let mode = 'ok';
+    const client = new GitHubClient({ fetchImpl: async (url, options) => {
+        seen.push([new URL(url).pathname, options.method]);
+        if (mode === 'conflict') return response(409, { message: 'Cannot cancel a workflow run that is completed.' });
+        if (mode === 'deny') return response(403, { message: 'Resource not accessible by integration' });
+        if (mode === 'network') throw new Error('connection lost');
+        return response(202, {});
+    } });
+    client.reset('token');
+    const accepted = await client.cancelRun('owner', 'repo', 8);
+    assert.equal(accepted.status, 202);
+    assert.deepEqual(seen, [['/repos/owner/repo/actions/runs/8/cancel', 'POST']]);
+    mode = 'conflict';
+    await assert.rejects(client.cancelRun('owner', 'repo', 8), (error) => error.kind === 'http' && error.status === 409 && !error.ambiguous);
+    mode = 'deny';
+    await assert.rejects(client.cancelRun('owner', 'repo', 8), (error) => error.kind === 'permission');
+    mode = 'network';
+    await assert.rejects(client.cancelRun('owner', 'repo', 8), (error) => error.kind === 'network' && error.ambiguous);
+});

@@ -1,6 +1,6 @@
 # cim — CI Management
 
-cim is a standalone Manifest V3 browser extension for monitoring GitHub Actions across multiple GitHub account/repository profiles. The combined dashboard labels and filters loaded runs, expands runs to show their jobs and steps, offers explicit rerun-all and rerun-failed controls for completed runs, and offers a New run form that dispatches `workflow_dispatch` workflows with typed inputs. It does not show live logs or monitor in the background.
+cim is a standalone Manifest V3 browser extension for monitoring GitHub Actions across multiple GitHub account/repository profiles. The combined dashboard labels and filters loaded runs, expands runs to show their jobs and steps, offers explicit rerun-all and rerun-failed controls for completed runs, cancels active runs, and offers a New run form that dispatches `workflow_dispatch` workflows with typed inputs. It does not show live logs or monitor in the background.
 
 ## Install
 
@@ -17,8 +17,8 @@ To upgrade, replace the extracted files, reload the extension and reload the das
 ## Configure account profiles
 
 1. Open **Settings** and create a profile such as Personal or Work, with its own repositories and GitHub PAT. Enter one `owner/repository` per line; the same repository may appear in multiple profiles.
-2. For a fine-grained PAT, select the repositories that profile needs and grant **Actions: read** for monitoring. Reruns and dispatch additionally require **Actions: write**; dispatch forms also require **Contents: read** to load workflow files. Organization policies or SSO may impose additional access requirements.
-3. **Test access** checks the Actions runs endpoint for each repository, then **Save** the profile. This read test does not prove that dispatch or rerun permission is available.
+2. For a fine-grained PAT, select the repositories that profile needs and grant **Actions: read** for monitoring. Reruns, cancel and dispatch additionally require **Actions: write**; dispatch forms also require **Contents: read** to load workflow files. Organization policies or SSO may impose additional access requirements.
+3. **Test access** checks the Actions runs endpoint for each repository, then **Save** the profile. This read test does not prove that dispatch, rerun or cancel permission is available.
 
 Each profile's PAT is kept in extension session storage by default and is cleared when the browser session ends. **Remember on this device** independently opts that profile into storing the PAT as plaintext in local extension storage; anyone with access to this browser profile can read it. Leaving the password field blank while saving keeps only that profile's current token. **Forget token** clears the selected profile's PAT while retaining its repository list; removing a profile deletes its settings and PAT. Profile names/repositories and the remember choice are stored locally. Opening a private repository's GitHub run page uses the browser's GitHub web session, not the PAT; switch the signed-in GitHub web account there if access requires a different account.
 
@@ -28,7 +28,8 @@ Each profile's PAT is kept in extension session storage by default and is cleare
 - Runs use compact, single-line summaries; long labels truncate visually but remain available in full on hover. Narrow windows scroll the run list horizontally. **Jobs** expands a run's current attempt and metadata; active expanded runs refresh, while completed details remain cached until refreshed or reopened. Status and step results reflect GitHub data, not an estimated completion percentage.
 - **New run** selects a profile, repository, workflow and branch/tag, defaulting to the repository's default branch. The workflow must declare `workflow_dispatch` on its default branch. **Load inputs** reads the selected ref's YAML and generates string, boolean, number, choice and environment fields. Environment inputs accept a GitHub environment name. Strings preserve multiline text; required `false` and `0` values are valid. Clicking outside the dialog or pressing Escape closes it.
 - **Re-run all jobs** or **Re-run failed jobs** repeats an existing run with its original commit, ref and actor permissions. GitHub enforces the 30-day and 50-rerun limits. Dispatch starts a new execution instead.
-- Reruns require confirmation, New run starts as soon as you click Start workflow, and both may incur Actions usage charges. Accepted requests are not completed workflows: cim follows the exact dispatched run ID or waits for a rerun's new attempt before displaying its result.
+- **Cancel** on an active run's row sends a normal cancel after confirmation. Steps with `if: always()` still run before the run stops. The row shows "Cancel requested" until GitHub reports the run finished, and the button can be used again after a minute if the run is still going.
+- Reruns and cancels are never auto-retried; a duplicate cancel is harmless. Reruns require confirmation, New run starts as soon as you click Start workflow, and both may incur Actions usage charges. Accepted requests are not completed workflows: cim follows the exact dispatched run ID or waits for a rerun's new attempt before displaying its result.
 - **Open on GitHub** opens the existing run or job page for logs. Private pages use your browser's signed-in GitHub account, not the PAT; switch web accounts if necessary.
 
 ## Monitoring and privacy

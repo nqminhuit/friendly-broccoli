@@ -98,6 +98,8 @@ before(async () => {
       globalThis.__workAttempt = 1;
       globalThis.__rerunHang = false;
       globalThis.__rerunDeny = false;
+      globalThis.__cancelMode = 'ok';
+      globalThis.__run2Done = false;
       globalThis.__dispatchHang = false;
       globalThis.__dispatchDenyContents = false;
       globalThis.__dispatchFlaky = false;
@@ -115,6 +117,10 @@ before(async () => {
         if (auth === 'Bearer expired-pat') return new Response('{"message":"Bad credentials"}', {status:401});
         if (url.includes('/repos/acme/slow/')) { globalThis.__slowSignals.push(options.signal); await new Promise(resolve=>setTimeout(resolve,700)); return new Response(JSON.stringify({total_count:1,workflow_runs:[{id:90,name:'Slow',display_title:'Slow private result',status:'completed',conclusion:'success',created_at:'2025-01-01T00:00:00Z'}]}),{status:200,headers:{'content-type':'application/json'}}); }
         if (url.includes('/repos/acme/forbidden/')) return new Response('{"message":"Not Found"}', {status:404});
+        if (url.endsWith('/cancel') && options.method === 'POST') {
+          if (globalThis.__cancelMode === 'conflict') return new Response('{"message":"Cannot cancel a workflow run that is completed."}', {status:409,headers:{'content-type':'application/json'}});
+          return new Response('{}', {status:202,headers:{'content-type':'application/json'}});
+        }
         if (url.includes('/rerun') || url.includes('/rerun-failed-jobs')) {
           if (globalThis.__rerunDeny) return new Response('{"message":"Resource not accessible"}', {status:403,headers:{'content-type':'application/json'}});
           if (globalThis.__rerunHang) { globalThis.__slowSignals.push(options.signal); await new Promise((_,reject)=>{ if (options.signal?.aborted) reject(new Error('aborted after send')); else options.signal?.addEventListener('abort',()=>reject(new Error('aborted after send')),{once:true}); }); }
@@ -170,11 +176,11 @@ before(async () => {
          const runId = isWorkAuth(auth) ? 20 : page + 2;
          const runs = page > 1 ? [{id:runId,name:'Deploy',display_title:'Older page '+page,head_branch:'main',status:'completed',conclusion:page===2?'success':'cancelled',run_number:runId,run_attempt:1,event:'push',actor:{login:'ci'},created_at:'2025-01-01T00:00:00Z',updated_at:'2025-01-01T00:01:00Z',html_url:'https://github.com/acme/app/actions/runs/'+runId}] : isWorkAuth(auth) ? [{id:20,name:'Work Build',display_title:'Work-only result',head_branch:'work',status:'completed',conclusion:'action_required',run_number:20,run_attempt:1,event:'push',actor:{login:'worker'},created_at:'2025-03-01T00:00:00Z',updated_at:'2025-03-01T00:01:00Z',html_url:'https://github.com/acme/app/actions/runs/20'}] : [
           {id:1,name:'Build',display_title:'Compile app',head_branch:'main',status:'completed',conclusion:'success',run_number:12,run_attempt:1,event:'push',actor:{login:'alice'},created_at:'2025-02-01T00:00:00Z',updated_at:'2025-02-01T00:02:00Z',run_started_at:'2025-02-01T00:00:00Z',html_url:'https://github.com/acme/app/actions/runs/1'},
-          {id:2,name:'Deploy',display_title:'Deploy to preview',head_branch:'feature/demo',status:'in_progress',conclusion:null,run_number:13,run_attempt:2,event:'workflow_dispatch',actor:{login:'bob'},created_at:'2025-02-02T00:00:00Z',updated_at:'2025-02-02T00:01:00Z',html_url:'https://evil.example/steal'}
+          {id:2,name:'Deploy',display_title:'Deploy to preview',head_branch:'feature/demo',status:globalThis.__run2Done ? 'completed' : 'in_progress',conclusion:globalThis.__run2Done ? 'cancelled' : null,run_number:13,run_attempt:2,event:'workflow_dispatch',actor:{login:'bob'},created_at:'2025-02-02T00:00:00Z',updated_at:'2025-02-02T00:01:00Z',html_url:'https://evil.example/steal'}
         ];
-        const headers = new Headers({'content-type':'application/json','etag':'"fixture"'});
+        const headers = new Headers({'content-type':'application/json','etag':globalThis.__run2Done ? '"fixture-done"' : '"fixture"'});
          if (page < 4 && isE2eAuth(auth)) headers.set('Link', '<https://api.github.com/repos/acme/app/actions/runs?per_page=30&page='+(page+1)+'>; rel="next"');
-        if (options.headers?.['If-None-Match']) return new Response(null, {status:304,headers});
+        if (options.headers?.['If-None-Match'] && !globalThis.__run2Done) return new Response(null, {status:304,headers});
         return new Response(JSON.stringify({total_count:3,workflow_runs:runs}), {status:200,headers});
       };
     })()`;
@@ -400,7 +406,7 @@ test('run summaries stay compact, truncate safely, and disclose details accessib
     assert.equal(narrow.listOverflow, true, 'narrow viewport should scroll the run list horizontally');
     assert.equal(narrow.pageOverflow, false, 'run-list overflow must not widen the page');
     assert.ok(narrow.rowHeight >= 38 && narrow.rowHeight <= 46, 'narrow summaries remain on one compact line');
-    assert.equal(narrow.columns.split(' ').length, 8, 'summary keeps all eight columns at narrow widths');
+    assert.equal(narrow.columns.split(' ').length, 9, 'summary keeps all nine columns at narrow widths');
     await send('Emulation.clearDeviceMetricsOverride', {}, pageSession);
 });
 
@@ -476,6 +482,30 @@ test('expanded details stay text-safe and a failed-only rerun waits for a fresh 
     assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).textContent.includes('failure')`), false);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.endsWith('/rerun-failed-jobs')).length`), 1);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Rerun requested')`), false);
+});
+
+test('cancel is offered only on active runs, confirms first, and clears once the run finishes', { skip: !CHROME && 'Chrome not found' }, async () => {
+    const card = (title) => `[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('${title}'))`;
+    const posts = `globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.endsWith('/cancel'))`;
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); ${statusMenuScript('show', [])} document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Deploy to preview')`);
+    assert.equal(await evaluate(`${card('Deploy to preview')}.querySelector('.cancel-run').disabled`), false);
+    assert.equal(await evaluate(`${card('Compile app')}.querySelector('.cancel-run') === null`), true);
+    await evaluate(`window.confirm=()=>false; ${card('Deploy to preview')}.querySelector('.cancel-run').click()`);
+    assert.equal(await evaluate(`${posts}.length`), 0);
+    await evaluate(`globalThis.__cancelMode='conflict'; window.confirm=()=>true; ${card('Deploy to preview')}.querySelector('.cancel-run').click()`);
+    await waitFor(`document.querySelector('#feedback')?.textContent.includes('may have already finished') || document.body.textContent.includes('may have already finished')`);
+    assert.equal(await evaluate(`${card('Deploy to preview')}.querySelector('.cancel-run').disabled`), false);
+    await evaluate(`globalThis.__cancelMode='ok'; ${card('Deploy to preview')}.querySelector('.cancel-run').click()`);
+    await waitFor(`${card('Deploy to preview')}.textContent.includes('Cancel requested')`);
+    assert.equal(await evaluate(`${posts}.length`), 2);
+    assert.equal(await evaluate(`${posts}.every(x=>x.url.endsWith('/actions/runs/2/cancel'))`), true);
+    assert.equal(await evaluate(`${card('Deploy to preview')}.querySelector('.cancel-run').disabled`), true);
+    await evaluate(`${card('Deploy to preview')}.querySelector('.cancel-run').click()`);
+    assert.equal(await evaluate(`${posts}.length`), 2);
+    await evaluate(`globalThis.__run2Done=true; document.querySelector('#refresh').click()`);
+    await waitFor(`!${card('Deploy to preview')}.textContent.includes('Cancel requested') && ${card('Deploy to preview')}.querySelector('.cancel-run') === null`);
+    await evaluate(`globalThis.__run2Done=false`);
 });
 
 test('aborted sent POST stays uncertain with a single request until acknowledged', { skip: !CHROME && 'Chrome not found' }, async () => {

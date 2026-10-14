@@ -11,10 +11,12 @@
     const CANCELLED = 'cancelled';
     const RERUN_PENDING = 'Rerun requested—waiting for new attempt.';
     const RERUN_UNCERTAIN = 'Request may have been accepted; check GitHub before retrying.';
+    const CANCEL_REQUESTED = 'Cancel requested';
+    const CANCEL_COOLDOWN_MS = 60000;
     const RunState = globalThis.CimRunState || null;
     const attemptAdvance = (previous, next) => RunState ? RunState.isAttemptAdvance(previous, next) : (next !== null && Number(next) > Number(previous || 0));
     const mergeRun = (current, incoming) => RunState ? RunState.mergeRunMetadata(current, incoming) : { run: { ...current, ...incoming }, advanced: false, downgraded: false };
-    const state = { profiles: [], selected: '', editingId: null, profileFilter: ALL, runs: new Map(), latestLinks: new Map(), historyLinks: new Map(), historyStarted: new Set(), errors: new Map(), clients: new Map(), operations: new Set(), details: new Map(), detailOperations: new Map(), pinOperations: new Map(), pendingReruns: new Map(), pendingDispatches: new Map(), loading: false, initialLoading: false, epoch: 0, settingsBusy: false, writeBusy: false, dispatchController: null };
+    const state = { profiles: [], selected: '', editingId: null, profileFilter: ALL, runs: new Map(), latestLinks: new Map(), historyLinks: new Map(), historyStarted: new Set(), errors: new Map(), clients: new Map(), operations: new Set(), details: new Map(), detailOperations: new Map(), pinOperations: new Map(), pendingReruns: new Map(), pendingCancels: new Map(), pendingDispatches: new Map(), loading: false, initialLoading: false, epoch: 0, settingsBusy: false, writeBusy: false, dispatchController: null };
     const profileKey = (id, repo) => `${id}${KEY_SEPARATOR}${repo.toLocaleLowerCase('en-US')}`;
     const runKey = (id, repo, run) => `${profileKey(id, repo)}${KEY_SEPARATOR}${run.id}`;
     const repoKey = (repo) => repo.toLocaleLowerCase('en-US');
@@ -119,6 +121,7 @@
         $('profile-filter').disabled = state.profiles.length === 0;
         const chosen = $('profile-filter').value;
         const entries = [...state.runs.entries()].filter(([, item]) => chosen === ALL || item.profileId === chosen).sort((a, b) => Date.parse(b[1].run.created_at || '') - Date.parse(a[1].run.created_at || '') || String(a[1].run.id).localeCompare(String(b[1].run.id)));
+        for (const [key] of [...state.pendingCancels]) if (!activeStates.has(state.runs.get(key)?.run.status)) state.pendingCancels.delete(key);
         const active = entries.filter(([, item]) => activeStates.has(item.run.status)).length;
         $('summary').replaceChildren();
         for (const [number, label] of [[entries.length, 'loaded runs'], [active, 'active']]) { const item = document.createElement('span'); const strong = text(item, 'strong', String(number)); strong.setAttribute('aria-label', `${number} ${label}`); item.append(document.createTextNode(label)); $('summary').append(item); }
@@ -151,13 +154,17 @@
             const key = runKey(profileId, repo, run); const detail = state.details.get(key);
             const pending = state.pendingReruns.get(key) || (detail?.pending ? { message: detail.pending, ambiguous: detail.ambiguous } : null);
             if (pending) { const pendingNode = text(statusNode, 'span', pending.ambiguous ? 'Rerun uncertain' : 'Rerun pending', 'rerun-pending'); pendingNode.title = pending.message; }
+            const cancel = state.pendingCancels.get(key);
+            if (cancel && !cancel.inFlight) text(statusNode, 'span', CANCEL_REQUESTED, 'rerun-pending');
+            const cancelCell = document.createElement('div'); cancelCell.className = 'run-cancel';
+            if (activeStates.has(run.status)) { const cancelButton = document.createElement('button'); cancelButton.type = 'button'; cancelButton.className = 'button quiet cancel-run'; cancelButton.dataset.focusKey = `${key}:cancel`; cancelButton.setAttribute('aria-label', `Cancel run ${titleValue}`); cancelButton.textContent = cancel?.inFlight ? 'Cancelling…' : 'Cancel'; cancelButton.disabled = Boolean(cancel) && (cancel.inFlight || Date.now() - cancel.at < CANCEL_COOLDOWN_MS); cancelButton.addEventListener('click', () => cancelRun(item)); cancelCell.append(cancelButton); }
             const githubUrl = safeGitHubLink(run.html_url);
             const linkCell = document.createElement('div'); linkCell.className = 'run-link';
             if (githubUrl) { const link = document.createElement('a'); link.href = githubUrl; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = 'GitHub ↗'; link.title = 'Open run on GitHub'; link.dataset.focusKey = `${key}:github`; linkCell.append(link); }
             const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'button quiet details-toggle'; toggle.dataset.focusKey = `${key}:toggle`; toggle.setAttribute('aria-expanded', String(detail?.expanded === true)); toggle.setAttribute('aria-label', `${detail?.expanded ? 'Hide' : 'Show'} jobs and steps for ${titleValue}`); toggle.textContent = detail?.expanded ? 'Jobs ▾' : 'Jobs ▸'; toggle.addEventListener('click', () => toggleDetails(key));
             const panel = document.createElement('section'); panel.className = 'run-details'; panel.hidden = detail?.expanded !== true;
             if (detail?.expanded) renderDetails(panel, item, detail);
-            card.prepend(statusNode, identity); card.append(runNumber, time, toggle, linkCell, panel); list.append(card); visibleCount++;
+            card.prepend(statusNode, identity); card.append(runNumber, time, cancelCell, toggle, linkCell, panel); list.append(card); visibleCount++;
         }
         if (focusKey) {
             const focused = [...list.querySelectorAll('[data-focus-key]')].find((node) => node.dataset.focusKey === focusKey);
@@ -347,6 +354,30 @@
             if (error.ambiguous) { trackPending(key, { profileId: target.profileId, repo: target.repo, runId: target.runId, baseAttempt: target.attempt, token: target.token, ambiguous: true, message: RERUN_UNCERTAIN }); detail.jobs = []; detail.total = 0; detail.loaded = false; detail.stale = false; }
             else if (error.kind !== CANCELLED) detail.error = error.message;
         } finally { done(op); if (state.details.get(key) === detail) render(); }
+    }
+    async function cancelRun(item) {
+        const key = runKey(item.profileId, item.repo, item.run), profile = state.profiles.find((candidate) => candidate.id === item.profileId), live = state.runs.get(key)?.run;
+        if (!profile || document.visibilityState !== 'visible' || !live || !activeStates.has(live.status) || state.pendingCancels.get(key)?.inFlight) return;
+        const pendingCancel = state.pendingCancels.get(key);
+        if (pendingCancel && Date.now() - pendingCancel.at < CANCEL_COOLDOWN_MS) return;
+        const warning = `Cancel this run?\n\n${profile.name} · ${item.repo}\n${live.name || live.display_title || 'Workflow run'} · ${live.head_branch || 'ref unavailable'} · #${live.run_number ?? '—'}\n\nSteps with if: always() still run before it stops.`;
+        if (!confirm(warning)) return;
+        const entry = clientFor(profile), controller = new AbortController(), op = { profileId: profile.id, controller }, token = profile.token;
+        const owned = () => state.clients.get(profile.id) === entry && entry.token === token;
+        const tracked = { profileId: profile.id, repo: item.repo, runId: live.id, token, at: Date.now(), inFlight: true };
+        state.pendingCancels.set(key, tracked); state.operations.add(op); render();
+        try {
+            await entry.client.cancelRun(item.repo.split('/')[0], item.repo.split('/')[1], live.id, { signal: controller.signal });
+            if (!owned()) return;
+            if (state.pendingCancels.get(key) === tracked) { tracked.inFlight = false; tracked.at = Date.now(); }
+            void monitor.refresh();
+        } catch (error) {
+            if (state.pendingCancels.get(key) === tracked) state.pendingCancels.delete(key);
+            if (!owned() || error.kind === CANCELLED && !error.ambiguous) return;
+            if (error.ambiguous) setFeedback('The cancel request may not have reached GitHub; check the run and try again if it is still going.', 'error');
+            else if (error.status === 409) setFeedback('GitHub could not cancel this run; it may have already finished.', 'error');
+            else setFeedback(error.message, 'error');
+        } finally { done(op); render(); }
     }
     function safeDispatchUrl(value) {
         try { const url = new URL(value); return url.protocol === 'https:' && url.origin === 'https://github.com' && !url.username && !url.password ? url.href : ''; } catch { return ''; }
@@ -656,12 +687,14 @@
                 for (const key of [...state.details.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`)) state.details.delete(key);
                 // Stale token-tracked reruns never poll again, so drop all of this profile's pending.
                 for (const key of [...state.pendingReruns.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`)) state.pendingReruns.delete(key);
+                for (const key of [...state.pendingCancels.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`)) state.pendingCancels.delete(key);
                 for (const key of [...state.pendingDispatches.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`)) state.pendingDispatches.delete(key);
             }
             else if (entry) { const oldRepos = new Set(old.repos.map(repoKey)); const newRepos = new Set(next.repos.map(repoKey)); for (const repo of new Set([...oldRepos, ...newRepos])) if (oldRepos.has(repo) !== newRepos.has(repo)) { clearRepoCache(entry, repo); entry.suspendedRepos.delete(repo); for (const key of [...state.runs.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}${repo}${KEY_SEPARATOR}`)) state.runs.delete(key); for (const key of [...state.details.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}${repo}${KEY_SEPARATOR}`)) state.details.delete(key); state.errors.delete(`${id}${KEY_SEPARATOR}${repo}`); state.latestLinks.delete(`${id}${KEY_SEPARATOR}${repo}`); state.historyLinks.delete(`${id}${KEY_SEPARATOR}${repo}`); state.historyStarted.delete(`${id}${KEY_SEPARATOR}${repo}`); } entry.repos = new Set(next.repos.map(repoKey)); }
             for (const key of [...state.runs.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key.startsWith(`${profileKey(id, repo)}${KEY_SEPARATOR}`)))) state.runs.delete(key);
             for (const key of [...state.details.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key.startsWith(`${profileKey(id, repo)}${KEY_SEPARATOR}`)))) state.details.delete(key);
             for (const key of [...state.pendingReruns.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key.startsWith(`${profileKey(id, repo)}${KEY_SEPARATOR}`)))) state.pendingReruns.delete(key);
+            for (const key of [...state.pendingCancels.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key.startsWith(`${profileKey(id, repo)}${KEY_SEPARATOR}`)))) state.pendingCancels.delete(key);
             for (const key of [...state.pendingDispatches.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key.startsWith(`${profileKey(id, repo)}${KEY_SEPARATOR}`)))) state.pendingDispatches.delete(key);
             for (const map of [state.errors, state.latestLinks, state.historyLinks]) for (const key of [...map.keys()]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key === profileKey(id, repo)))) map.delete(key);
             for (const key of [...state.historyStarted]) if (key.startsWith(`${id}${KEY_SEPARATOR}`) && (!next || !next.repos.some((repo) => key === profileKey(id, repo)))) state.historyStarted.delete(key);
