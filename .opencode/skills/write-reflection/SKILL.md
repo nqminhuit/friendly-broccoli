@@ -29,6 +29,7 @@ description: Write, revise or review reflections/video scripts, metadata, image 
     - Avoid repeatedly selecting the same track or excerpt across reflections when suitable alternatives exist, but prioritize narrative fit over variety. Consult existing reflections when checking reuse.
     - Keep music cues in the narration Markdown only, not in the companion image prompt file.
     - If the music metadata is missing, invalid or has no suitable segment, report the problem rather than fabricating a cue.
+    - For spoiler-warning music, prefer segments whose `narrative_roles` contains `spoiler_transition`. For closing music, prefer `closing`. Consider the track's `cue_role_guidance`, prioritizing `strong` fits over `conditional` fits when equally appropriate. Always match the music to the surrounding narration; never select solely by role.
 
 6. Check metadata, duration, spoiler scope/warning, formatting, first image, companion prompt-file coverage, prompts/style/thumbnail consistency, filename matches and uniqueness, placeholders, secrets and image availability. Validate all music cues against the metadata: exact filename, segment timestamps, track duration, and fade durations. Ensure spoiler reflections have a post-warning music cue and every reflection has an appropriate closing music cue, unless an intentional silent ending is justified. Ensure no narration follows the closing music cue.
 
