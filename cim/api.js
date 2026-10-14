@@ -223,7 +223,7 @@
                 const hasJsonBody = response.headers.get('Content-Length') !== '0' && response.headers.get('Content-Type')?.includes('json');
                 if ((response.status !== 204 && response.status !== 201) || hasJsonBody) {
                     try { data = await response.json(); }
-                    catch (error) { if (response.status !== 201 && response.status !== 204) throw error; }
+                    catch (error) { if (![201, 202, 204].includes(response.status)) throw error; }
                 }
                 if (generation !== this.generation || controller.signal.aborted) throw new ApiError('GitHub request was cancelled.', { kind: 'cancelled', ambiguous: method === 'POST' && sent });
                 const value = { data, links: paginationLinks(response.headers.get('Link'), expectedPath || parsed.pathname), etag: response.headers.get('ETag'), status: response.status };
@@ -277,6 +277,10 @@
         }
         async rerun(owner, repo, id, failedOnly, { signal } = {}) {
             const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(id)}/${failedOnly ? 'rerun-failed-jobs' : 'rerun'}`;
+            return this.request(`${API_ORIGIN}${path}`, { signal, expectedPath: path, method: 'POST' });
+        }
+        async cancelRun(owner, repo, id, { signal } = {}) {
+            const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(id)}/cancel`;
             return this.request(`${API_ORIGIN}${path}`, { signal, expectedPath: path, method: 'POST' });
         }
         async getRepo(owner, repo, { signal } = {}) {
