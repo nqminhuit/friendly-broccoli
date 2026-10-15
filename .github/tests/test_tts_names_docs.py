@@ -9,6 +9,7 @@ SKILL = ROOT / ".opencode" / "skills" / "write-reflection" / "SKILL.md"
 KEY = "tts_names"
 KEY_BLOCK = "tts_names: |"
 EXCLUSIONS = ("ALL-CAPS", "acronyms", "initialisms")
+INITIALLED_NAME = "G. K. Chesterton"
 
 
 def numbered_step(text, n):
@@ -38,6 +39,16 @@ class TtsNamesDocsTest(unittest.TestCase):
         self.assertIn(KEY, numbered_step(self.skill, 8))
         for word in EXCLUSIONS:
             self.assertIn(word, numbered_step(self.skill, 4))
+
+    def test_dotted_initials_need_a_full_word_and_matching_support(self):
+        for label, text in (("README", self.readme), ("skill", numbered_step(self.skill, 4))):
+            with self.subTest(document=label):
+                self.assertIn(INITIALLED_NAME, text)
+                self.assertIn("dotted initials", text)
+                self.assertIn("at least one full word", text)
+                self.assertIn("standalone initialisms", text)
+                self.assertIn("bare initials", text)
+                self.assertIn("matching sec10v support", text.replace("`", ""))
 
 
 if __name__ == "__main__":

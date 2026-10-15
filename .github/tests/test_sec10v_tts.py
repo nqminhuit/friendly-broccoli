@@ -188,6 +188,16 @@ class TtsReflectionTest(unittest.TestCase):
         self.assertEqual(a1, rt)
         self.assertEqual(flag_value(a1), TTS_NAMES_JSON)
 
+    def test_dotted_initials_reach_generation_retry_and_identity_unchanged(self):
+        names = '["G. K. Chesterton"]'
+        spoken = "G. K. Chesterton wrote about Father Brown."
+        for step in ("attempt 1", "retry"):
+            with self.subTest(step=step):
+                argv = self.argv_for(step, tts=spoken, names=names)
+                self.assertEqual(flag_value(argv), names)
+                self.assertEqual(argv[argv.index("--tts") + 1], spoken)
+        self.assertEqual(flag_value(self.identity_argv(names=names)), names)
+
     def test_tts_names_absent_or_empty_is_no_op(self):
         for step in ("attempt 1", "retry"):
             baseline = self.argv_for(step)
