@@ -23,6 +23,7 @@ description: |
 ## Other sections
 ...
 ## Closing
+[Music:...]
 ```
 
 Keep prompts in a companion text file, put each PNG filename on its own line, followed immediately by its prompt; separate entries with a blank line. Include the dedicated thumbnail and every section image. Filenames must match the basenames of the Markdown image/thumbnail references and be unique within the reflection.
@@ -45,6 +46,18 @@ tts_names: |
   Father Brown
   Israel Gow
   New York
+```
+
+If the reflection is a spoiler, include a spoken warning in the end of the opening section and use a spoiler-warning image, for example:
+
+```markdown
+![](spoiler_warning_4.png)
+
+Imagine walking down a ...
+
+This reflection contains full spoilers for ...
+
+[Music:...]
 ```
 
 - Required for new reflections: `book`, `author`, `title`, `description`, `thumbnail`. Only optional keys: `part` (chapter/passage), `voice` (sec10v `resources/voices/` file), `tts_names` (below). Hashtags recommended.
