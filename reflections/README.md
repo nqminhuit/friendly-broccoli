@@ -38,9 +38,19 @@ Keep prompts in a companion text file, put each PNG filename on its own line, fo
 <prompt to create image...>
 ```
 
-- Required for new reflections: `book`, `author`, `title`, `description`, `thumbnail`. Only optional keys: `part` (chapter/passage), `voice` (sec10v `resources/voices/` file). Hashtags recommended.
+Optional `tts_names` frontmatter key, shown alone; legacy reflections omit it and the authoring skill adds it when eligible names are spoken:
+
+```text
+tts_names: |
+  Father Brown
+  Israel Gow
+  New York
+```
+
+- Required for new reflections: `book`, `author`, `title`, `description`, `thumbnail`. Only optional keys: `part` (chapter/passage), `voice` (sec10v `resources/voices/` file), `tts_names` (below). Hashtags recommended.
 - `thumbnail` must name a dedicated image, separate from the first image and all other section images. Put its prompt in the companion text file; do not add a narration image line or section for it. The pipeline still accepts legacy files without `thumbnail`; new reflections must specify one explicitly.
 - `book`, `author`, `part` are single-line. `key: value` consumes the rest of the line, including `:`; `key: |` takes following lines indented at least two spaces.
+- `tts_names: |` (optional for legacy reflections; missing or empty means no transform, so existing reflections stay valid. The authoring/review skill fills it automatically whenever eligible names are spoken): one exact person or place name per line, normally spaced as spoken (`Father Brown`, not `FatherBrown`). Authoring/review fills it with multiword person and place names the narration actually speaks, not metadata, headings or image prompts. Exclude ordinary capitalized phrases, book/chapter titles (a person's name inside a title is allowed, the whole title is not), ALL-CAPS words, acronyms, initialisms and uncertain entities. Do not invent spellings or pronunciations; the list is never a global allowlist. Matches are whole words and the longest listed name wins. Requires matching `sec10v` support; deploy it before relying on this key.
 - `## Heading` starts a section; blank lines separate paragraphs. Standalone `[Pause:<N>s]` inserts explicitly timed silence. Narration starts immediately, without a generated intro; keep it under 15 minutes including pauses.
 - Each section needs a standalone `![](ref)` before its paragraphs and a matching prompt in the companion text file. First image precedes narration; it persists until the next image and is never spoken. Each change starts a chunk; avoid fewer than about 40 words/image.
 - Use bucket-relative image/thumbnail names, resolved against the reflection image bucket (`REFLECTION_IMAGE_BUCKET` + `REFLECTION_IMAGE_PREFIX`). This repo is public: no bucket/presigned URLs or credentials. All required section images plus the named thumbnail must arrive to build: an early 20-minute wait runs while the chunks synthesize, then a 60-minute second window after audio collection; a timeout skips the build/upload with a warning. Prompts do not create images.
@@ -90,3 +100,4 @@ Put each cue on its own line, between narration paragraphs. Cues are never spoke
 - Secrets: `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN`, plus existing image/chunk-runner secrets and `BUCKET_S3_ENDPOINT`, `BUCKET_S3_URI`, `BUCKET_ACCESS_KEY_ID`, `BUCKET_SECRET_ACCESS_KEY` (failed-upload bundles only; deletion optional).
 - Automatic visual-only defaults: 30 FPS, Ken Burns (8% max zoom), varied 1-second transitions, 1-second fade-in, 1.5-second fade-out. Controls in the reflection workflow: `VIDEO_FRAMERATE`, `CROSSFADE_SECONDS`, `TRANSITION_STYLE`, `FADE_IN_SECONDS`, `FADE_OUT_SECONDS`; rebuild to apply changes.
 - `.github/workflows/sec10v.yml`: reflection Warmer narration uses `exaggeration=0.65`, `cfg_weight=0.35` on synthesis/retry; audiobooks retain 0.4/0.5. Regenerate audio to apply changes.
+- `tts_names` joins names only at the Chatterbox call: `sec10v.yml` takes a JSON array input and passes `--tts-names-json` to `audiobook.py`. Narration, transcripts, captions and QA text keep their spelling. Changing names, including removing them, requires regenerating the affected narration audio; audio reuse accounts for name changes after the matching sec10v support lands.

@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: ''
+      tts_names:
+        description: 'JSON array of normally spaced names to join only for synthesis (default [] = no change)'
+        required: false
+        type: string
+        default: '[]'
 
 permissions:
   contents: read
@@ -187,10 +192,12 @@ jobs:
           AUDIO_RATE: ${{ github.event.inputs.audio_rate }}
           VOICE: ${{ github.event.inputs.voice }}
           OUTPUT_NAME: ${{ github.event.inputs.output_name }}
+          TTS_NAMES: ${{ github.event.inputs.tts_names }}
         run: |
           args=(--tts "$TTS_TEXT" --audio-rate "$AUDIO_RATE")
           if [ -n "$VOICE" ]; then args+=(--voice "$VOICE"); fi
           if [[ "$OUTPUT_NAME" == "Reflection" || "$OUTPUT_NAME" == Reflection.* ]]; then args+=(--reflection); fi
+          if [ -n "$TTS_NAMES" ] && [ "$TTS_NAMES" != "[]" ]; then args+=(--tts-names-json "$TTS_NAMES"); fi
           python scripts/audiobook.py "${args[@]}"
           if [ -f "out/audiobook.mp3" ]; then
             echo "✅ TTS audio file generated successfully"
@@ -244,11 +251,13 @@ jobs:
           AUDIO_RATE: ${{ github.event.inputs.audio_rate }}
           VOICE: ${{ github.event.inputs.voice }}
           OUTPUT_NAME: ${{ github.event.inputs.output_name }}
+          TTS_NAMES: ${{ github.event.inputs.tts_names }}
         run: |
             echo "🔁 Retry triggered due to verification failure"
             args=(--tts "$TTS_TEXT" --audio-rate "$AUDIO_RATE")
             if [ -n "$VOICE" ]; then args+=(--voice "$VOICE"); fi
             if [[ "$OUTPUT_NAME" == "Reflection" || "$OUTPUT_NAME" == Reflection.* ]]; then args+=(--reflection); fi
+            if [ -n "$TTS_NAMES" ] && [ "$TTS_NAMES" != "[]" ]; then args+=(--tts-names-json "$TTS_NAMES"); fi
             python scripts/audiobook.py "${args[@]}"
 
             if [ ! -f "out/audiobook.mp3" ]; then
@@ -304,10 +313,12 @@ jobs:
           VOICE: ${{ github.event.inputs.voice }}
           AUDIO_RATE: ${{ github.event.inputs.audio_rate }}
           OUTPUT_NAME: ${{ github.event.inputs.output_name }}
+          TTS_NAMES: ${{ github.event.inputs.tts_names }}
         run: |
           args=(--audio "out/$OUTPUT_NAME.mp3")
           if [ -n "$VOICE" ]; then args+=(--voice "$VOICE"); fi
           if [ -n "$AUDIO_RATE" ]; then args+=(--audio-rate "$AUDIO_RATE"); fi
+          if [ -n "$TTS_NAMES" ] && [ "$TTS_NAMES" != "[]" ]; then args+=(--tts-names-json "$TTS_NAMES"); fi
           python scripts/audio_identity.py "${args[@]}"
           ls -la "out/$OUTPUT_NAME.audio.json"
 
