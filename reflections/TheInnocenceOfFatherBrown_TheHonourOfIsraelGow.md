@@ -3,6 +3,12 @@ book: The Innocence of Father Brown
 author: G. K. Chesterton
 part: The Honour of Israel Gow
 voice: _live/stacea-voice-ai-07.wav
+tts_names: |
+  Israel Gow
+  G. K. Chesterton
+  Father Brown
+  Inspector Craven
+  Earl of Glengyle
 title: The Honour of Israel Gow by G. K. Chesterton | A Gothic Mystery of Judgment
 thumbnail: the-honour-of-israel-gow-thumbnail.png
 description: |
