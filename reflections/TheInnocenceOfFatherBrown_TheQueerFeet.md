@@ -10,7 +10,7 @@ tts_names: |
   Duke of Chester
   Colonel Pound
 title: The Queer Feet by G. K. Chesterton | The People We Fail to See
-thumbnail: reflections/the-queer-feet-thumbnail.png
+thumbnail: the-queer-feet-thumbnail.png
 description: |
   An exclusive London hotel, an absurdly grand dinner, and footsteps that refuse to make sense.
 
@@ -23,7 +23,7 @@ description: |
 
 ## Opening — A Most Inconvenient Invitation
 
-![](reflections/the-queer-feet-01.png)
+![](the-queer-feet-01.png)
 
 Imagine a hotel whose great attraction is how difficult it is to get inside. It is small, inconvenient, and quite delighted not to accommodate you. Naturally, the right people are desperate to dine there.
 
@@ -37,7 +37,7 @@ This reflection contains full spoilers for "The Queer Feet," including the thief
 
 ## The Vernon Hotel — Dinner Without a Purpose
 
-![](reflections/the-queer-feet-02.png)
+![](the-queer-feet-02.png)
 
 The Twelve True Fishermen are a club with ceremonies, treasures, and absolutely no useful purpose. Chesterton presents that last detail almost as its finest qualification. A purpose would suggest that membership had to be earned.
 
@@ -53,7 +53,7 @@ Fifteen waiters are meant to make the evening run without a ripple. Somewhere up
 
 ## The Footsteps — Listening in the Dark
 
-![](reflections/the-queer-feet-03.png)
+![](the-queer-feet-03.png)
 
 That illness brings Father Brown to the hotel. An Italian waiter has suffered a stroke, and the priest is called to his bedside. Afterwards, Brown needs to write something connected with the man's confession. Its contents remain private.
 
@@ -71,7 +71,7 @@ Here, "queer" means strange or peculiar. The strangeness is wonderfully ordinary
 
 ## One Black Coat — Flambeau's Little Theatre
 
-![](reflections/the-queer-feet-04.png)
+![](the-queer-feet-04.png)
 
 The answer is Flambeau, who has found an excellent stage for his talents. His disguise depends on a simple resemblance: a gentleman's evening dress looks like a waiter's.
 
@@ -91,7 +91,7 @@ But a clink of plates has helped Brown recognise the hurried tread. It is a wait
 
 ## The Cloakroom — A Very Unusual Attendant
 
-![](reflections/the-queer-feet-05.png)
+![](the-queer-feet-05.png)
 
 When the footsteps become a run, Brown leaves his writing and enters the adjoining cloakroom. Its attendant is away. Flambeau arrives with the stolen silver stuffed inside his coat, ready to collect his things and leave.
 
@@ -111,7 +111,7 @@ The silver is safe. What happened to the man is a different question.
 
 ## An Unseen Hook — The Part We Do Not Hear
 
-![](reflections/the-queer-feet-06.png)
+![](the-queer-feet-06.png)
 
 The duke laughs at the idea that the thief has repented. Brown's reply is sharper than we might expect. Why should repentance seem ridiculous in a criminal, when comfortable, respectable people can remain so stubbornly unchanged?
 
@@ -129,7 +129,7 @@ We may still question letting Flambeau escape. The story gives us room for that 
 
 ## The Shape of the Story — A Plain Centre, Elaborate Edges
 
-![](reflections/the-queer-feet-07.png)
+![](the-queer-feet-07.png)
 
 During that explanation, Brown compares a clever crime to a work of art. Its details may be elaborate, but its centre is simple. He brings in Hamlet: all those strange figures and images surrounding one tragic man in black.
 
@@ -145,7 +145,7 @@ The hotel has not changed. We have learned how to look at it.
 
 ## The Proprietor — Looking Again at Lever
 
-![](reflections/the-queer-feet-08.png)
+![](the-queer-feet-08.png)
 
 Before leaving the hotel, it is worth looking again at Lever, its proprietor. He is a comic figure, anxious about anything that might disturb his perfectly arranged evening. Yet he is also the man who sends for the priest.
 
@@ -159,7 +159,7 @@ Lever deserves the same attentive reading that makes Brown's presence so valuabl
 
 ## Closing — Out Into the Ordinary Street
 
-![](reflections/the-queer-feet-09.png)
+![](the-queer-feet-09.png)
 
 The dinner resumes, and the club immediately wants a new ceremony to celebrate the recovery of its forks. After such an evening, naturally, what it needs is another ceremony.
 
