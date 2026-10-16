@@ -16,3 +16,6 @@ opencode.json
 sec10v/
 whisper.cpp/
 /reflections/*.png
+# Python bytecode from running the .github tests, never source we ship.
+__pycache__/
+*.pyc

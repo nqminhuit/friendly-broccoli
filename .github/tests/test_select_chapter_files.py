@@ -10,6 +10,11 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "select_chapter_files.py"
 ZERO = "0" * 40
 
+sys.path.insert(0, str(SCRIPT.parent))
+import select_chapter_files  # noqa: E402  (the module under test, for its camel_case)
+
+camel_case = select_chapter_files.camel_case
+
 
 def git(repo, *args):
     result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
@@ -137,7 +142,9 @@ class SelectChapterFilesTest(unittest.TestCase):
         self.repo.write("chapters/a b.md")
         self.repo.write("chapters/real.md")
         self.repo.write(".hidden")
-        self.repo.symlink("chapters/link.md", "chapters/real.md")
+        # A working symlink (target relative to the link's own directory), not a dangling one.
+        self.repo.symlink("chapters/link.md", "real.md")
+        self.assertTrue((self.repo.root / "chapters" / "link.md").is_file())
         head = self.repo.commit()
         proc, files = self.push(ZERO, head)
         self.assertEqual(0, proc.returncode, proc.stderr)
@@ -164,9 +171,49 @@ class SelectChapterFilesTest(unittest.TestCase):
 
     def test_manual_rejects_symlink(self):
         self.repo.write("chapters/real.md")
-        self.repo.symlink("chapters/link.md", "chapters/real.md")
+        self.repo.symlink("chapters/link.md", "real.md")
+        self.assertTrue((self.repo.root / "chapters" / "link.md").is_file())
         self.repo.commit()
         proc, _ = self.repo.run(event="workflow_dispatch", file="chapters/link.md")
+        self.assertNotEqual(0, proc.returncode)
+
+    def test_lexical_aliases_rejected(self):
+        # A '.' or empty component names the same file but skips the per-file lock/identity.
+        self.repo.write("chapters/real/a.md")
+        self.repo.commit()
+        for alias in ("chapters/./real/a.md", "chapters/real//a.md", "chapters/real/../real/a.md",
+                      " chapters/real/a.md", "chapters/real/a.md "):
+            with self.subTest(file=alias):
+                proc, _ = self.repo.run(event="workflow_dispatch", file=alias)
+                self.assertNotEqual(0, proc.returncode, alias)
+
+    def test_directory_symlink_to_same_content_skipped(self):
+        # chapters/alias -> real resolves inside the repo, but is still not a source identity.
+        self.repo.write("chapters/real/a.md")
+        self.repo.symlink("chapters/alias", "real")
+        head = self.repo.commit()
+        proc, files = self.push(ZERO, head)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertNotIn("chapters/alias/a.md", files)
+        proc, _ = self.repo.run(event="workflow_dispatch", file="chapters/alias/a.md")
+        self.assertNotEqual(0, proc.returncode)
+
+    def test_directory_symlink_outside_root_skipped(self):
+        with tempfile.TemporaryDirectory() as outside:
+            (Path(outside) / "a.md").write_text("body\n")
+            self.repo.symlink("chapters/alias", outside)
+            self.repo.commit()
+            proc, _ = self.repo.run(event="workflow_dispatch", file="chapters/alias/a.md")
+            self.assertNotEqual(0, proc.returncode)
+
+    def test_chapters_root_symlink_skipped(self):
+        self.repo.write("real-chapters/a.md")
+        self.repo.symlink("chapters", "real-chapters")
+        head = self.repo.commit()
+        proc, files = self.push(ZERO, head)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertEqual([], files)
+        proc, _ = self.repo.run(event="workflow_dispatch", file="chapters/a.md")
         self.assertNotEqual(0, proc.returncode)
 
     def test_collision_refused(self):
@@ -179,6 +226,25 @@ class SelectChapterFilesTest(unittest.TestCase):
         # The collision blocks even a manual dispatch of just one of the files.
         proc, _ = self.repo.run(event="workflow_dispatch", file="chapters/the-blue-cross.md")
         self.assertNotEqual(0, proc.returncode)
+
+    def test_case_folding_collides(self):
+        # The preparer's slug_to_camel capitalises (FOO→Foo, fooBar→Foobar); the selector must
+        # fold the same way or two files would fan out to one Chapter.<Name>.
+        for left, right in (("FOO.md", "foo.md"), ("fooBar.md", "foobar.md")):
+            with self.subTest(left=left, right=right):
+                self.repo.write(f"chapters/{left}")
+                self.repo.write(f"chapters/{right}")
+                head = self.repo.commit()
+                proc, _ = self.push(ZERO, head)
+                self.assertNotEqual(0, proc.returncode)
+        # Both names separated by a dot or a dash reach the same slug segment.
+        self.assertEqual("Chapter.12", self.slug("1.2"))
+        self.assertEqual("Chapter.12", self.slug("1-2"))
+        self.assertEqual("Chapter.Chapter12", self.slug("chapter-1-2"))
+        self.assertEqual("Chapter.TheBlueCross", self.slug("the_blue_cross"))
+
+    def slug(self, stem):
+        return "Chapter." + camel_case(stem)
 
     def test_nested_same_basename_collides(self):
         self.repo.write("chapters/one/common.md")

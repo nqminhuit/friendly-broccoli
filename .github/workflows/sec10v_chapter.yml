@@ -823,13 +823,18 @@ jobs:
           chapter = json.load(open("out/chapter.json"))
           base = chapter.get("base_name")
           images = chapter.get("images") or []
-          for index, image in enumerate(images):
-              name = f"{base}.jpg" if index == 0 else f"{base}.img{index + 1}.jpg"
-              path = f"out/pics/{name}"
+          # Check the manifest name the collector actually wrote, not a name inferred from the
+          # position: the cover image's manifest name is img1, and a stale <base>.jpg must not
+          # hide a genuinely missing first image.
+          for image in images:
+              if not (isinstance(image, dict) and isinstance(image.get("name"), str) and image["name"]):
+                  continue
+              name = image["name"]
+              path = f"out/pics/{name}.jpg"
               if not (os.path.isfile(path) and os.path.getsize(path) > 0):
-                  ref = image.get("ref", "") if isinstance(image, dict) else ""
+                  ref = image.get("ref", "") if isinstance(image.get("ref"), str) else ""
                   shown = f" ({safe_ref(ref)})" if safe_ref(ref) else ""
-                  print(f"❌ missing {name}{shown}")
+                  print(f"❌ missing {name}.jpg{shown}")
           thumbnail = chapter.get("thumbnail")
           if isinstance(thumbnail, str) and thumbnail:
               path = f"out/pics/{base}.thumb.jpg"

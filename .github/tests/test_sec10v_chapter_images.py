@@ -18,6 +18,7 @@ CHECK_NAME = "Check the chapter image configuration"
 EARLY_NAME = "Wait for the chapter images (while the chunks synthesize)"
 LATE_NAME = "Wait for the chapter images (second chance)"
 BUILD_NAME = "Build the final video"
+REPORT_NAME = "Report chunk, image and video status"
 DISPATCH_NAME = "Dispatch one sec10v.yml run per chunk"
 EARLY_TIMEOUT = "1200"
 LATE_TIMEOUT = "3600"
@@ -211,6 +212,24 @@ class ChapterImagesTest(unittest.TestCase):
             proc, _, _ = run_shell(self.shells[CHECK_NAME], work,
                                    {**CONFIG_ENV, "IMAGE_BUCKET": GOOD_BUCKET})
             self.assertNotEqual(0, proc.returncode, "a reused thumbnail must be refused")
+
+    def test_report_names_the_manifest_image_not_the_cover(self):
+        # <base>.jpg is the cover copy the collector writes from image 1, so it must not stand in
+        # for that image: the report has to name the manifest's own img1 when only the cover exists.
+        doc = chapter_doc({"name": f"{BASE}.img1", "ref": "one.jpg", "chunks": [1]},
+                          {"name": f"{BASE}.img2", "ref": "two.jpg", "chunks": [2]},
+                          thumbnail="book-thumb.jpg")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = make_sec10v_work(tmp, doc,
+                                    pics=[f"{BASE}.jpg", f"{BASE}.img2.jpg", f"{BASE}.thumb.jpg"])
+            proc, _, _ = run_shell(run_body(self.blocks[REPORT_NAME]), work,
+                                   {"FALLBACK_STATUS": "miss", "IMAGE_FOUND": "false",
+                                    "IMAGE_RETRY_FOUND": "false"})
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            self.assertIn(f"missing {BASE}.img1.jpg", proc.stdout)
+            self.assertNotIn(f"{BASE}.img2.jpg", proc.stdout)
+            self.assertNotIn("missing thumbnail", proc.stdout)
+            self.assertIn("no video was built", proc.stdout)
 
     def test_ordering(self):
         order = [DISPATCH_NAME, EARLY_NAME, LATE_NAME, BUILD_NAME]

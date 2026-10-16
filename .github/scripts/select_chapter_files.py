@@ -16,9 +16,9 @@ EXCLUDED_NAMES = frozenset({"README.md", "AGENTS.md"})
 
 
 def camel_case(stem):
-    """Chapter.<CamelCase(file-stem)>: split on non-alphanumerics, capitalise each part."""
-    parts = re.split(r"[^A-Za-z0-9]+", stem)
-    return "".join(part[:1].upper() + part[1:] for part in parts if part)
+    """Chapter.<CamelCase(file-stem)>. Exactly sec10v prepare_chapter.slug_to_camel, so a
+    stem the preparer folds (FOO→Foo, fooBar→Foobar) cannot slip past the collision check."""
+    return "".join(part.capitalize() for part in re.split(r"[^A-Za-z0-9]+", stem) if part)
 
 
 def chapter_base_name(path):
@@ -30,14 +30,23 @@ def is_excluded(path):
 
 
 def is_valid(path):
-    return bool(VALID.match(path)) and ".." not in path.split("/")
+    """A canonical repo-relative chapters/…/<name>.md path: no empty, '.' or '..' components.
+    Unstripped input is rejected too, so a lexical alias never reaches the per-file lock."""
+    if not VALID.match(path):
+        return False
+    return all(part and part not in (".", "..") for part in path.split("/"))
 
 
 def is_regular_file(root, path):
-    absolute = os.path.join(root, path)
-    if not os.path.isfile(absolute) or os.path.islink(absolute):
-        return False
-    return os.path.realpath(absolute).startswith(os.path.realpath(root) + os.sep)
+    """True only when no component under chapters/ (chapters itself included) is a symlink and
+    the file resolves inside the repository. A directory symlink to the same content is thus no
+    way around the per-file source identity."""
+    current = root
+    for part in path.split("/"):
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            return False
+    return os.path.isfile(current) and os.path.realpath(current).startswith(os.path.realpath(root) + os.sep)
 
 
 def git(root, *args):
@@ -94,9 +103,8 @@ def select(args):
         raise SystemExit(1)
     candidates = [args.file] if manual else changed_paths(root, args.before, args.sha)
     chosen = []
-    for raw in candidates:
-        path = raw.strip()
-        if not path:
+    for path in candidates:
+        if not path.strip():
             continue
         reason = None
         if is_excluded(path):
