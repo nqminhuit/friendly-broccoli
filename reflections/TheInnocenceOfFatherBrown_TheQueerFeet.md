@@ -25,12 +25,15 @@ description: |
 
 ![](the-queer-feet-01.png)
 
+[Music:Burlesque_NationalSweetheart.mp3:start=1s:end=12s:fade-in=1s:fade-out=3s]
+
 Imagine a hotel whose great attraction is how difficult it is to get inside. It is small, inconvenient, and quite delighted not to accommodate you. Naturally, the right people are desperate to dine there.
 
 This is the Vernon Hotel in London, as G. K. Chesterton introduces it in "The Queer Feet," the third story in The Innocence of Father Brown. Before we have a mystery, we have a joke: a hotel selling the pleasure of keeping everybody else outside.
 
 Into this carefully managed world comes a priest who has not come for dinner. His presence will make the evening much more interesting than anyone intended.
 
+![](spoiler_warning_7.png)
 This reflection contains full spoilers for "The Queer Feet," including the thief's identity, the method of the theft, and the ending.
 
 [Music:Burlesque_NationalSweetheart.mp3:start=30s:end=42s:fade-in=1s:fade-out=2s]
@@ -173,6 +176,7 @@ I love that the story lets him leave without a display of triumph. Brown has lis
 
 "The Queer Feet" leaves us with the pleasure of a clever puzzle, but also with that modest figure walking away. He has understood the performance without forgetting the person underneath it.
 
+![](closing_11.png)
 Thank you for joining me. What stays with you most: Flambeau's extraordinary acting, the club's wonderful absurdity, or the conversation Chesterton chooses not to let us hear?
 
 [Music:Burlesque_NationalSweetheart.mp3:start=150s:end=161s:fade-in=1s:fade-out=2s]

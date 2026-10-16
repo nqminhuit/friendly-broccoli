@@ -16,10 +16,10 @@ description: |
 ---
 ## Opening
 ![](book-01.png)
-<Narration; spoken spoiler warning only if this is a spoiler reflection, otherwise no need.>
+<Narration...>
 ## Section 1
 ![](book-02.png)
-<Narration ...>
+<Narration...>
 ## Other sections
 ...
 ## Closing
