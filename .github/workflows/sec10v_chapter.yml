@@ -361,6 +361,23 @@ jobs:
             || sudo apt-get install -y --no-install-recommends --fix-missing ffmpeg
           ffmpeg -version | head -n1
 
+      # Validation-only (no outputs, no TTS): the file's music cues are checked against the
+      # canonical assets/durations with ffprobe. Needs ffmpeg above and must fail before any chunk
+      # is dispatched or weights are warmed — a cached-narration run still needs its music checked,
+      # so this guards on miss, not needs_tts. Never runs the normal prepare here (a rewritten
+      # pending manifest and the authored outputs/identity must survive).
+      - name: Check the chapter music ranges
+        if: ${{ steps.fallback.outputs.status == 'miss' }}
+        working-directory: sec10v
+        env:
+          PYTHONPATH: scripts
+          FILE: ${{ matrix.file }}   # via env, never spliced into the script body
+          VOICE_OVERRIDE: ${{ inputs.voice }}
+        run: |
+          args=(--script-file "$GITHUB_WORKSPACE/$FILE" --check-music)
+          if [ -n "$VOICE_OVERRIDE" ] && [ "$VOICE_OVERRIDE" != "$VOICE_FROM_FILE" ]; then args+=(--voice "$VOICE_OVERRIDE"); fi
+          python scripts/prepare_markdown_chapter.py "${args[@]}"
+
       # The file's image names are listed here before anything is dispatched; a malformed manifest
       # or a missing/dedicated-thumbnail problem fails now rather than after ~40 minutes of TTS.
       # Image refs resolve against the image bucket and prefix (secrets, never printed).

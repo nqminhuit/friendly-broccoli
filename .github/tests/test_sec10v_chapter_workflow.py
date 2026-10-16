@@ -22,6 +22,7 @@ UPLOAD_NAME = "Upload video to YouTube"
 DISPATCH_NAME = "Dispatch one sec10v.yml run per chunk"
 COLLECT_NAME = "Collect MP3s, retry stragglers"
 RESTORE_NAME = "Restore a video from a failed upload"
+MUSIC_CHECK_NAME = "Check the chapter music ranges"
 WARM_STEP = "Warm the Chatterbox weights cache"
 VOICE_FROM_FILE = "(from file)"
 REAL_VOICE = "_live/stacie.mp3"
@@ -180,6 +181,55 @@ class ChapterWorkflowTest(unittest.TestCase):
         self.assertIn("steps.image_retry.outputs.found == 'true'", self.blocks[BUILD_NAME])
         # The image wait still runs when no TTS is needed, so a cached run can render.
         self.assertNotIn(needs_tts, self.blocks["Wait for the chapter images (while the chunks synthesize)"])
+
+    def test_music_check_ordering_and_guard(self):
+        order = list(self.blocks)
+        self.assertLess(order.index(RESTORE_NAME), order.index("Install ffmpeg"))
+        self.assertLess(order.index("Install ffmpeg"), order.index(MUSIC_CHECK_NAME))
+        for later in (WARM_STEP, DISPATCH_NAME):
+            self.assertLess(order.index(MUSIC_CHECK_NAME), order.index(later), later)
+        block = self.blocks[MUSIC_CHECK_NAME]
+        self.assertIn("steps.fallback.outputs.status == 'miss'", block)
+        # A cached-narration run still renders its music, so the check must not use needs_tts.
+        self.assertNotIn("needs_tts", block)
+
+    def test_music_check_is_validation_only(self):
+        body = self.shells[MUSIC_CHECK_NAME]
+        self.assertIn("--check-music", body)
+        # Never the normal prepare: no chunk cap, no manifest/output rewriting, no env export.
+        for banned in ("--max-chunks", "out/", "GITHUB_ENV"):
+            self.assertNotIn(banned, body, banned)
+
+    def test_music_check_args_and_voice_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = make_work(tmp, STATIC)
+            env = {"GITHUB_WORKSPACE": tmp, "FILE": FILE,
+                   "VOICE_OVERRIDE": VOICE_FROM_FILE, "VOICE_FROM_FILE": VOICE_FROM_FILE}
+            proc, argv, github_env = run_shell(self.shells[MUSIC_CHECK_NAME], work, env, fake=PREPARE_FAKE)
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            self.assertIn("scripts/prepare_markdown_chapter.py", argv)
+            self.assertEqual(f"{tmp}/{FILE}", argv[argv.index("--script-file") + 1])
+            self.assertIn("--check-music", argv)
+            self.assertNotIn("--max-chunks", argv)
+            # The sentinel is not a real voice and must not be forwarded.
+            self.assertNotIn("--voice", argv)
+            self.assertEqual("", github_env)
+        with tempfile.TemporaryDirectory() as tmp:
+            work = make_work(tmp, STATIC)
+            env = {"GITHUB_WORKSPACE": tmp, "FILE": FILE,
+                   "VOICE_OVERRIDE": REAL_VOICE, "VOICE_FROM_FILE": VOICE_FROM_FILE}
+            proc, argv, _ = run_shell(self.shells[MUSIC_CHECK_NAME], work, env, fake=PREPARE_FAKE)
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            self.assertEqual(REAL_VOICE, argv[argv.index("--voice") + 1])
+
+    def test_music_check_failure_fails_the_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = make_work(tmp, STATIC)
+            env = {"GITHUB_WORKSPACE": tmp, "FILE": FILE,
+                   "VOICE_OVERRIDE": VOICE_FROM_FILE, "VOICE_FROM_FILE": VOICE_FROM_FILE}
+            fake = 'case "$*" in *--check-music*) exit 4;; esac'
+            proc, _, _ = run_shell(self.shells[MUSIC_CHECK_NAME], work, env, fake=fake, delegate=False)
+            self.assertEqual(4, proc.returncode)
 
     def test_tts_decision_only_sets_needs_tts(self):
         body = self.shells["Decide what still needs doing"]

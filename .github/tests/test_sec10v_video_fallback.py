@@ -28,6 +28,7 @@ TRANSCRIPT_NAME = "Publish the transcript to the summary"
 CHAPTER_EARLY_WAIT = "Wait for the chapter images (while the chunks synthesize)"
 CHAPTER_LATE_WAIT = "Wait for the chapter images (second chance)"
 CHAPTER_CHECK = "Check the chapter image configuration"
+CHAPTER_MUSIC_CHECK = "Check the chapter music ranges"
 REFLECTION_EARLY_WAIT = "Wait for the reflection images (while the chunks synthesize)"
 REFLECTION_LATE_WAIT = "Wait for the reflection images (second chance)"
 QA_SETUP_STEPS = ("Check out whisper.cpp for the final QA",
@@ -190,7 +191,7 @@ class FallbackCommonTest(unittest.TestCase):
     def test_expensive_steps_gated_on_miss(self):
         chapter_gated = ["Reuse audio from a previous run of this chapter",
                          "Decide what still needs doing",
-                         "Install ffmpeg", CHAPTER_CHECK,
+                         "Install ffmpeg", CHAPTER_CHECK, CHAPTER_MUSIC_CHECK,
                          "Restore the Chatterbox weights cache",
                          WARM_STEP, SAVE_STEP,
                          "Dispatch one sec10v.yml run per chunk",
