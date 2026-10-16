@@ -9,6 +9,10 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "select_chapter_files.py"
 ZERO = "0" * 40
+KEEP = "chapters/keep.md"
+MASTER_ONLY = "chapters/master-only.md"
+SHARED = "chapters/shared.md"
+FEATURE_NEW = "chapters/feature-new.md"
 
 sys.path.insert(0, str(SCRIPT.parent))
 import select_chapter_files  # noqa: E402  (the module under test, for its camel_case)
@@ -26,17 +30,16 @@ def git(repo, *args):
 class Repo:
     """A throwaway git repo that chapter files can be added to between commits."""
 
-    def __init__(self):
+    def __init__(self, files=(".keep",)):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         git(self.root, "init", "-q")
         git(self.root, "config", "user.email", "t@example.com")
         git(self.root, "config", "user.name", "t")
         git(self.root, "checkout", "-q", "-b", "master")
-        self.write(".keep", "x")
-        git(self.root, "add", "-A")
-        git(self.root, "commit", "-q", "-m", "base")
-        self.base = git(self.root, "rev-parse", "HEAD")
+        for path in files:
+            self.write(path)
+        self.base = self.commit("base")
 
     def write(self, path, text="body\n"):
         target = self.root / path
@@ -51,6 +54,9 @@ class Repo:
     def commit(self, message="c"):
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", message)
+        return self.head()
+
+    def head(self):
         return git(self.root, "rev-parse", "HEAD")
 
     def run(self, **kwargs):
@@ -86,7 +92,7 @@ class SelectChapterFilesTest(unittest.TestCase):
         self.assertEqual(0, proc.returncode, proc.stderr)
         self.assertEqual({"chapters/a.md", "chapters/b.md"}, set(files))
 
-    def test_root_and_missing_before_fall_back(self):
+    def test_zero_and_missing_before_fall_back(self):
         self.repo.write("chapters/a.md")
         head = self.repo.commit()
         for before in (ZERO, "deadbeef" * 5):
@@ -103,6 +109,82 @@ class SelectChapterFilesTest(unittest.TestCase):
         proc, files = self.push(first, second)
         self.assertEqual(0, proc.returncode, proc.stderr)
         self.assertEqual(["chapters/a.md"], files)
+
+    def first_parent_merge(self):
+        """Two chapters, a side branch that changes one and adds one, master moving on, and a
+        --no-ff merge. Returns (first_parent, merge, changed) for a two-parent head."""
+        self.repo.write(KEEP)
+        self.repo.write(SHARED, "one\n")
+        self.repo.commit("chapters exist")
+        git(self.repo.root, "checkout", "-q", "-b", "feature")
+        self.repo.write(SHARED, "two\n")
+        self.repo.write(FEATURE_NEW)
+        side = self.repo.commit("feature")
+        git(self.repo.root, "checkout", "-q", "master")
+        self.repo.write(MASTER_ONLY)
+        first = self.repo.commit("master moves on")
+        git(self.repo.root, "merge", "-q", "--no-ff", "-m", "merge feature", side)
+        merge = self.repo.head()
+        parents = git(self.repo.root, "rev-list", "--parents", "-n", "1", merge).split()
+        self.assertEqual(3, len(parents), parents)
+        return first, merge, {SHARED, FEATURE_NEW}
+
+    def test_missing_empty_and_zero_before_select_merge_changes(self):
+        # A push whose `before` is unusable (new branch, force push) still selects the chapters a
+        # merge brought in, instead of silently selecting nothing.
+        _, merge, changed = self.first_parent_merge()
+        for before in ("", ZERO, "deadbeef" * 5):
+            with self.subTest(before=before[:8]):
+                proc, files = self.push(before, merge)
+                self.assertEqual(0, proc.returncode, proc.stderr)
+                self.assertCountEqual(files, changed)  # a merge lists no file once per parent
+                # Present and unchanged on the first parent: already built, never re-selected.
+                self.assertNotIn(KEEP, files)
+                self.assertNotIn(MASTER_ONLY, files)
+
+    def test_valid_before_selects_the_same_merge_changes(self):
+        first, merge, changed = self.first_parent_merge()
+        proc, files = self.push(first, merge)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertCountEqual(files, changed)
+
+    def test_merge_rename_selects_the_new_path(self):
+        self.repo.write("chapters/old.md")
+        self.repo.commit("chapter exists")
+        git(self.repo.root, "checkout", "-q", "-b", "feature")
+        git(self.repo.root, "mv", "chapters/old.md", "chapters/new.md")
+        side = self.repo.commit("rename")
+        git(self.repo.root, "checkout", "-q", "master")
+        self.repo.write(MASTER_ONLY)
+        first = self.repo.commit("master moves on")
+        git(self.repo.root, "merge", "-q", "--no-ff", "-m", "merge feature", side)
+        merge = self.repo.head()
+        for before in (ZERO, first):
+            with self.subTest(before=before[:8]):
+                proc, files = self.push(before, merge)
+                self.assertEqual(0, proc.returncode, proc.stderr)
+                self.assertEqual(["chapters/new.md"], files)  # the deleted old path is dropped
+
+    def test_true_root_commit_selects_its_own_chapter(self):
+        # Repo() commits `.keep` first, so only this repo's first commit is a real root commit.
+        root_repo = Repo(files=("chapters/a.md",))
+        self.addCleanup(root_repo.close)
+        self.assertEqual(1, len(git(root_repo.root, "rev-list", "--parents", "-n", "1",
+                                    root_repo.base).split()))
+        for before in ("", ZERO, "deadbeef" * 5):
+            with self.subTest(before=before[:8]):
+                proc, files = root_repo.run(event="push", before=before, sha=root_repo.base)
+                self.assertEqual(0, proc.returncode, proc.stderr)
+                self.assertEqual(["chapters/a.md"], files)
+
+    def test_unresolvable_head_is_not_an_empty_selection(self):
+        # A head git cannot resolve is a broken push, not "no chapter changed".
+        proc, files = self.push(ZERO, "deadbeef" * 5)
+        self.assertNotEqual(0, proc.returncode)
+        self.assertIsNone(files)
+        proc, files = self.push(ZERO, "")
+        self.assertNotEqual(0, proc.returncode)
+        self.assertIsNone(files)
 
     def test_deleted_ignored_and_rename_becomes_add(self):
         self.repo.write("chapters/a.md")

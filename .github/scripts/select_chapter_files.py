@@ -53,22 +53,40 @@ def git(root, *args):
     return subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
 
 
+def first_parent(root, sha):
+    """The first parent of `sha`, or None for a true root commit. A `sha` that is no commit,
+    or a history git cannot read, is fatal — never silently an empty selection."""
+    commit = git(root, "rev-parse", "--verify", "--quiet", sha + "^{commit}")
+    if commit.returncode != 0:
+        raise SystemExit(f"❌ {sha or '(empty sha)'} is not a commit in this repository")
+    parent = git(root, "rev-parse", "--verify", "--quiet", sha + "^1")
+    if parent.returncode != 0 and parent.stderr.strip():
+        raise SystemExit(f"❌ git could not read the history of {sha}: {parent.stderr.strip()}")
+    return parent.stdout.strip() or None
+
+
 def changed_paths(root, before, sha):
-    """The added/modified chapter files between `before` and `sha`, or of `sha` alone."""
-    if re.fullmatch(r"0+", before or ""):
-        use_root = True
-    elif not before:
-        use_root = True
-    else:
-        use_root = git(root, "cat-file", "-e", before + "^{commit}").returncode != 0
-    if use_root:
-        # A new branch or a force push: there is no usable `before`, so take the head commit's files.
-        result = git(root, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r",
-                     "--no-renames", "--diff-filter=AM", sha, "--", "chapters/*.md")
-    else:
+    """The added/modified chapter files between `before` and `sha`; with no usable `before`
+    (new branch, force push), `sha` against its first parent, or the empty tree for a root."""
+    if (
+        before
+        and not re.fullmatch(r"0+", before)
+        and git(root, "cat-file", "-e", before + "^{commit}").returncode == 0
+    ):
         # --no-renames: a renamed file shows as delete + add, so the new name is built.
         result = git(root, "diff", "--name-only", "--no-renames", "--diff-filter=AM",
                      before, sha, "--", "chapters/*.md")
+    else:
+        # First parent only, so a merge still selects the chapters it brought in: -m/all-parents
+        # would list a file once per parent and re-select chapters the first parent already built.
+        parent = first_parent(root, sha)
+        listing = ("--name-only", "--no-renames", "--diff-filter=AM")
+        if parent is None:
+            # A true root commit has no parent; --root compares it against the empty tree.
+            result = git(root, "diff-tree", "--root", "--no-commit-id", "-r",
+                         *listing, sha, "--", "chapters/*.md")
+        else:
+            result = git(root, "diff", *listing, parent, sha, "--", "chapters/*.md")
     if result.returncode != 0:
         raise SystemExit(f"❌ git could not list the changed files: {result.stderr.strip()}")
     return [line for line in result.stdout.splitlines() if line]
