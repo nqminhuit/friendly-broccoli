@@ -25,14 +25,14 @@ BUCKET_KEY = "BUCKET_S3_URI"
 QA_FILE = "out/${BASE}.qa.md"
 POLL_ARG = "--poll-interval 20"
 TRANSCRIPT_NAME = "Publish the transcript to the summary"
-CHAPTER_EARLY_WAIT = "Wait for the background image (while the chunks synthesize)"
-CHAPTER_LATE_WAIT = "Wait for the background image (second chance)"
+CHAPTER_EARLY_WAIT = "Wait for the chapter images (while the chunks synthesize)"
+CHAPTER_LATE_WAIT = "Wait for the chapter images (second chance)"
+CHAPTER_CHECK = "Check the chapter image configuration"
 REFLECTION_EARLY_WAIT = "Wait for the reflection images (while the chunks synthesize)"
 REFLECTION_LATE_WAIT = "Wait for the reflection images (second chance)"
 QA_SETUP_STEPS = ("Check out whisper.cpp for the final QA",
                   "Get whisper.cpp HEAD SHA",
                   "Restore the whisper.cpp build")
-PRINT_STEP = "🚨 IMAGE PROMPT READY — copy from this step"
 WARM_STEP = "Warm the Chatterbox weights cache"
 SAVE_STEP = "Save the Chatterbox weights cache"
 
@@ -189,11 +189,11 @@ class FallbackCommonTest(unittest.TestCase):
 
     def test_expensive_steps_gated_on_miss(self):
         chapter_gated = ["Reuse audio from a previous run of this chapter",
-                         "Decide what still needs doing", "Detect existing background image",
-                         "Generate image prompt and SEO with Gemini", "Check Gemini outputs",
-                         "Install ffmpeg", "Restore the Chatterbox weights cache",
+                         "Decide what still needs doing",
+                         "Install ffmpeg", CHAPTER_CHECK,
+                         "Restore the Chatterbox weights cache",
                          WARM_STEP, SAVE_STEP,
-                         "Dispatch one sec10v.yml run per chunk (+ intro)",
+                         "Dispatch one sec10v.yml run per chunk",
                          CHAPTER_EARLY_WAIT,
                          "Collect MP3s, retry stragglers", CHAPTER_LATE_WAIT,
                          "Build the final video"]
@@ -211,9 +211,6 @@ class FallbackCommonTest(unittest.TestCase):
             with self.subTest(workflow="reflection", step=name):
                 self.assertIn(FALLBACK_GUARD, self.reflection[name], name)
                 self.assertNotIn("!= 'miss'", self.reflection[name], name)
-        # Print step keeps always() plus miss guard.
-        self.assertIn("always()", self.chapter[PRINT_STEP])
-        self.assertIn(FALLBACK_GUARD, self.chapter[PRINT_STEP])
         # Build keeps parenthesised OR of image flags.
         for blocks in (self.chapter, self.reflection):
             b = blocks["Build the final video"]
@@ -270,14 +267,14 @@ class FallbackCommonTest(unittest.TestCase):
             self.assertFalse(eval_upload_if(expr, "skipped", "uploaded"))
             self.assertFalse(eval_upload_if(expr, "skipped", "miss"))
             self.assertFalse(eval_upload_if(expr, "skipped", ""))
-        # Thumbnail preserved: reflection conditional, chapter none.
+        # Thumbnail preserved: both workflows forward the dedicated thumbnail.
         self.assertIn("--thumbnail", run_body(self.reflection[UPLOAD_NAME]))
-        self.assertNotIn("--thumbnail", run_body(self.chapter[UPLOAD_NAME]))
+        self.assertIn("--thumbnail", run_body(self.chapter[UPLOAD_NAME]))
 
     def test_upload_failure_propagates_and_forwards(self):
         book = 'Evil Book"; $(touch pwned); echo "x'
         title = "Ch 1; `id` $HOME"
-        for blocks, want_thumb in ((self.chapter, False), (self.reflection, True)):
+        for blocks, want_thumb in ((self.chapter, True), (self.reflection, True)):
             body = run_body(blocks[UPLOAD_NAME])
             for rc in (1, 10):
                 with tempfile.TemporaryDirectory() as tmp, self.subTest(rc=rc, thumb=want_thumb):
@@ -382,9 +379,9 @@ class FallbackCommonTest(unittest.TestCase):
     def test_restore_quoting_and_kinds(self):
         crbody = run_body(self.chapter[RESTORE_NAME])
         self.assertIn("--kind chapter", crbody)
-        self.assertIn('--source-id "$SE_URL"', crbody)
-        self.assertIn('--image-ref "$IMAGE_URL"', crbody)
-        self.assertIn("sec10v_chapter.yml", crbody)
+        self.assertIn('--source-id "$FILE"', crbody)
+        self.assertIn('--source-file "$GITHUB_WORKSPACE/$FILE"', crbody)
+        self.assertNotIn("--image-ref", crbody)
         self.assertNotIn("${{", crbody)
         rrbody = run_body(self.reflection[RESTORE_NAME])
         self.assertIn("--kind reflection", rrbody)
@@ -392,43 +389,20 @@ class FallbackCommonTest(unittest.TestCase):
         self.assertIn('"$GITHUB_WORKSPACE/$FILE"', rrbody)
         self.assertIn("sec10v_reflection.yml", rrbody)
         self.assertNotIn("${{", rrbody)
-        # Hostile values pass through quoted env without execution.
+        # Hostile chapter paths pass through quoted env without execution or loss.
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v(tmp)
             evil = 'x"; $(touch pwned); echo "y'
             proc, calls, _ = run_shell(crbody, work,
-                                       {"SE_URL": evil, "IMAGE_URL": "", "FRESH": "false",
-                                        "GITHUB_WORKSPACE": str(Path(tmp)), "PYTHONPATH": "scripts"})
-            self.assertEqual(0, proc.returncode, proc.stderr)
-            self.assertFalse((work / "pwned").exists())
-            flat = [a for c in calls for a in c]
-            self.assertIn(evil, flat)
-        # Hostile --image-ref arrives as ONE argv element.
-        with tempfile.TemporaryDirectory() as tmp:
-            work = make_sec10v(tmp)
-            evil_url = 'https://img.example/x.jpg?sig=abc"; $(touch pwned); echo "y'
-            proc, calls, _ = run_shell(crbody, work,
-                                       {"SE_URL": "https://example.com/ch", "IMAGE_URL": evil_url,
-                                        "FRESH": "false",
+                                       {"FILE": evil, "FRESH": "false",
                                         "GITHUB_WORKSPACE": str(Path(tmp)), "PYTHONPATH": "scripts"})
             self.assertEqual(0, proc.returncode, proc.stderr)
             self.assertFalse((work / "pwned").exists())
             restores = [c for c in calls if HELPER in c and "restore" in c]
             self.assertEqual(1, len(restores), calls)
             argv = restores[0]
-            self.assertIn("--image-ref", argv)
-            self.assertEqual(evil_url, argv[argv.index("--image-ref") + 1])
-        # Empty IMAGE_URL sends no --image-ref at all.
-        with tempfile.TemporaryDirectory() as tmp:
-            work = make_sec10v(tmp)
-            proc, calls, _ = run_shell(crbody, work,
-                                       {"SE_URL": "https://example.com/ch", "IMAGE_URL": "",
-                                        "FRESH": "false",
-                                        "GITHUB_WORKSPACE": str(Path(tmp)), "PYTHONPATH": "scripts"})
-            self.assertEqual(0, proc.returncode, proc.stderr)
-            restores = [c for c in calls if HELPER in c and "restore" in c]
-            self.assertEqual(1, len(restores), calls)
-            self.assertNotIn("--image-ref", restores[0])
+            self.assertIn(evil, argv)
+            self.assertEqual(str(Path(tmp) / evil), argv[argv.index("--source-file") + 1])
         with tempfile.TemporaryDirectory() as tmp:
             work = make_sec10v(tmp)
             evil = 'x"; $(touch pwned); echo "y'
@@ -442,9 +416,9 @@ class FallbackCommonTest(unittest.TestCase):
 
     def test_concurrency(self):
         chapter_doc = yaml.safe_load(self.chapter_text)
-        group = chapter_doc["jobs"]["prepare"]["concurrency"]["group"]
-        self.assertEqual("${{ github.workflow }}-${{ inputs.se_url }}", group)
-        self.assertIs(chapter_doc["jobs"]["prepare"]["concurrency"]["cancel-in-progress"], False)
+        group = chapter_doc["jobs"]["chapter"]["concurrency"]["group"]
+        self.assertEqual("${{ github.workflow }}-${{ matrix.file }}", group)
+        self.assertIs(chapter_doc["jobs"]["chapter"]["concurrency"]["cancel-in-progress"], False)
         reflection_doc = yaml.safe_load(self.reflection_text)
         rgroup = reflection_doc["jobs"]["reflection"]["concurrency"]["group"]
         self.assertIn("matrix.file", rgroup)

@@ -1,108 +1,149 @@
-"""Check sec10v_chapter.yml builds Gemini requests from native skill paths."""
-import json
-import os
-import subprocess
-import sys
-import tempfile
-import textwrap
+"""Check the chapter workflow is file-driven (no Gemini/URL) and the chapter docs and skill agree."""
+import re
 import unittest
 from pathlib import Path
 
-WORKFLOW = Path(__file__).resolve().parents[1] / "workflows" / "sec10v_chapter.yml"
-STEP_NAME = "Generate image prompt and SEO with Gemini"
-SKILLS_DIR = Path(".opencode/skills")
-TEXT_DIR = Path("out/text")
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = ROOT / ".github" / "workflows" / "sec10v_chapter.yml"
+README = ROOT / "chapters" / "README.md"
+AGENTS = ROOT / "chapters" / "AGENTS.md"
+SKILL = ROOT / ".opencode" / "skills" / "prepare-chapter" / "SKILL.md"
+SELECTOR = ROOT / ".github" / "scripts" / "select_chapter_files.py"
 
-SEO_ID = "audiobook-youtube-seo"
-IMAGE_ID = "image-prompt-generator"
-SEO_CONTENT = "SEO-SKILL-BODY"
-IMAGE_CONTENT = "IMAGE-SKILL-BODY"
-BASE_NAME = "Book.01"
-BOOK_TITLE = "Test Book"
-CHAPTER_TITLE = "Chapter 1"
-AUTHOR = "Test Author"
-PRIMARY_REQUEST = "primary"
-FALLBACK_REQUEST = "fallback"
-IMAGE_PROMPT_KEY = "image_prompt"
+SKILL_NAME = "prepare-chapter"
+INITIALLED_NAME = "G. K. Chesterton"
+EXCLUSIONS = ("ALL-CAPS", "acronyms", "initialisms")
 
 
-def extract_request_python(text):
-    """Return the request-building Python heredoc of the creative step."""
-    idx = text.index(STEP_NAME)
-    start_marker = "python - <<'PY'"
-    start = text.index(start_marker, idx) + len(start_marker)
-    lines = text[start:].splitlines()
-    body = []
-    for line in lines[1:]:
-        if line.strip() == "PY":
-            break
-        body.append(line)
-    else:
-        raise AssertionError("unterminated PY heredoc")
-    script = textwrap.dedent("\n".join(body))
-    assert "gemini-request" in script, "wrong heredoc extracted"
-    return script
+def numbered_step(text, n):
+    start = re.search(rf"^{n}\. ", text, re.M)
+    end = re.search(rf"^{n + 1}\. ", text, re.M)
+    assert start, f"step {n} missing"
+    return text[start.start():end.start() if end else len(text)]
 
 
-def run_request_script(script, image_available):
-    """Run the heredoc with temp fixtures; return parsed request JSONs."""
-    with tempfile.TemporaryDirectory() as tmp:
-        work = Path(tmp)
-        (work / TEXT_DIR).mkdir(parents=True)
-        (work / SKILLS_DIR / SEO_ID).mkdir(parents=True)
-        (work / SKILLS_DIR / IMAGE_ID).mkdir(parents=True)
-        (work / SKILLS_DIR / SEO_ID / "SKILL.md").write_text(SEO_CONTENT)
-        (work / SKILLS_DIR / IMAGE_ID / "SKILL.md").write_text(IMAGE_CONTENT)
-        (work / TEXT_DIR / f"{BASE_NAME}.txt").write_text("Once upon a chapter body.")
-        script_file = work / "request.py"
-        script_file.write_text(script)
-        compile(script, str(script_file), "exec")
-        env = dict(os.environ)
-        env.update({
-            "BASE": BASE_NAME,
-            "BOOK_TITLE": BOOK_TITLE,
-            "CHAPTER_TITLE": CHAPTER_TITLE,
-            "AUTHOR": AUTHOR,
-            "IMAGE_AVAILABLE": image_available,
-        })
-        subprocess.run([sys.executable, str(script_file)], check=True, cwd=work, env=env, timeout=30)
-        out = {}
-        for name in (PRIMARY_REQUEST, FALLBACK_REQUEST):
-            out[name] = json.loads((work / f"gemini-request.{name}.json").read_text())
-        return out
-
-
-class ChapterSkillsTest(unittest.TestCase):
+class ChapterWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.text = WORKFLOW.read_text()
-        cls.script = extract_request_python(cls.text)
+        cls.workflow = WORKFLOW.read_text()
 
-    def test_no_legacy_skill_paths(self):
-        self.assertNotIn(".github/skills", self.text)
-        self.assertIn(f".opencode/skills/{SEO_ID}/SKILL.md", self.script)
-        self.assertIn(f".opencode/skills/{IMAGE_ID}/SKILL.md", self.script)
+    def test_no_gemini_or_url_dispatch_remnants(self):
+        lowered = self.workflow.lower()
+        for banned in ("gemini", "generativelanguage", "se_url", "image_url", "out/prompts",
+                       "image-prompt-generator", "audiobook-youtube-seo", ".github/skills"):
+            self.assertNotIn(banned, lowered, banned)
+        self.assertNotIn("GEMINI_API_KEY", self.workflow)
 
-    def test_seo_only_branch(self):
-        reqs = run_request_script(self.script, "true")
-        body = reqs[PRIMARY_REQUEST]["contents"][0]["parts"][0]["text"]
-        for want in (SEO_CONTENT, BOOK_TITLE, CHAPTER_TITLE, AUTHOR,
-                     BASE_NAME, "Once upon a chapter body."):
-            self.assertIn(want, body)
-        self.assertNotIn(IMAGE_CONTENT, body)
-        schema = reqs[FALLBACK_REQUEST]["generationConfig"]["responseSchema"]
-        self.assertEqual(["seo_markdown"], schema["required"])
-        self.assertNotIn(IMAGE_PROMPT_KEY, schema["properties"])
+    def test_file_driven_prepare_and_pipeline(self):
+        for want in ("prepare_markdown_chapter.py", "MARKDOWN_CHAPTER_VERSION", "reflection_images.py",
+                     "scripts/reuse_audio.py", "pending_chunks.py --rewrite", "video_fallback.py",
+                     "trigger_workflow.py", "transcript.py", "automate_audiobook.py"):
+            self.assertIn(want, self.workflow, want)
+        self.assertIn("--script-file", self.workflow)
+        self.assertIn("--kind chapter", self.workflow)
+        self.assertIn("--segment-images out/segment-images.json", self.workflow)
 
-    def test_seo_plus_image_branch(self):
-        reqs = run_request_script(self.script, "false")
-        body = reqs[PRIMARY_REQUEST]["contents"][0]["parts"][0]["text"]
-        for want in (SEO_CONTENT, IMAGE_CONTENT, BOOK_TITLE,
-                     CHAPTER_TITLE, AUTHOR, BASE_NAME):
-            self.assertIn(want, body)
-        schema = reqs[FALLBACK_REQUEST]["generationConfig"]["responseSchema"]
-        self.assertEqual(["seo_markdown", IMAGE_PROMPT_KEY], schema["required"])
-        self.assertIn(IMAGE_PROMPT_KEY, schema["properties"])
+    def test_push_trigger_is_chapter_markdown_only(self):
+        section = self.workflow.split("workflow_dispatch:", 1)[0]
+        self.assertIn("'chapters/**.md'", section)
+        self.assertNotIn(".txt", section)
+        self.assertIn("!chapters/README.md", section)
+        self.assertIn("!chapters/**/AGENTS.md", section)
+        self.assertIn("run-name: ${{ inputs.file || github.event.head_commit.message }}", self.workflow)
+
+    def test_no_url_or_motion_dispatch_inputs(self):
+        dispatch = self.workflow.split("workflow_dispatch:", 1)[1]
+        for banned in ("se_url", "image_url", "chapter_title:", "motion:"):
+            self.assertNotIn(banned, dispatch, banned)
+        for want in ("file:", "voice:", "sec10v_ref:", "fresh:"):
+            self.assertIn(want, dispatch, want)
+
+    def test_event_commit_pinned_and_helper_used(self):
+        self.assertEqual(2, self.workflow.count("ref: ${{ github.sha }}"))
+        self.assertIn("select_chapter_files.py", self.workflow)
+        self.assertNotIn("jq -R", self.workflow)
+
+
+class ChapterDocsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.readme = README.read_text()
+        cls.agents = AGENTS.read_text()
+        cls.skill = SKILL.read_text()
+
+    def test_readme_documents_required_format(self):
+        for want in ("book", "author", "chapter", "title", "description", "thumbnail",
+                     "source_url", "motion", "<name>-prompts.txt"):
+            self.assertIn(want, self.readme, want)
+        self.assertIn("no generated intro", self.readme)
+        self.assertIn("not** narrated", self.readme)
+
+    def test_readme_documents_naming_and_security(self):
+        self.assertIn("Chapter.<CamelCase(FileName)>", self.readme)
+        self.assertIn("the_blue_cross.md", self.readme)
+        self.assertIn("collide", self.readme)
+        self.assertIn("bucket-relative", self.readme)
+        self.assertIn("no bucket/presigned URLs or credentials", self.readme)
+        self.assertIn("never fetched", self.readme)
+        self.assertIn("dedicated", self.readme)
+
+    def test_readme_documents_motion_and_render_defaults(self):
+        self.assertIn("motion: false", self.readme)
+        self.assertIn("motion: true", self.readme)
+        self.assertIn("5 fps", self.readme)
+        self.assertIn("30 fps", self.readme)
+
+    def test_agents_require_the_skill(self):
+        self.assertIn(f"`{SKILL_NAME}` skill", self.agents)
+        self.assertIn("chapters/README.md", self.agents)
+        self.assertIn("Do not commit, push, dispatch or publish", self.agents)
+
+    def test_skill_front_matter_and_scope(self):
+        self.assertTrue(self.skill.startswith("---\n"))
+        self.assertIn(f"name: {SKILL_NAME}", self.skill)
+        self.assertIn("Not for reflections", self.skill)
+        self.assertIn("../../../chapters/README.md", self.skill)
+        self.assertIn("do not load or apply `write-reflection`", self.skill)
+
+    def test_skill_source_authority_and_fidelity(self):
+        for want in ("no abridgment", "never fetches", "invented", "only when explicitly requested",
+                     "source_url"):
+            self.assertIn(want, self.skill, want)
+        self.assertIn("Do not commit, push, dispatch or publish", self.skill)
+
+    def test_skill_reviews_two_rounds(self):
+        step = numbered_step(self.skill, 12)
+        self.assertIn("Round 1", step)
+        self.assertIn("fidelity", step)
+        self.assertIn("Round 2", step)
+
+    def test_tts_names_documented_with_dotted_initials(self):
+        for label, text in (("README", self.readme), ("skill", numbered_step(self.skill, 10))):
+            with self.subTest(document=label):
+                self.assertIn("tts_names", text)
+                self.assertIn(INITIALLED_NAME, text)
+                self.assertIn("dotted initials", text)
+                self.assertIn("at least one full word", text)
+                self.assertIn("standalone initialisms", text)
+                self.assertIn("bare initials", text)
+                self.assertIn("matching `sec10v` support", text)
+
+
+class SelectorTest(unittest.TestCase):
+    def test_selector_writes_a_json_files_output(self):
+        text = SELECTOR.read_text()
+        self.assertIn('f"files={json.dumps(chosen)}', text)
+        self.assertIn("Chapter.", text)
+        self.assertIn("def check_collisions", text)
+        self.assertNotIn("shell=True", text)
+
+    def test_workflow_passes_inputs_through_env(self):
+        text = WORKFLOW.read_text()
+        run_start = text.index("python3 .github/scripts/select_chapter_files.py")
+        body = text[run_start:text.index("chapter:", run_start)]
+        self.assertIn('--file "$FILE"', body)
+        self.assertIn('--output "$GITHUB_OUTPUT"', body)
+        self.assertNotIn("${{", body)
 
 
 if __name__ == "__main__":

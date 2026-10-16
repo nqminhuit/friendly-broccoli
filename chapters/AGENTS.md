@@ -1,0 +1,5 @@
+- Use the `prepare-chapter` skill for chapter authoring/review.
+- Enforce `chapters/README.md`: metadata, format and text fidelity, dedicated thumbnail and companion prompt coverage, naming and collision rules, and the security rules (relative image refs only, no bucket/presigned URLs or secrets).
+- Preserve the existing audiobook voice and render defaults unless asked.
+- The build never fetches; `source_url` is provenance only.
+- Do not commit, push, dispatch or publish unless requested. Review private YouTube uploads before publication.
