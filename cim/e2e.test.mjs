@@ -559,6 +559,90 @@ test('refreshing expanded details never moves the heading, jobs or following car
     }
 });
 
+// The cached-refresh rule also covers an already-loaded empty result: the empty
+// notice must persist, or the panel and rerun controls jump as it disappears.
+test('refreshing cached empty details keeps the empty notice and panel fixed', { skip: !CHROME && 'Chrome not found' }, async () => {
+    const EMPTY_NOTICE = 'No jobs were returned for this run attempt.';
+    const card = `[...document.querySelectorAll('#run-list .run-card')].find((node)=>node.textContent.includes('Work-only result'))`;
+    const toggle = `${card}.querySelector('.details-toggle')`;
+    const refreshButton = `${card}.querySelector('.detail-heading button')`;
+    const layout = () => evaluate(`(() => {
+        const card = ${card};
+        const panel = card.querySelector('.run-details');
+        const heading = card.querySelector('.detail-heading');
+        const status = heading.firstElementChild;
+        const empty = card.querySelector('.detail-empty');
+        const box = (node) => { if (!node) return null; const rect = node.getBoundingClientRect(); return {top:+rect.top.toFixed(2),left:+rect.left.toFixed(2),width:+rect.width.toFixed(2),height:+rect.height.toFixed(2)}; };
+        return {
+            status: status.textContent, statusTitle: status.title, buttonDisabled: heading.querySelector('button').disabled,
+            emptyText: empty ? empty.textContent : null, jobCount: card.querySelectorAll('.job-card').length,
+            heading: box(heading), empty: box(empty), controls: box(card.querySelector('.rerun-controls')), panel: box(panel), nextCard: box(card.nextElementSibling),
+            panelChildren: panel.children.length, pageWidth: document.documentElement.scrollWidth,
+        };
+    })()`);
+    const stable = (label, before, after) => {
+        for (const [name, key] of [['detail heading', 'heading'], ['empty notice', 'empty'], ['rerun controls', 'controls'], ['details panel', 'panel'], ['following card', 'nextCard']]) {
+            if (before[key] === null || after[key] === null) { assert.deepEqual(after[key], before[key], `${label}: the ${name} appeared or disappeared`); continue; }
+            for (const field of ['top', 'left', 'width', 'height']) assert.ok(Math.abs(before[key][field] - after[key][field]) <= 1, `${label}: the ${name} ${field} moved from ${before[key][field]} to ${after[key][field]}`);
+        }
+        assert.equal(after.panelChildren, before.panelChildren, `${label}: the details panel gained or lost a transient node`);
+        assert.equal(after.pageWidth, before.pageWidth, `${label}: page width changed from ${before.pageWidth} to ${after.pageWidth}`);
+    };
+    // Hold the run metadata so the loading state is measurable without any real network.
+    const gate = () => evaluate(`(() => { let release; globalThis.__detailsGate = { match: (url, options) => (options.method || 'GET') === 'GET' && url.endsWith('/actions/runs/20') && !url.includes('/jobs'), until: new Promise((resolve) => { release = resolve; }), release: () => release() }; })()`);
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); ${statusMenuScript('show', [])} document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('Work-only result')`);
+    assert.equal(await evaluate(`${toggle}.getAttribute('aria-expanded')`), 'false', 'the zero-job run starts collapsed with no snapshot');
+    try {
+        await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, pageSession);
+        // An unresolved first load must not claim the run has no jobs yet.
+        await gate();
+        await evaluate(`${toggle}.click()`);
+        await waitFor(`${refreshButton}.disabled`);
+        const initial = await layout();
+        assert.equal(initial.emptyText, null, 'an unresolved first load shows no empty notice');
+        assert.equal(initial.jobCount, 0, 'the first load has no jobs to show yet');
+        assert.match(initial.status, /^Loading jobs…/);
+        assert.doesNotMatch(initial.status, /stale/i, 'a first load has no cached details to call stale');
+        await evaluate(`globalThis.__detailsGate.release()`);
+        await waitFor(`!${refreshButton}.disabled && ${card}.textContent.includes('0 of 0 jobs loaded')`);
+        const firstLoaded = await layout();
+        assert.equal(firstLoaded.emptyText, EMPTY_NOTICE, 'the empty notice reports the loaded snapshot');
+        for (const [label, width, height, mobile] of [['desktop', 1440, 900, false], ['narrow', 390, 844, true]]) {
+            await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile }, pageSession);
+            const loaded = await layout();
+            assert.equal(loaded.emptyText, EMPTY_NOTICE, `${label}: the cached empty snapshot is on screen`);
+            assert.equal(loaded.buttonDisabled, false, `${label}: Refresh details starts enabled`);
+            await gate();
+            await evaluate(`${refreshButton}.click()`);
+            await waitFor(`${refreshButton}.disabled`);
+            const loading = await layout();
+            assert.equal(loading.buttonDisabled, true, `${label}: Refresh details is disabled while loading`);
+            assert.equal(loading.emptyText, EMPTY_NOTICE, `${label}: the cached empty notice stays visible during the refresh`);
+            assert.equal(loading.jobCount, loaded.jobCount, `${label}: no jobs appear during the refresh`);
+            stable(label, loaded, loading);
+            assert.match(loading.status, /^Loading jobs…/, `${label}: loading status stays visible`);
+            assert.match(loading.status, /previous details may be stale/i, `${label}: a cached refresh flags possibly stale details`);
+            assert.equal(loading.statusTitle, loading.status, `${label}: the full status is reachable as a title`);
+            assert.ok(loading.pageWidth <= width + 1, `${label}: the loading status does not widen the page (${loading.pageWidth} > ${width + 1})`);
+            await evaluate(`globalThis.__detailsGate.release()`);
+            await waitFor(`!${refreshButton}.disabled && ${card}.textContent.includes('0 of 0 jobs loaded')`);
+            const settled = await layout();
+            assert.equal(settled.status, loaded.status, `${label}: the resting status text is unchanged after the refresh`);
+            assert.equal(settled.buttonDisabled, false, `${label}: Refresh details is re-enabled when the refresh finishes`);
+            stable(label, loaded, settled);
+            // The empty refresh must not drift the controls away from the first load either.
+            if (label === 'desktop') assert.ok(Math.abs(loaded.controls.top - firstLoaded.controls.top) <= 1, `the rerun controls drifted from ${firstLoaded.controls.top} to ${loaded.controls.top}`);
+            await evaluate(`delete globalThis.__detailsGate`);
+        }
+    } finally {
+        await evaluate(`(() => { if (globalThis.__detailsGate) { globalThis.__detailsGate.release(); delete globalThis.__detailsGate; } })()`);
+        await send('Emulation.clearDeviceMetricsOverride', {}, pageSession);
+        // Leave the shared rerun tests a collapsed Work card with no held request.
+        await evaluate(`(() => { const node = ${card}; const button = node?.querySelector('.details-toggle'); if (button?.getAttribute('aria-expanded') === 'true') button.click(); })()`);
+    }
+});
+
 test('cancel is offered only on active runs, confirms first, and clears once the run finishes', { skip: !CHROME && 'Chrome not found' }, async () => {
     const card = (title) => `[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('${title}'))`;
     const posts = `globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.endsWith('/cancel'))`;
