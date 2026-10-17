@@ -44,16 +44,18 @@
   <dialog id="dispatch-dialog" aria-labelledby="dispatch-title">
     <form id="dispatch-form" novalidate>
       <div class="dialog-head"><div><p class="eyebrow">START WORKFLOW</p><h2 id="dispatch-title">New run</h2></div><button id="dispatch-close" class="icon-button" type="button" aria-label="Close new run">×</button></div>
-      <details class="dialog-notes"><summary>Details</summary><p class="help">Manual workflows only: the selected workflow must declare <code>workflow_dispatch</code> on its default branch. Forms reflect the selected ref’s YAML.</p><div class="token-warning">Starting a workflow uses this profile’s workflow privileges and may incur Actions usage charges. Requires Actions: read/write plus Contents: read for forms.</div></details>
-      <label class="field-label" for="dispatch-profile">Connection profile</label><select id="dispatch-profile"></select>
-      <label class="field-label" for="dispatch-repo">Repository</label><select id="dispatch-repo"></select>
-      <label class="field-label" for="dispatch-workflow">Workflow</label><select id="dispatch-workflow"></select>
-      <label class="field-label" for="dispatch-ref">Branch or tag ref</label>
-      <div class="dispatch-ref-row"><input id="dispatch-ref" type="text" maxlength="255" autocomplete="off" placeholder="main" spellcheck="false"><button id="dispatch-load" class="button quiet" type="button">Load inputs</button></div>
-      <p id="dispatch-schema-note" class="help" hidden></p>
-      <div id="dispatch-inputs" class="dispatch-inputs" aria-live="polite"></div>
-      <div id="dispatch-status" class="dispatch-status" role="status" aria-live="polite" hidden></div>
-      <div id="dispatch-result" class="dispatch-result" aria-live="polite"></div>
+      <div class="dispatch-body">
+        <details class="dialog-notes"><summary>Details</summary><p class="help">Manual workflows only: the selected workflow must declare <code>workflow_dispatch</code> on its default branch. Forms reflect the selected ref’s YAML.</p><div class="token-warning">Starting a workflow uses this profile’s workflow privileges and may incur Actions usage charges. Requires Actions: read/write plus Contents: read for forms.</div></details>
+        <label class="field-label" for="dispatch-profile">Connection profile</label><select id="dispatch-profile"></select>
+        <label class="field-label" for="dispatch-repo">Repository</label><select id="dispatch-repo"></select>
+        <label class="field-label" for="dispatch-workflow">Workflow</label><select id="dispatch-workflow"></select>
+        <label class="field-label" for="dispatch-ref">Branch or tag ref</label>
+        <div class="dispatch-ref-row"><input id="dispatch-ref" type="text" maxlength="255" autocomplete="off" placeholder="main" spellcheck="false"><button id="dispatch-load" class="button quiet" type="button">Load inputs</button></div>
+        <p id="dispatch-schema-note" class="help" hidden></p>
+        <div id="dispatch-inputs" class="dispatch-inputs" aria-live="polite"></div>
+        <div id="dispatch-status" class="dispatch-status" role="status" aria-live="polite" hidden></div>
+        <div id="dispatch-result" class="dispatch-result" aria-live="polite"></div>
+      </div>
       <div class="dialog-actions"><span class="spacer"></span><button id="dispatch-start" class="button primary" type="submit" disabled>Start workflow</button></div>
     </form>
   </dialog>

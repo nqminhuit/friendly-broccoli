@@ -23,6 +23,11 @@ async function evaluate(expression) {
     if (result.result.exceptionDetails) throw new Error(result.result.exceptionDetails.exception.description);
     return result.result.result.value;
 }
+async function clickNode(expression) {
+    const point = await evaluate(`(() => { const node=${expression}; node.scrollIntoView({block:'center',inline:'center'}); const r=node.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+    await send('Input.dispatchMouseEvent', {type:'mousePressed',button:'left',clickCount:1,...point}, pageSession);
+    await send('Input.dispatchMouseEvent', {type:'mouseReleased',button:'left',clickCount:1,...point}, pageSession);
+}
 async function evaluateWorker(expression) {
     const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, workerSession);
     if (result.result.exceptionDetails) throw new Error(result.result.exceptionDetails.exception.description);
@@ -158,6 +163,9 @@ before(async () => {
           return new Response(JSON.stringify({type:'file',encoding:'base64',content:b64.slice(0,60)+String.fromCharCode(10)+b64.slice(60),size:yaml.length,path: isOther ? '.github/workflows/other.yml' : '.github/workflows/ci.yml'}), {status:200,headers:{'content-type':'application/json'}});
         }
         if (url.includes('/dispatches') && (options.method || 'GET') === 'POST') {
+          if (globalThis.__dispatchGate) await new Promise(resolve => { globalThis.__releaseDispatch=resolve; });
+          globalThis.__releaseDispatch=null;
+          if (globalThis.__dispatchAmbiguous) return new Response('{"message":"server error"}', {status:500,headers:{'content-type':'application/json'}});
           if (globalThis.__dispatchHang) { globalThis.__slowSignals.push(options.signal); await new Promise((_,reject)=>{ if (options.signal?.aborted) reject(new Error('aborted after send')); else options.signal?.addEventListener('abort',()=>reject(new Error('aborted after send')),{once:true}); }); }
           const id = globalThis.__dispatchRunId;
           return new Response(JSON.stringify({workflow_run_id:id,run_url:'https://api.github.com/repos/acme/app/actions/runs/'+id,html_url:'https://github.com/acme/app/actions/runs/'+id}), {status:200,headers:{'content-type':'application/json'}});
@@ -351,8 +359,9 @@ test('filters except search are remembered across reloads and never leak into ot
         assert.equal(stored.repo, 'acme/app');
         assert.deepEqual(stored.statuses.sort(), ['active', 'failure']);
         assert.equal(JSON.stringify(stored).includes('preview'), false);
+        await evaluate(`globalThis.__filtersBeforeReload=true`);
         await send('Page.reload', {}, pageSession);
-        await waitFor(`document.querySelector('#run-list').textContent.includes('Deploy to preview')`);
+        await waitFor(`typeof globalThis.__filtersBeforeReload==='undefined' && document.querySelector('#run-list').textContent.includes('Deploy to preview')`);
         assert.equal(await evaluate(`(() => { const v = (id) => document.querySelector(id).selectedOptions[0].text; return [v('#profile-filter'), v('#repo-filter'), v('#workflow-filter'), v('#branch-filter'), document.querySelector('#search').value].join('|'); })()`), 'Personal|acme/app|Deploy|feature/demo|');
         assert.equal(await statusSummary(), 'Show: Active, Failure');
         assert.equal(await evaluate(`document.querySelector('#status-menu input[value=show]').checked`), true);
@@ -387,24 +396,24 @@ test('run summaries stay compact, truncate safely, and disclose details accessib
     await waitFor(`document.querySelector('#run-list .run-card')`);
     const desktop = await evaluate(`(() => { const card=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); const row=card.getBoundingClientRect(); const fields=[card.querySelector('.profile-badge'),card.querySelector('.run-repo'),card.querySelector('.run-title'),card.querySelector('.run-branch')]; const values=['A profile name deliberately much longer than its column','example-owner/an-extremely-long-repository-name','A deliberately very long workflow title that should be clipped to one line without losing its original value','a/branch/name/that/is/longer/than/the/available/column']; const clipped=fields.map((node,index)=>{node.textContent=values[index];node.title=values[index];return node.scrollWidth>node.clientWidth && getComputedStyle(node).textOverflow==='ellipsis' && node.textContent===values[index] && node.title===values[index]}); const list=document.querySelector('.run-list-scroll'); return {height:row.height, clipped, columns:getComputedStyle(card).gridTemplateColumns, listOverflow:list.scrollWidth>list.clientWidth, actionsFit:[...document.querySelectorAll('#run-list .run-actions')].every(cell=>cell.scrollWidth<=cell.clientWidth), cancelShown:!!document.querySelector('#run-list .run-actions .cancel-run')}; })()`);
     assert.equal(desktop.listOverflow, false, 'a full-width desktop run list must not scroll horizontally');
-    assert.ok(desktop.cancelShown && desktop.actionsFit, 'Cancel and Jobs fit together in the actions cell');
+    assert.ok(desktop.cancelShown && desktop.actionsFit, 'Cancel fits in the actions cell');
     assert.ok(desktop.height >= 38 && desktop.height <= 46, `collapsed run row was ${desktop.height}px tall`);
     assert.deepEqual(desktop.clipped, [true, true, true, true], 'long profile, repository, title and branch values ellipsize without losing text or titles');
     await evaluate(`var compileCard=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.querySelector('.run-title').title.startsWith('A deliberately')); for (const [selector,value] of [['.profile-badge','Personal'],['.run-repo','acme/app'],['.run-title','Compile app'],['.run-branch','main']]) { const node=compileCard.querySelector(selector); node.textContent=value; node.title=value; }`);
-    await evaluate(`var compactToggle=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.details-toggle'); compactToggle.focus()`);
+    await evaluate(`var compactToggle=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.run-toggle'); compactToggle.focus()`);
     const focusedToggle = await evaluate(`document.activeElement?.className`);
-    assert.equal(focusedToggle, 'button quiet details-toggle');
+    assert.equal(focusedToggle, 'run-title run-toggle');
     assert.equal(await evaluate(`compactToggle.tagName==='BUTTON' && compactToggle.tabIndex===0`), true, 'native button remains keyboard operable');
     await evaluate(`compactToggle.click()`);
-    await waitFor(`document.querySelector('.details-toggle[aria-expanded="true"]')`);
-    await waitFor(`document.activeElement?.matches('.details-toggle') && document.activeElement.getAttribute('aria-expanded')==='true'`);
-    const expanded = await evaluate(`(() => { const card=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); const row=card.querySelector('.details-toggle').getBoundingClientRect(); const panel=card.querySelector('.run-details').getBoundingClientRect(); return {below:panel.top>=row.bottom, label:card.querySelector('.details-toggle').getAttribute('aria-label'), metadata:card.querySelector('.detail-meta')?.textContent || '', expanded:card.querySelector('.details-toggle').getAttribute('aria-expanded')}; })()`);
+    await waitFor(`document.querySelector('.run-toggle[aria-expanded="true"]')`);
+    await waitFor(`document.activeElement?.matches('.run-toggle') && document.activeElement.getAttribute('aria-expanded')==='true'`);
+    const expanded = await evaluate(`(() => { const card=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); const row=card.querySelector('.run-toggle').getBoundingClientRect(); const panel=card.querySelector('.run-details').getBoundingClientRect(); return {below:panel.top>=row.bottom, label:card.querySelector('.run-toggle').getAttribute('aria-label'), metadata:card.querySelector('.detail-meta')?.textContent || '', expanded:card.querySelector('.run-toggle').getAttribute('aria-expanded')}; })()`);
     assert.equal(expanded.below, true);
     assert.match(expanded.label, /jobs and steps for Compile app/i);
     assert.match(expanded.metadata, /Event: push/);
     assert.equal(expanded.expanded, 'true');
     await evaluate(`document.activeElement.click()`);
-    await waitFor(`document.querySelector('.details-toggle[aria-expanded="false"]')`);
+    await waitFor(`document.querySelector('.run-toggle[aria-expanded="false"]')`);
     await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true }, pageSession);
     const narrow = await evaluate(`(() => { const list=document.querySelector('.run-list-scroll'); const card=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); return {listOverflow:list.scrollWidth>list.clientWidth,pageOverflow:document.documentElement.scrollWidth>innerWidth+1,rowHeight:card.getBoundingClientRect().height,columns:getComputedStyle(card).gridTemplateColumns}; })()`);
     assert.equal(narrow.listOverflow, true, 'narrow viewport should scroll the run list horizontally');
@@ -412,6 +421,35 @@ test('run summaries stay compact, truncate safely, and disclose details accessib
     assert.ok(narrow.rowHeight >= 38 && narrow.rowHeight <= 46, 'narrow summaries remain on one compact line');
     assert.equal(narrow.columns.split(' ').length, 8, 'summary keeps all eight columns at narrow widths');
     await send('Emulation.clearDeviceMetricsOverride', {}, pageSession);
+});
+
+test('row clicks and native keyboard disclosure leave links and details controls independent', {skip: !CHROME && 'Chrome not found'}, async () => {
+    await send('Emulation.setDeviceMetricsOverride', {width:1440,height:900,deviceScaleFactor:1,mobile:false}, pageSession);
+    const row = `[...document.querySelectorAll('#run-list .run-card')].find(card=>card.querySelector('.run-title').textContent==='Compile app')`;
+    const expanded = () => evaluate(`${row}.querySelector('.run-toggle').getAttribute('aria-expanded')`);
+    assert.equal(await evaluate(`document.querySelector('.details-toggle')===null`), true, 'there is no separate Jobs button');
+    await clickNode(`${row}.querySelector('.run-status')`);
+    await waitFor(`${row}.querySelector('.job-card')`);
+    assert.equal(await expanded(), 'true', 'summary text opens jobs');
+    assert.equal(await evaluate(`document.activeElement===${row}.querySelector('.run-toggle') && document.getElementById(document.activeElement.getAttribute('aria-controls'))===${row}.querySelector('.run-details')`), true, 'native disclosure keeps focus and controls the right panel');
+    await evaluate(`${row}.querySelector('.detail-meta').click(); ${row}.querySelector('.detail-heading button').click()`);
+    await waitFor(`!${row}.querySelector('.detail-heading button').disabled`);
+    assert.equal(await expanded(), 'true', 'details text and refresh do not collapse jobs');
+    await evaluate(`document.addEventListener('click',event=>event.preventDefault(),{once:true}); ${row}.querySelector('.run-link a').click()`);
+    assert.equal(await expanded(), 'true', 'GitHub is independent');
+    await clickNode(`${row}.querySelector('.run-status')`);
+    assert.equal(await expanded(), 'false', 'a second summary click collapses jobs');
+    await evaluate(`(() => { const node=${row}.querySelector('.run-status'); node.dispatchEvent(new MouseEvent('click',{bubbles:true,ctrlKey:true})); const range=document.createRange(); range.selectNodeContents(node); getSelection().removeAllRanges(); getSelection().addRange(range); node.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:1})); getSelection().removeAllRanges(); })()`);
+    assert.equal(await expanded(), 'false', 'modified clicks and text selection do not toggle');
+    await evaluate(`${row}.querySelector('.run-toggle').focus()`);
+    for (const [key,code,value,expected] of [['Enter','Enter',13,'true'],[' ','Space',32,'false']]) {
+        await send('Input.dispatchKeyEvent',{type:'keyDown',key,code,windowsVirtualKeyCode:value,text:key==='Enter'?'\r':key},pageSession);
+        await send('Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode:value},pageSession);
+        assert.equal(await expanded(),expected,`${code} activates the native title disclosure`);
+    }
+    await evaluate(`window.__confirmBeforeRow=window.confirm; window.confirm=()=>false; document.querySelector('.cancel-run').click(); window.confirm=window.__confirmBeforeRow; delete window.__confirmBeforeRow`);
+    assert.equal(await evaluate(`document.querySelector('.cancel-run').closest('.run-card').querySelector('.run-toggle').getAttribute('aria-expanded')`),'false','Cancel does not open jobs');
+    await send('Emulation.clearDeviceMetricsOverride',{},pageSession);
 });
 
 test('run hover and focus highlights preserve layout in both themes and respect reduced motion', { skip: !CHROME && 'Chrome not found' }, async () => {
@@ -434,7 +472,7 @@ test('run hover and focus highlights preserve layout in both themes and respect 
             assert.notEqual(hovered.border, normal.border, `${theme} row border highlights on hover`);
             assert.deepEqual([hovered.width, hovered.height, hovered.status], [normal.width, normal.height, normal.status], 'highlight does not shift rows or recolor their status');
             await movePointer(0, 0);
-            await evaluate(`${rowExpression}.querySelector('.details-toggle').focus()`);
+            await evaluate(`${rowExpression}.querySelector('.run-toggle').focus()`);
             await settled();
             const focused = await appearance();
             assert.equal(focused.background, hovered.background, 'keyboard focus receives the same row highlight');
@@ -470,7 +508,7 @@ test('toolbar discovers only its own dashboard context and reuses the open page'
 test('expanded details stay text-safe and a failed-only rerun waits for a fresh attempt', { skip: !CHROME && 'Chrome not found' }, async () => {
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); ${statusMenuScript('show', [])} document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
-    await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).querySelector('.details-toggle').click()`);
+    await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).querySelector('.run-toggle').click()`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile <script>')`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('2 of 2 jobs loaded') && document.querySelector('#run-list').textContent.includes('Package checks')`);
     assert.equal(await evaluate(`document.querySelector('#run-list script') === null`), true);
@@ -564,7 +602,7 @@ test('refreshing expanded details never moves the heading, jobs or following car
 test('refreshing cached empty details keeps the empty notice and panel fixed', { skip: !CHROME && 'Chrome not found' }, async () => {
     const EMPTY_NOTICE = 'No jobs were returned for this run attempt.';
     const card = `[...document.querySelectorAll('#run-list .run-card')].find((node)=>node.textContent.includes('Work-only result'))`;
-    const toggle = `${card}.querySelector('.details-toggle')`;
+    const toggle = `${card}.querySelector('.run-toggle')`;
     const refreshButton = `${card}.querySelector('.detail-heading button')`;
     const layout = () => evaluate(`(() => {
         const card = ${card};
@@ -639,7 +677,7 @@ test('refreshing cached empty details keeps the empty notice and panel fixed', {
         await evaluate(`(() => { if (globalThis.__detailsGate) { globalThis.__detailsGate.release(); delete globalThis.__detailsGate; } })()`);
         await send('Emulation.clearDeviceMetricsOverride', {}, pageSession);
         // Leave the shared rerun tests a collapsed Work card with no held request.
-        await evaluate(`(() => { const node = ${card}; const button = node?.querySelector('.details-toggle'); if (button?.getAttribute('aria-expanded') === 'true') button.click(); })()`);
+        await evaluate(`(() => { const node = ${card}; const button = node?.querySelector('.run-toggle'); if (button?.getAttribute('aria-expanded') === 'true') button.click(); })()`);
     }
 });
 
@@ -670,7 +708,7 @@ test('cancel is offered only on active runs, confirms first, and clears once the
 test('aborted sent POST stays uncertain with a single request until acknowledged', { skip: !CHROME && 'Chrome not found' }, async () => {
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true})); window.confirm=()=>true; globalThis.__rerunHang=false; globalThis.__rerunDeny=false;`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
-    await evaluate(`var cardA=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tA=cardA?.querySelector('.details-toggle'); if(tA?.getAttribute('aria-expanded')==='false') tA.click();`);
+    await evaluate(`var cardA=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tA=cardA?.querySelector('.run-toggle'); if(tA?.getAttribute('aria-expanded')==='false') tA.click();`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile <script>')`);
     const before = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`);
     await evaluate(`globalThis.__rerunHang=true; window.confirm=()=>true; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').click();`);
@@ -694,7 +732,7 @@ test('aborted sent POST stays uncertain with a single request until acknowledged
 test('queued rerun hidden before send leaves no request and no pending', { skip: !CHROME && 'Chrome not found' }, async () => {
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); window.confirm=()=>true; globalThis.__rerunHang=false; globalThis.__rerunDeny=true;`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
-    await evaluate(`var cardB=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tB=cardB?.querySelector('.details-toggle'); if(tB?.getAttribute('aria-expanded')==='false') tB.click();`);
+    await evaluate(`var cardB=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tB=cardB?.querySelector('.run-toggle'); if(tB?.getAttribute('aria-expanded')==='false') tB.click();`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Re-run all jobs')`);
     await evaluate(`window.confirm=()=>true; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').click();`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Actions: write')`);
@@ -713,7 +751,7 @@ test('queued rerun hidden before send leaves no request and no pending', { skip:
 test('replacing a PAT clears only that profile pending and allows a fresh rerun', { skip: !CHROME && 'Chrome not found' }, async () => {
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true})); window.confirm=()=>true; globalThis.__rerunHang=false; globalThis.__rerunDeny=false;`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app') && document.querySelector('#run-list').textContent.includes('Work-only result')`);
-    await evaluate(`for (var textD of ['Compile app','Work-only result']) { var cardD=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes(textD)); var tD=cardD?.querySelector('.details-toggle'); if(tD?.getAttribute('aria-expanded')==='false') tD.click(); }`);
+    await evaluate(`for (var textD of ['Compile app','Work-only result']) { var cardD=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes(textD)); var tD=cardD?.querySelector('.run-toggle'); if(tD?.getAttribute('aria-expanded')==='false') tD.click(); }`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Re-run all jobs')`);
     const postBase = await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST').length`);
     await evaluate(`window.confirm=()=>true; [...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').click();`);
@@ -728,7 +766,7 @@ test('replacing a PAT clears only that profile pending and allows a fresh rerun'
     await evaluate(`document.querySelector('#token').value='e2e-rotated'; document.querySelector('#settings-form').requestSubmit()`);
     await waitFor(`globalThis.__cimRequests.some(x=>x.auth==='Bearer e2e-rotated')`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile app')`);
-    await evaluate(`var cardE=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tE=cardE?.querySelector('.details-toggle'); if(tE?.getAttribute('aria-expanded')==='false') tE.click();`);
+    await evaluate(`var cardE=[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')); var tE=cardE?.querySelector('.run-toggle'); if(tE?.getAttribute('aria-expanded')==='false') tE.click();`);
     await waitFor(`document.querySelector('#run-list').textContent.includes('Compile <script>') || document.querySelector('#run-list').textContent.includes('2 of 2 jobs loaded') || document.querySelector('#run-list').textContent.includes('No jobs') || document.querySelector('#run-list').textContent.includes('Re-run all jobs')`);
     assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).textContent.includes('Rerun requested')`), false);
     assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(c=>c.textContent.includes('Compile app')).querySelector('.rerun-controls button').disabled`), false);
@@ -754,7 +792,7 @@ test('new run loads schema defaults validates and pins the exact returned run', 
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').value`), 'Hello');
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs [name=greeting]').tagName`), 'TEXTAREA');
     // The close button stays inside the dialog's visible rect after scrolling.
-    assert.equal(await evaluate(`(()=>{const d=document.querySelector('#dispatch-dialog'); const pad=document.createElement('div'); pad.style.height='2000px'; pad.id='e2e-pad'; d.querySelector('form').append(pad); d.scrollTop=1500; const c=document.querySelector('#dispatch-close').getBoundingClientRect(), r=d.getBoundingClientRect(); const ok=d.scrollTop>0 && c.top>=r.top && c.bottom<=r.bottom; pad.remove(); d.scrollTop=0; return ok})()`), true);
+    assert.equal(await evaluate(`(()=>{const d=document.querySelector('#dispatch-dialog'); const body=d.querySelector('.dispatch-body'); const pad=document.createElement('div'); pad.style.height='2000px'; body.append(pad); body.scrollTop=1500; const c=document.querySelector('#dispatch-close').getBoundingClientRect(), r=d.getBoundingClientRect(); const ok=body.scrollTop>0 && d.scrollTop===0 && c.top>=r.top && c.bottom<=r.bottom; pad.remove(); body.scrollTop=0; return ok})()`), true);
     assert.equal(await evaluate(`document.querySelector('.dialog-notes').open`), false);
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs input[name=flag]').checked`), false);
     assert.equal(await evaluate(`document.querySelector('#dispatch-inputs input[name=count]').value`), '0');
@@ -831,7 +869,7 @@ test('new run dialog grows long prompt fields while dashboard and Settings stay 
         assert.ok(desktop.shortLines >= 1.8 && desktop.shortLines <= 2.6, `short values stay compact (${desktop.shortLines} lines)`);
         assert.equal(desktop.pageOverflow, false, 'a wide dialog never widens the page');
         assert.equal(desktop.dialogOverflow, false, 'desktop dialog has no internal horizontal overflow');
-        assert.equal(await evaluate(`(() => { const dialog=document.querySelector('#dispatch-dialog'); const pad=document.createElement('div'); pad.style.height='2000px'; dialog.querySelector('form').append(pad); dialog.scrollTop=1500; const close=document.querySelector('#dispatch-close').getBoundingClientRect(); const rect=dialog.getBoundingClientRect(); const ok=dialog.scrollTop>0 && close.top>=rect.top-1 && close.bottom<=rect.bottom+1; pad.remove(); dialog.scrollTop=0; return ok; })()`), true, 'the close button stays visible after scrolling');
+        assert.equal(await evaluate(`(() => { const dialog=document.querySelector('#dispatch-dialog'); const body=dialog.querySelector('.dispatch-body'); const pad=document.createElement('div'); pad.style.height='2000px'; body.append(pad); body.scrollTop=1500; const close=document.querySelector('#dispatch-close').getBoundingClientRect(); const rect=dialog.getBoundingClientRect(); const ok=body.scrollTop>0 && dialog.scrollTop===0 && close.top>=rect.top-1 && close.bottom<=rect.bottom+1; pad.remove(); body.scrollTop=0; return ok; })()`), true, 'the close button stays visible after scrolling');
         const surfaces = {};
         for (const theme of ['light', 'dark']) {
             await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] }, pageSession);
@@ -939,6 +977,52 @@ test('new run dialog grows long prompt fields while dashboard and Settings stay 
     }
     const finalRow = await evaluate(`document.querySelector('#run-list .run-card').getBoundingClientRect().height`);
     assert.ok(finalRow >= 38 && finalRow <= 46, `dashboard rows stay compact after the dialog (${finalRow}px)`);
+});
+
+test('Start workflow stays still across repeated requests, scrolling and wrapped uncertainty', {skip: !CHROME && 'Chrome not found'}, async () => {
+    const rect = () => evaluate(`(() => { const r=document.querySelector('#dispatch-start').getBoundingClientRect(), box=document.querySelector('#dispatch-dialog').getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height,inside:r.top>=box.top && r.bottom<=box.bottom && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight}; })()`);
+    const stable = async (before,label) => {
+        const after=await rect();
+        assert.equal(after.inside,true,`${label}: submit is visible`);
+        for(const key of ['x','y','width','height']) assert.ok(Math.abs(after[key]-before[key])<=1,`${label}: ${key} moved (${before[key]} -> ${after[key]})`);
+    };
+    try {
+        for(const [width,height,noInputs] of [[1440,900,false],[390,844,false],[667,375,true],[320,568,true]]) {
+            await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false},pageSession);
+            await evaluate(`globalThis.__dispatchHang=false; document.querySelector('#new-run').click()`);
+            await waitFor(`!document.querySelector('#dispatch-start').disabled`);
+            if(noInputs) {
+                await evaluate(`globalThis.__schemaBeforeLayout=CimWorkflowSchema.parseWorkflowYaml; CimWorkflowSchema.parseWorkflowYaml=()=>({dispatchable:true,inputs:[]}); document.querySelector('#dispatch-load').click()`);
+                await waitFor(`!document.querySelector('#dispatch-start').disabled && !document.querySelector('#dispatch-inputs [name]')`);
+                await evaluate(`CimWorkflowSchema.parseWorkflowYaml=globalThis.__schemaBeforeLayout; delete globalThis.__schemaBeforeLayout`);
+            } else await evaluate(`(() => { const field=document.querySelector('#dispatch-inputs [name=greeting]'); field.value='long prompt '.repeat(200); field.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+            const before=await rect();
+            await evaluate(`(() => { const body=document.querySelector('#dispatch-dialog .dispatch-body'), field=document.querySelector('#dispatch-inputs textarea'); if(field) field.style.height='640px'; body.scrollTop=body.scrollHeight; })()`);
+            await stable(before,`${width}px scrolling/resizing`);
+            for(let attempt=0;attempt<2;attempt++) {
+                await evaluate(`globalThis.__dispatchGate=true`);
+                await clickNode(`document.querySelector('#dispatch-start')`);
+                await waitFor(`typeof globalThis.__releaseDispatch==='function'`);
+                await stable(before,`${width}px request ${attempt} pending`);
+                assert.equal(await evaluate(`document.querySelector('#dispatch-start').disabled`),true,'pending submit is disabled');
+                await evaluate(`globalThis.__releaseDispatch()`);
+                await waitFor(`!document.querySelector('#dispatch-start').disabled && document.querySelector('#dispatch-result a')`);
+                await stable(before,`${width}px request ${attempt} accepted`);
+            }
+            await evaluate(`globalThis.__dispatchGate=false; globalThis.__dispatchAmbiguous=true`);
+            await clickNode(`document.querySelector('#dispatch-start')`);
+            await waitFor(`document.querySelector('#dispatch-result button')`);
+            await evaluate(`document.querySelector('#dispatch-status').textContent+=' long-feedback-without-spaces'.repeat(60); document.querySelector('#dispatch-result button').scrollIntoView({block:'end'})`);
+            await stable(before,`${width}px wrapped uncertainty`);
+            assert.equal(await evaluate(`(() => { const body=document.querySelector('#dispatch-dialog .dispatch-body'), ack=body.querySelector('.dispatch-result button').getBoundingClientRect(), r=body.getBoundingClientRect(); return ack.top>=r.top && ack.bottom<=r.bottom+1 && body.scrollWidth<=body.clientWidth+1; })()`),true,'uncertainty acknowledgement remains reachable without horizontal overflow');
+            await evaluate(`document.querySelector('#dispatch-result button').click(); document.querySelector('#dispatch-dialog .dispatch-body').scrollTop=0; globalThis.__dispatchAmbiguous=false`);
+            await stable(before,`${width}px acknowledgement`);
+            await evaluate(`document.querySelector('#dispatch-close').click()`);
+        }
+    } finally {
+        await evaluate(`globalThis.__dispatchGate=false; globalThis.__dispatchAmbiguous=false; if(document.querySelector('#dispatch-dialog').open) document.querySelector('#dispatch-close').click()`);
+        await send('Emulation.clearDeviceMetricsOverride',{},pageSession);
+    }
 });
 
 test('stale workflow loads never restore and non-dispatchable workflows cannot start', { skip: !CHROME && 'Chrome not found' }, async () => {
