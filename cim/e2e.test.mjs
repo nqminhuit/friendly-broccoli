@@ -114,6 +114,8 @@ before(async () => {
         globalThis.__cimRequests.push({ url, auth, method: options.method || 'GET', body: options.body || '' });
         if (!url.startsWith('https://api.github.com/')) throw new Error('Blocked unexpected network URL');
         if (!allowedAuth.includes(auth)) throw new Error('Unexpected or missing token');
+        const gate = globalThis.__detailsGate;
+        if (gate?.match(url, options)) await gate.until;
         if (auth === 'Bearer expired-pat') return new Response('{"message":"Bad credentials"}', {status:401});
         if (url.includes('/repos/acme/slow/')) { globalThis.__slowSignals.push(options.signal); await new Promise(resolve=>setTimeout(resolve,700)); return new Response(JSON.stringify({total_count:1,workflow_runs:[{id:90,name:'Slow',display_title:'Slow private result',status:'completed',conclusion:'success',created_at:'2025-01-01T00:00:00Z'}]}),{status:200,headers:{'content-type':'application/json'}}); }
         if (url.includes('/repos/acme/forbidden/')) return new Response('{"message":"Not Found"}', {status:404});
@@ -488,6 +490,73 @@ test('expanded details stay text-safe and a failed-only rerun waits for a fresh 
     assert.equal(await evaluate(`[...document.querySelectorAll('#run-list .run-card')].find(card=>card.textContent.includes('Compile app')).textContent.includes('failure')`), false);
     assert.equal(await evaluate(`globalThis.__cimRequests.filter(x=>x.method==='POST' && x.url.endsWith('/rerun-failed-jobs')).length`), 1);
     assert.equal(await evaluate(`document.querySelector('#run-list').textContent.includes('Rerun requested')`), false);
+});
+
+// A cached refresh keeps the shown jobs; its status text lives in the heading so
+// a held metadata request cannot reflow the jobs and cards below it.
+test('refreshing expanded details never moves the heading, jobs or following cards', { skip: !CHROME && 'Chrome not found' }, async () => {
+    const card = `[...document.querySelectorAll('#run-list .run-card')].find((node)=>node.textContent.includes('Compile app'))`;
+    const refreshButton = `${card}.querySelector('.detail-heading button')`;
+    const layout = () => evaluate(`(() => {
+        const card = ${card};
+        const panel = card.querySelector('.run-details');
+        const heading = card.querySelector('.detail-heading');
+        // Measure the heading's status node structurally, not by its class.
+        const status = heading.firstElementChild;
+        const box = (node) => { if (!node) return null; const rect = node.getBoundingClientRect(); return {top:+rect.top.toFixed(2),left:+rect.left.toFixed(2),width:+rect.width.toFixed(2),height:+rect.height.toFixed(2)}; };
+        return {
+            status: status.textContent, statusClass: status.className, statusTitle: status.title,
+            heading: box(heading), button: box(heading.querySelector('button')), buttonDisabled: heading.querySelector('button').disabled,
+            jobCount: card.querySelectorAll('.job-card').length, firstJob: box(card.querySelector('.job-card')), firstStep: box(card.querySelector('.step-list li')),
+            panel: box(panel), panelChildren: panel.children.length, nextCard: box(card.nextElementSibling), pageWidth: document.documentElement.scrollWidth,
+        };
+    })()`);
+    const near = (label, before, after, tolerance = 1) => assert.ok(Math.abs(before - after) <= tolerance, `${label} moved from ${before} to ${after}`);
+    const stable = (label, before, after) => {
+        for (const [name, key] of [['heading', 'heading'], ['refresh button', 'button'], ['first job', 'firstJob'], ['first step', 'firstStep'], ['details panel', 'panel'], ['following card', 'nextCard']]) {
+            for (const field of ['top', 'left', 'width', 'height']) near(`${label} ${name} ${field}`, before[key][field], after[key][field]);
+        }
+        assert.equal(after.panelChildren, before.panelChildren, `${label}: the details panel gained or lost a transient node`);
+        assert.equal(after.pageWidth, before.pageWidth, `${label}: page width changed from ${before.pageWidth} to ${after.pageWidth}`);
+    };
+    const refresh = async (label, width) => {
+        const loaded = await layout();
+        assert.match(loaded.status, /^2 of 2 jobs loaded$/, `${label}: expected already loaded details`);
+        assert.equal(loaded.buttonDisabled, false, `${label}: Refresh details starts enabled`);
+        // Hold the run metadata request so the loading state is measurable.
+        await evaluate(`(() => { let release; globalThis.__detailsGate = { match: (url, options) => (options.method || 'GET') === 'GET' && url.endsWith('/actions/runs/1') && !url.includes('/jobs'), until: new Promise((resolve) => { release = resolve; }), release: () => release() }; })()`);
+        await evaluate(`${refreshButton}.click()`);
+        await waitFor(`${refreshButton}.disabled`);
+        const loading = await layout();
+        assert.equal(loading.buttonDisabled, true, `${label}: Refresh details is disabled while loading`);
+        assert.equal(loading.jobCount, loaded.jobCount, `${label}: previous jobs stay visible during the refresh`);
+        stable(label, loaded, loading);
+        assert.match(loading.status, /^Loading jobs…/, `${label}: loading status stays visible`);
+        assert.match(loading.status, /previous details may be stale/i, `${label}: a cached refresh flags possibly stale details`);
+        assert.equal(loading.statusClass, 'detail-job-status', `${label}: the status node keeps an explicit class`);
+        assert.equal(loading.statusTitle, loading.status, `${label}: the full status is reachable as a title`);
+        assert.ok(loading.heading.height <= 44, `${label}: the heading stays on one line`);
+        assert.ok(loading.pageWidth <= width + 1, `${label}: the loading status does not widen the page (${loading.pageWidth} > ${width + 1})`);
+        await evaluate(`globalThis.__detailsGate.release()`);
+        await waitFor(`!${refreshButton}.disabled && ${card}.textContent.includes('2 of 2 jobs loaded')`);
+        const settled = await layout();
+        assert.equal(settled.status, loaded.status, `${label}: the resting status text is unchanged after the refresh`);
+        assert.equal(settled.buttonDisabled, false, `${label}: Refresh details is re-enabled when the refresh finishes`);
+        stable(label, loaded, settled);
+        await evaluate(`delete globalThis.__detailsGate`);
+    };
+    await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); document.querySelector('#search').value=''; document.querySelector('#search').dispatchEvent(new Event('input',{bubbles:true})); ${statusMenuScript('show', [])} document.querySelector('#profile-filter').value='all'; document.querySelector('#profile-filter').dispatchEvent(new Event('change',{bubbles:true}))`);
+    await waitFor(`document.querySelector('#run-list').textContent.includes('2 of 2 jobs loaded')`);
+    try {
+        for (const [label, width, height, mobile] of [['desktop', 1440, 900, false], ['narrow', 390, 844, true]]) {
+            await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile }, pageSession);
+            await refresh(label, width);
+        }
+    } finally {
+        await evaluate(`(() => { if (globalThis.__detailsGate) { globalThis.__detailsGate.release(); delete globalThis.__detailsGate; } })()`);
+        try { await waitFor(`!${refreshButton}.disabled`, 3000); } catch { /* Cleanup only; real failures surface above. */ }
+        await send('Emulation.clearDeviceMetricsOverride', {}, pageSession);
+    }
 });
 
 test('cancel is offered only on active runs, confirms first, and clears once the run finishes', { skip: !CHROME && 'Chrome not found' }, async () => {
