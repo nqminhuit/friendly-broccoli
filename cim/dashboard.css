@@ -6,3 +6,11 @@
 .run-card{transition:background-color 140ms ease,border-color 140ms ease}.run-card:hover,.run-card:focus-within{background:color-mix(in srgb,var(--accent) 7%,var(--surface));border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}@media(prefers-reduced-motion:reduce){.run-card{transition:none}}
 .topbar{min-height:64px}main{padding:16px 24px 64px}.eyebrow{margin-bottom:6px}
 .dialog-notes summary{font-size:12px;color:var(--muted);cursor:pointer;margin:10px 0}.dispatch-ref-row{display:flex;gap:10px}.dispatch-ref-row input{flex:1}.dispatch-inputs{display:grid;gap:12px;margin:14px 0}.dispatch-field{display:grid;gap:6px;border:1px solid var(--line);border-radius:9px;padding:12px;background:var(--surface-2)}.dispatch-field-head{display:grid;gap:2px}.dispatch-help{color:var(--muted);font-size:12px}.dispatch-error{color:var(--danger);font-size:12px}.dispatch-status{margin:10px 0;font-size:13px}.dispatch-status.error{color:var(--danger)}.dispatch-status.success{color:var(--accent)}.dispatch-result{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:6px 0 10px}.dispatch-result a{font-weight:650}
+/* New run needs wider, larger prompt fields; dashboard and Settings keep their own sizing. */
+#dispatch-dialog{width:min(960px,calc(100% - 28px));font-size:16px;line-height:1.6}
+#dispatch-dialog input,#dispatch-dialog select,#dispatch-dialog textarea,#dispatch-dialog .button{font-size:16px}
+#dispatch-dialog .field-label,#dispatch-dialog .help,#dispatch-dialog .dispatch-help,#dispatch-dialog .dispatch-error,#dispatch-dialog .dialog-notes summary{font-size:14px}
+#dispatch-dialog input,#dispatch-dialog select,#dispatch-dialog textarea{max-width:100%;min-width:0}
+#dispatch-dialog .dispatch-field>*{min-width:0;max-width:100%}
+#dispatch-dialog .dispatch-field input[type=checkbox]{justify-self:start;width:auto;min-width:auto}
+#dispatch-dialog .dispatch-ref-row{flex-wrap:wrap}#dispatch-dialog .dispatch-ref-row input{flex:1 1 220px}

@@ -5,6 +5,8 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
     const MAX_WORKFLOWS = 500;
     const UNCERTAIN_ACK = 'I checked GitHub; allow another request';
+    const TEXTAREA_MIN_LINES = 2;
+    const TEXTAREA_MAX_LINES = 10;
 
     function safeGitHubUrl(value) {
         try {
@@ -33,6 +35,36 @@
         function visible() { try { const check = isVisible; return typeof check === 'function' ? check() !== false : true; } catch { return true; } }
 
         function dialogOpen() { try { return Boolean($('dispatch-dialog')?.open); } catch { return false; } }
+
+        const fittedTextareas = new WeakMap();
+
+        // String fields grow with their wrapped content between a compact and a roomy
+        // height, and are never capped, so a manual resize survives until text or width changes.
+        function fitTextarea(field) {
+            if (!field || field.tagName !== 'TEXTAREA') return;
+            const view = document && document.defaultView;
+            const style = view && typeof view.getComputedStyle === 'function' ? view.getComputedStyle(field) : null;
+            if (!style) return;
+            const prior = fittedTextareas.get(field);
+            const width = field.clientWidth;
+            if (prior && prior.value === field.value && prior.width === width) return;
+            const lineHeight = parseFloat(style.lineHeight);
+            if (!Number.isFinite(lineHeight) || lineHeight <= 0) return;
+            const padding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+            const border = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+            field.style.height = 'auto';
+            const content = field.scrollHeight + border;
+            const compact = lineHeight * TEXTAREA_MIN_LINES + padding + border;
+            const roomy = lineHeight * TEXTAREA_MAX_LINES + padding + border;
+            field.style.height = Math.round(Math.min(Math.max(content, compact), roomy)) + 'px';
+            fittedTextareas.set(field, { value: field.value, width: field.clientWidth });
+        }
+
+        function fitTextareas() {
+            const box = $('dispatch-inputs');
+            if (!box || typeof box.querySelectorAll !== 'function') return;
+            for (const field of box.querySelectorAll('textarea')) fitTextarea(field);
+        }
 
         // Every read/post continuation must recheck lifetime: open dialog, visible page,
         // current generation, and owning profile credential.
@@ -423,6 +455,7 @@
                 wrap.append(error);
                 box.append(wrap);
             }
+            fitTextareas();
         }
 
         function readFormValues() {
@@ -627,6 +660,10 @@
         document.getElementById('dispatch-load')?.addEventListener('click', () => { void loadSchema(); });
         document.getElementById('dispatch-ref')?.addEventListener('input', refChanged);
         document.getElementById('dispatch-ref')?.addEventListener('change', refChanged);
+        // One delegated listener keeps growth local: no per-keystroke reads or network.
+        document.getElementById('dispatch-inputs')?.addEventListener('input', (event) => { fitTextarea(event?.target); });
+        // Narrowing the window re-wraps open fields; unchanged text and width keep a manual resize.
+        document.defaultView?.addEventListener?.('resize', () => fitTextareas());
         document.getElementById('dispatch-form')?.addEventListener('submit', (event) => { void submit(event); });
         document.getElementById('dispatch-close')?.addEventListener('click', () => close());
         // closedby="any" needs Chrome 134; backdrop clicks only count when press and release are both outside the box (padding/scrollbar clicks also target the dialog).
