@@ -1,5 +1,4 @@
 """Check the chapter workflow is file-driven (no Gemini/URL) and the chapter docs and skill agree."""
-import re
 import unittest
 from pathlib import Path
 
@@ -12,14 +11,22 @@ SELECTOR = ROOT / ".github" / "scripts" / "select_chapter_files.py"
 
 SKILL_NAME = "prepare-chapter"
 INITIALLED_NAME = "G. K. Chesterton"
+REPO_SCRIPT_PATH = ".opencode/skills/prepare-chapter/scripts/extract_chapter.py"
 EXCLUSIONS = ("ALL-CAPS", "acronyms", "initialisms")
 
 
-def numbered_step(text, n):
-    start = re.search(rf"^{n}\. ", text, re.M)
-    end = re.search(rf"^{n + 1}\. ", text, re.M)
-    assert start, f"step {n} missing"
-    return text[start.start():end.start() if end else len(text)]
+def headed(text, heading):
+    """The lines under ``heading`` up to the next heading of the same or higher level."""
+    lines = text.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if line.strip().startswith(heading)), None)
+    assert start is not None, f"heading {heading!r} missing"
+    level = len(lines[start]) - len(lines[start].lstrip("#"))
+    out = []
+    for line in lines[start + 1:]:
+        if line.startswith("#") and len(line) - len(line.lstrip("#")) <= level:
+            break
+        out.append(line)
+    return "".join(out)
 
 
 class ChapterWorkflowTest(unittest.TestCase):
@@ -111,14 +118,44 @@ class ChapterDocsTest(unittest.TestCase):
             self.assertIn(want, self.skill, want)
         self.assertIn("Do not commit, push, dispatch or publish", self.skill)
 
-    def test_skill_reviews_two_rounds(self):
-        step = numbered_step(self.skill, 12)
-        self.assertIn("Round 1", step)
-        self.assertIn("fidelity", step)
-        self.assertIn("Round 2", step)
+    def test_skill_documents_three_rounds(self):
+        rounds = {n: headed(self.skill, f"### Round {n}") for n in (1, 2, 3)}
+        for n, body in rounds.items():
+            self.assertTrue(body.strip(), f"Round {n} empty")
+        self.assertIn("narration", rounds[1])
+        self.assertIn("no omissions", rounds[1])
+        self.assertIn("image", rounds[2])
+        self.assertIn("front matter", rounds[3])
+        self.assertIn("programmatically", rounds[3])
+
+    def test_readme_documents_three_rounds(self):
+        for n in (1, 2, 3):
+            with self.subTest(round=n):
+                self.assertIn(f"## Round {n}", self.readme)
+                self.assertTrue(headed(self.readme, f"## Round {n}").strip())
+        self.assertIn("programmatically", headed(self.readme, "## Round 3"))
+
+    def test_both_docs_require_scripted_extraction_not_model_retyping(self):
+        for label, doc in (("README", self.readme), ("skill", self.skill)):
+            with self.subTest(document=label):
+                self.assertIn("never retyped by a model", doc)
+                self.assertNotIn("never have a model read or transcribe", doc)
+
+    def test_both_docs_require_the_bundled_script(self):
+        for label, doc in (("README", self.readme), ("skill", self.skill)):
+            with self.subTest(document=label):
+                self.assertIn(REPO_SCRIPT_PATH, doc)
+                self.assertIn("scripts/extract_chapter.py", doc)
+                self.assertIn("--url", doc)
+                self.assertIn("--output", doc)
+                self.assertIn("mandatory", doc.lower())
+        self.assertIn(f"python3 {REPO_SCRIPT_PATH}", self.readme)
+        self.assertIn("python3 scripts/extract_chapter.py", self.skill)
 
     def test_tts_names_documented_with_dotted_initials(self):
-        for label, text in (("README", self.readme), ("skill", numbered_step(self.skill, 10))):
+        round3 = headed(self.skill, "### Round 3")
+        names_section = headed(self.readme, "# tts_names")
+        for label, text in (("README", names_section), ("skill", round3)):
             with self.subTest(document=label):
                 self.assertIn("tts_names", text)
                 self.assertIn(INITIALLED_NAME, text)
