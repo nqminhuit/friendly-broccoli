@@ -205,12 +205,15 @@
         panel.append(metadata);
         const head = document.createElement('div'); head.className = 'detail-heading';
         const jobs = detail.jobs || [];
-        text(head, 'strong', detail.loading ? 'Loading jobs…' : `${jobs.length} of ${detail.total || jobs.length} jobs loaded`);
+        // Refresh status stays in the heading so the job list below never shifts.
+        const jobStatus = detail.loading ? (detail.stale ? 'Loading jobs… — previous details may be stale' : 'Loading jobs…') : `${jobs.length} of ${detail.total || jobs.length} jobs loaded`;
+        text(head, 'strong', jobStatus, 'detail-job-status').title = jobStatus;
         const refreshButton = document.createElement('button'); refreshButton.type = 'button'; refreshButton.className = 'button quiet'; refreshButton.textContent = 'Refresh details'; refreshButton.dataset.focusKey = `${runKey(item.profileId, item.repo, item.run)}:refresh`; refreshButton.disabled = detail.loading; refreshButton.addEventListener('click', () => { detail.permissionDenied = false; void loadDetails(runKey(item.profileId, item.repo, item.run), true); }); head.append(refreshButton); panel.append(head);
         if (detail.error) text(panel, 'p', `${detail.stale ? 'Showing stale details. ' : ''}${detail.error}`, 'detail-error');
-        else if (detail.loading && detail.stale) text(panel, 'p', 'Refreshing; previous details may be stale.', 'detail-stale');
         if (detail.pending) text(panel, 'p', detail.pending, 'rerun-pending');
-        if (!detail.loading && !detail.error && jobs.length === 0) text(panel, 'p', 'No jobs were returned for this run attempt.', 'detail-empty');
+        // A cached empty snapshot stays on screen while it refreshes; only an unresolved
+        // first fetch (nothing loaded yet) has to withhold the empty notice.
+        if ((!detail.loading || detail.loaded) && !detail.error && jobs.length === 0) text(panel, 'p', 'No jobs were returned for this run attempt.', 'detail-empty');
         for (const job of jobs) {
             const box = document.createElement('article'); box.className = 'job-card';
             const title = document.createElement('div'); title.className = 'job-title';
