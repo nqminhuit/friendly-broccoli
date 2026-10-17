@@ -638,6 +638,156 @@ test('new run loads schema defaults validates and pins the exact returned run', 
     assert.equal(await evaluate(`document.querySelector('#dispatch-dialog').open`), false);
 });
 
+test('new run dialog grows long prompt fields while dashboard and Settings stay compact', { skip: !CHROME && 'Chrome not found' }, async () => {
+    const longText = Array.from({ length: 24 }, (_, index) => `paragraph ${index} ` + 'wrapping words '.repeat(9).trim()).join('\n\n');
+    const wrappedText = 'A single long paragraph without explicit line breaks that must wrap into more lines as the viewport narrows. '.repeat(3);
+    const metrics = (width, height, mobile) => send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile }, pageSession);
+    const greetingLines = `((field) => { const style=getComputedStyle(field); return (field.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / parseFloat(style.lineHeight); })(document.querySelector('#dispatch-inputs [name=greeting]'))`;
+    let startupBodyFont = null;
+    try {
+        await metrics(1440, 900, false);
+        // Earlier mobile-emulated tests can leave Chrome's text autosizing active,
+        // so Settings is compared against the dashboard's own current base size.
+        startupBodyFont = await evaluate(`parseFloat(getComputedStyle(document.body).fontSize)`);
+        const rowHeight = await evaluate(`document.querySelector('#run-list .run-card').getBoundingClientRect().height`);
+        assert.ok(rowHeight >= 38 && rowHeight <= 46, `dashboard run rows stay compact (${rowHeight}px)`);
+        await evaluate(`document.querySelector('#new-run').click()`);
+        await waitFor(`document.querySelector('#dispatch-dialog').open`);
+        await evaluate(`document.querySelector('#dispatch-profile').value=[...document.querySelector('#dispatch-profile').options].find(o=>o.text.startsWith('Personal')).value; document.querySelector('#dispatch-profile').dispatchEvent(new Event('change',{bubbles:true}))`);
+        await waitFor(`document.querySelector('#dispatch-inputs').textContent.includes('greeting')`);
+        const desktop = await evaluate(`(() => {
+            const dialog = document.querySelector('#dispatch-dialog');
+            const field = dialog.querySelector('[name=greeting]');
+            const style = getComputedStyle(field);
+            return {
+                width: dialog.getBoundingClientRect().width,
+                dialogFont: parseFloat(getComputedStyle(dialog).fontSize),
+                inputFont: parseFloat(style.fontSize),
+                labelFont: parseFloat(getComputedStyle(dialog.querySelector('.field-label')).fontSize),
+                helpFont: parseFloat(getComputedStyle(dialog.querySelector('.dispatch-help')).fontSize),
+                shortLines: (field.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / parseFloat(style.lineHeight),
+                pageOverflow: document.documentElement.scrollWidth > innerWidth + 1,
+                dialogOverflow: dialog.scrollWidth > dialog.clientWidth + 1
+            };
+        })()`);
+        assert.ok(desktop.width >= 940 && desktop.width <= 970, `desktop dialog is about 960px wide (${desktop.width})`);
+        assert.equal(desktop.dialogFont, 16, 'dialog text is 16px');
+        assert.equal(desktop.inputFont, 16, 'form controls are 16px');
+        assert.equal(desktop.labelFont, 14, 'field labels are 14px');
+        assert.equal(desktop.helpFont, 14, 'descriptions are 14px');
+        assert.ok(desktop.shortLines >= 1.8 && desktop.shortLines <= 2.6, `short values stay compact (${desktop.shortLines} lines)`);
+        assert.equal(desktop.pageOverflow, false, 'a wide dialog never widens the page');
+        assert.equal(desktop.dialogOverflow, false, 'desktop dialog has no internal horizontal overflow');
+        assert.equal(await evaluate(`(() => { const dialog=document.querySelector('#dispatch-dialog'); const pad=document.createElement('div'); pad.style.height='2000px'; dialog.querySelector('form').append(pad); dialog.scrollTop=1500; const close=document.querySelector('#dispatch-close').getBoundingClientRect(); const rect=dialog.getBoundingClientRect(); const ok=dialog.scrollTop>0 && close.top>=rect.top-1 && close.bottom<=rect.bottom+1; pad.remove(); dialog.scrollTop=0; return ok; })()`), true, 'the close button stays visible after scrolling');
+        const surfaces = {};
+        for (const theme of ['light', 'dark']) {
+            await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] }, pageSession);
+            const appearance = await evaluate(`(() => { const dialog=document.querySelector('#dispatch-dialog'); return {surface:getComputedStyle(dialog).backgroundColor, inputFont:parseFloat(getComputedStyle(dialog.querySelector('[name=greeting]')).fontSize), helpFont:parseFloat(getComputedStyle(dialog.querySelector('.dispatch-help')).fontSize)}; })()`);
+            assert.equal(appearance.inputFont, 16, `${theme} theme keeps 16px inputs`);
+            assert.equal(appearance.helpFont, 14, `${theme} theme keeps 14px descriptions`);
+            surfaces[theme] = appearance.surface;
+        }
+        await send('Emulation.setEmulatedMedia', { features: [] }, pageSession);
+        assert.notEqual(surfaces.light, surfaces.dark, 'dialog surface follows the color scheme');
+        // A long multiline default must be sized when the form renders, before any typing.
+        const defaulted = await evaluate(`(async () => {
+            const NL = String.fromCharCode(10);
+            const text = Array.from({length: 15}, (_, index) => 'default paragraph ' + index + ' ' + 'wrapping words '.repeat(9).trim()).join(NL);
+            const original = CimWorkflowSchema.parseWorkflowYaml;
+            CimWorkflowSchema.parseWorkflowYaml = (yaml) => {
+                const parsed = original(yaml);
+                if (Array.isArray(parsed.inputs)) parsed.inputs = parsed.inputs.map((input) => (input.name === 'greeting' ? Object.assign({}, input, {default: text}) : input));
+                return parsed;
+            };
+            document.querySelector('#dispatch-load').click();
+            const until = Date.now() + 5000;
+            let field = null;
+            while (Date.now() < until) {
+                field = document.querySelector('#dispatch-inputs [name=greeting]');
+                if (field && field.value === text) break;
+                await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            if (!field) { CimWorkflowSchema.parseWorkflowYaml = original; return {preserved:false, lines:0}; }
+            const style = getComputedStyle(field);
+            const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+            const result = {preserved:Boolean(field) && field.value === text, lines:(field.clientHeight - padding)/parseFloat(style.lineHeight)};
+            CimWorkflowSchema.parseWorkflowYaml = original;
+            return result;
+        })()`);
+        assert.equal(defaulted.preserved, true, 'a long multiline default loads intact');
+        assert.ok(defaulted.lines >= 9.5 && defaulted.lines <= 10.05, `a long default grows on load (${defaulted.lines} lines)`);
+        const grown = await evaluate(`(() => {
+            const field = document.querySelector('#dispatch-inputs [name=greeting]');
+            field.value = ${JSON.stringify(longText)};
+            field.dispatchEvent(new Event('input',{bubbles:true}));
+            const style = getComputedStyle(field);
+            const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+            return {preserved:field.value === ${JSON.stringify(longText)}, lines:(field.clientHeight - padding)/parseFloat(style.lineHeight), scrollable:field.scrollHeight > field.clientHeight + 1, maxHeight:style.maxHeight};
+        })()`);
+        assert.equal(grown.preserved, true, 'the long value is preserved exactly');
+        assert.ok(grown.lines >= 9.5 && grown.lines <= 10.05, `long content grows to about ten lines (${grown.lines})`);
+        assert.equal(grown.scrollable, true, 'a capped field scrolls internally instead of losing text');
+        assert.equal(grown.maxHeight, 'none', 'no CSS maximum blocks a manual resize');
+        const manual = await evaluate(`(() => {
+            const field = document.querySelector('#dispatch-inputs [name=greeting]');
+            field.style.height = '640px';
+            const before = field.getBoundingClientRect().height;
+            field.dispatchEvent(new Event('input',{bubbles:true}));
+            return {before, after: field.getBoundingClientRect().height};
+        })()`);
+        assert.ok(manual.before > 500 && Math.abs(manual.after - manual.before) < 1, 'an unchanged value and width keep a manual resize');
+        await evaluate(`(() => {
+            const field = document.querySelector('#dispatch-inputs [name=greeting]');
+            field.value += String.fromCharCode(10) + 'an edited line';
+            field.dispatchEvent(new Event('input',{bubbles:true}));
+        })()`);
+        assert.ok(await evaluate(`${greetingLines} >= 9.5 && ${greetingLines} <= 10.05`), 'editing re-fits the field instead of keeping a manual height');
+        const beforeReflow = await evaluate(`(() => { const field=document.querySelector('#dispatch-inputs [name=greeting]'); field.value=${JSON.stringify(wrappedText)}; field.dispatchEvent(new Event('input',{bubbles:true})); return ${greetingLines}; })()`);
+        assert.ok(beforeReflow >= 1.8 && beforeReflow <= 10.05, `wrapped paragraph starts within the range (${beforeReflow})`);
+        await metrics(390, 844, false);
+        await waitFor(`${greetingLines} > ${beforeReflow + 0.5}`);
+        const narrow = await evaluate(`(() => {
+            const dialog = document.querySelector('#dispatch-dialog');
+            const rect = dialog.getBoundingClientRect();
+            const children = [...dialog.querySelectorAll('.dispatch-ref-row input, .dispatch-ref-row button, .dispatch-field > *')];
+            return {
+                width: rect.width,
+                left: rect.left,
+                right: rect.right,
+                viewport: innerWidth,
+                pageOverflow: document.documentElement.scrollWidth > innerWidth + 1,
+                dialogOverflow: dialog.scrollWidth > dialog.clientWidth + 1,
+                inside: children.every((node) => { const box = node.getBoundingClientRect(); return box.width === 0 || (box.left >= rect.left - 1 && box.right <= rect.right + 1); }),
+                offenders: children.filter((node) => { const box = node.getBoundingClientRect(); return box.width > 0 && (box.left < rect.left - 1 || box.right > rect.right + 1); }).map((node) => node.tagName + '#' + (node.id || node.name) + ' ' + Math.round(node.getBoundingClientRect().left) + '..' + Math.round(node.getBoundingClientRect().right) + ' vs ' + Math.round(rect.left) + '..' + Math.round(rect.right))
+            };
+        })()`);
+        assert.ok(narrow.width >= 300 && narrow.width <= narrow.viewport - 20, `narrow dialog fits the viewport (${narrow.width} of ${narrow.viewport})`);
+        assert.ok(narrow.left >= 4 && narrow.right <= narrow.viewport - 4, `narrow dialog keeps a margin (${narrow.left}..${narrow.right})`);
+        assert.equal(narrow.pageOverflow, false, 'the dialog never widens a narrow page');
+        assert.equal(narrow.dialogOverflow, false, 'narrow dialog controls wrap instead of scrolling sideways');
+        assert.equal(narrow.inside, true, `narrow ref row and controls stay inside the dialog (${JSON.stringify(narrow.offenders)})`);
+        assert.ok(await evaluate(`${greetingLines} >= ${beforeReflow + 0.5} && ${greetingLines} <= 10.05`), 'narrow reflow keeps the grown height within the ten-line bound');
+    } finally {
+        await evaluate(`if(document.querySelector('#dispatch-dialog').open) document.querySelector('#dispatch-close').click(); if(document.querySelector('#settings-dialog').open) document.querySelector('#settings-close').click()`);
+        await send('Emulation.setEmulatedMedia', { features: [] }, pageSession);
+        await send('Emulation.clearDeviceMetricsOverride', {}, pageSession);
+    }
+    await metrics(1440, 900, false);
+    try {
+        await evaluate(`document.querySelector('#settings-open').click()`);
+        await waitFor(`document.querySelector('#settings-dialog').open`);
+        const settings = await evaluate(`(() => { const dialog=document.querySelector('#settings-dialog'); return {width:dialog.getBoundingClientRect().width, label:parseFloat(getComputedStyle(dialog.querySelector('.field-label')).fontSize), textarea:parseFloat(getComputedStyle(dialog.querySelector('#repositories')).fontSize), body:parseFloat(getComputedStyle(document.body).fontSize)}; })()`);
+        assert.ok(settings.width >= 670 && settings.width <= 690, `Settings keeps its 680px dialog (${settings.width})`);
+        assert.equal(settings.label, 12, `Settings labels keep their size (${JSON.stringify(settings)})`);
+        assert.equal(settings.textarea, startupBodyFont, `Settings text inherits the dashboard default size (${JSON.stringify({ settings, startupBodyFont })})`);
+    } finally {
+        await evaluate(`if(document.querySelector('#settings-dialog').open) document.querySelector('#settings-close').click()`);
+        await send('Emulation.clearDeviceMetricsOverride', {}, pageSession);
+    }
+    const finalRow = await evaluate(`document.querySelector('#run-list .run-card').getBoundingClientRect().height`);
+    assert.ok(finalRow >= 38 && finalRow <= 46, `dashboard rows stay compact after the dialog (${finalRow}px)`);
+});
+
 test('stale workflow loads never restore and non-dispatchable workflows cannot start', { skip: !CHROME && 'Chrome not found' }, async () => {
     await evaluate(`Object.defineProperty(document,'visibilityState',{configurable:true,get:()=> 'visible'}); document.dispatchEvent(new Event('visibilitychange')); window.confirm=()=>true; document.querySelector('#new-run').click()`);
     await waitFor(`document.querySelector('#dispatch-dialog').open`);
