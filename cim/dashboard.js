@@ -107,6 +107,10 @@
         return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
     }
     function text(parent, tag, value, className = '') { const node = document.createElement(tag); node.textContent = value ?? ''; if (className) node.className = className; parent.append(node); return node; }
+    const ROW_CONTROLS = 'a, button, input, select, textarea, summary, label, [role="button"], [role="link"], [tabindex], [contenteditable]:not([contenteditable="false"])';
+    function plainClick(event) {
+        return !event.defaultPrevented && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && (event.detail === 0 || window.getSelection()?.isCollapsed !== false);
+    }
     function render() {
         const list = $('run-list');
         const focusKey = document.activeElement?.dataset?.focusKey;
@@ -147,7 +151,7 @@
             const titleValue = run.display_title || run.name || 'Workflow run';
             const statusNode = document.createElement('div'); statusNode.className = `run-status status-${status.kind}`; const icon = document.createElement('span'); icon.className = 'status-icon'; icon.setAttribute('aria-hidden', 'true'); statusNode.append(icon); text(statusNode, 'span', status.label, 'run-status-label');
             const identity = document.createElement('div'); identity.className = 'run-identity'; text(identity, 'span', profileName, 'profile-badge').title = profileName; text(identity, 'span', repo, 'run-repo').title = repo;
-            const title = text(card, 'div', titleValue, 'run-title'); title.title = titleValue;
+            const title = text(card, 'button', titleValue, 'run-title run-toggle'); title.type = 'button'; title.title = titleValue;
             const branchValue = run.head_branch || 'Branch unavailable'; const branch = text(card, 'div', branchValue, 'run-branch'); branch.title = branchValue;
             const runNumber = text(card, 'div', `#${run.run_number ?? '—'}`, 'run-number');
             const timeValue = dateLabel(run.created_at); const time = text(card, 'time', timeValue, 'run-time'); time.dateTime = run.created_at || ''; time.title = run.created_at ? `${run.created_at}${Number.isNaN(Date.parse(run.created_at)) ? ' (invalid timestamp)' : ''}` : 'Timestamp unavailable';
@@ -156,21 +160,30 @@
             if (pending) { const pendingNode = text(statusNode, 'span', pending.ambiguous ? 'Rerun uncertain' : 'Rerun pending', 'rerun-pending'); pendingNode.title = pending.message; }
             const cancel = state.pendingCancels.get(key);
             if (cancel && !cancel.inFlight) text(statusNode, 'span', CANCEL_REQUESTED, 'rerun-pending');
-            // Cancel shares the Jobs cell so the row keeps its original width.
             const actions = document.createElement('div'); actions.className = 'run-actions';
             if (activeStates.has(run.status)) { const cancelButton = document.createElement('button'); cancelButton.type = 'button'; cancelButton.className = 'button quiet cancel-run'; cancelButton.dataset.focusKey = `${key}:cancel`; cancelButton.setAttribute('aria-label', `Cancel run ${titleValue}`); cancelButton.textContent = cancel?.inFlight ? 'Cancelling…' : 'Cancel'; cancelButton.disabled = Boolean(cancel) && (cancel.inFlight || Date.now() - cancel.at < CANCEL_COOLDOWN_MS); cancelButton.addEventListener('click', () => cancelRun(item)); actions.append(cancelButton); }
             const githubUrl = safeGitHubLink(run.html_url);
             const linkCell = document.createElement('div'); linkCell.className = 'run-link';
             if (githubUrl) { const link = document.createElement('a'); link.href = githubUrl; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = 'GitHub ↗'; link.title = 'Open run on GitHub'; link.dataset.focusKey = `${key}:github`; linkCell.append(link); }
-            const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'button quiet details-toggle'; toggle.dataset.focusKey = `${key}:toggle`; toggle.setAttribute('aria-expanded', String(detail?.expanded === true)); toggle.setAttribute('aria-label', `${detail?.expanded ? 'Hide' : 'Show'} jobs and steps for ${titleValue}`); toggle.textContent = detail?.expanded ? 'Jobs ▾' : 'Jobs ▸'; toggle.addEventListener('click', () => toggleDetails(key)); actions.append(toggle);
             const panel = document.createElement('section'); panel.className = 'run-details'; panel.hidden = detail?.expanded !== true;
+            panel.id = `cim-run-details-${encodeURIComponent(key)}`;
+            title.dataset.focusKey = `${key}:toggle`;
+            title.setAttribute('aria-expanded', String(detail?.expanded === true));
+            title.setAttribute('aria-controls', panel.id);
+            title.setAttribute('aria-label', `${detail?.expanded ? 'Hide' : 'Show'} jobs and steps for ${titleValue}`);
+            title.addEventListener('click', (event) => { if (plainClick(event)) toggleDetails(key); });
+            card.addEventListener('click', (event) => {
+                if (!plainClick(event) || event.target.closest('.run-details') || event.target.closest(ROW_CONTROLS)) return;
+                title.focus({ preventScroll: true });
+                title.click();
+            });
             if (detail?.expanded) renderDetails(panel, item, detail);
             card.prepend(statusNode, identity); card.append(runNumber, time, actions, linkCell, panel); list.append(card); visibleCount++;
         }
         if (focusKey) {
             const focused = [...list.querySelectorAll('[data-focus-key]')].find((node) => node.dataset.focusKey === focusKey);
             if (focused && !focused.disabled) focused.focus({ preventScroll: true });
-            else focused?.closest('.run-card')?.querySelector('.details-toggle')?.focus({ preventScroll: true });
+            else focused?.closest('.run-card')?.querySelector('.run-toggle')?.focus({ preventScroll: true });
         }
         reconcileDetails(entries.filter(([, item]) => {
             const haystack = [item.repo, item.profileName, item.run.name, item.run.display_title, item.run.head_branch, item.run.event, item.run.actor?.login].join(' ').toLocaleLowerCase();
