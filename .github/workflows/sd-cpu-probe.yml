@@ -501,7 +501,7 @@ jobs:
           artifact-ids: ${{ needs.probe.outputs.image_artifact_id }}
           path: ${{ runner.temp }}/image
 
-      # Same BUCKET_* secrets as sec10v_reflection.yml. aws's stderr is swallowed: it would show the bucket and prefix.
+      # aws's stderr is swallowed: it would show the bucket and prefix.
       - name: Upload image to the bucket
         env:
           IMG_DIR: ${{ runner.temp }}/image

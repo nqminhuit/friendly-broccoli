@@ -35,7 +35,7 @@ podman cp "$cid:/" <dest>
 
 **Runner-native binary builds:** `ripgrep.yml` and `fd.yml` skip containers entirely — they check out the upstream repo directly on an `ubuntu-<version>` runner, `cargo build --release`, and upload the binary as a workflow artifact (`archive: false`).
 
-**TTS workflows** (`sec10v.yml`, `sec10v_maya1.yml`, `sec10v_test_voices.yml`, `omnivoice.yml`): check out the private repo `nqminhuit/sec10v` (via `SEC10V_ACCESS_TOKEN`) and run its Python TTS scripts on CPU-only torch, uploading mp3 artifacts with 1-day retention. `sec10v.yml` verifies output by building whisper.cpp, transcribing the generated audio, and comparing against the input text with a Levenshtein script, retrying generation once on failure. `omnivoice.yml` additionally triggers on **push to `text/omnivoice.txt`** — editing that file kicks off audiobook generation of its contents; it uses `HF_TOKEN`.
+**Book-video content and TTS workflows** have moved to [nqminhuit/effective-disco](https://github.com/nqminhuit/effective-disco). Reflections, chapters, OmniVoice/TTS workflows, and Pi authoring live there.
 
 **`sd-cpu-probe.yml`:** reusable (`workflow_call`) CPU-only stable-diffusion.cpp RAM/speed probe on a 16 GB ubuntu-26.04 runner: the pinned sd.cpp commit is built from source and cached, pinned GGUF models are downloaded and sha-checked, and RAM, swap and timing are measured; the image goes to the bucket from a separate secrets-only job (URL never printed), and prompts are hardcoded and SFW because the repo is public. Its two thin wrappers are `qwen-image-cpu.yml` (Qwen-Image 2.1 UC; default Q8_0 diffusion + Q4_K_M text encoder, mmap + VAE tiling) and `z-image-cpu.yml` (Z-Image-Turbo; default Q8_0 + Qwen3-4B Q8_0, 8 steps, 576x1024); both are dispatch-only and queued one run at a time, and they hold the model URLs and checksums.
 
@@ -44,5 +44,5 @@ podman cp "$cid:/" <dest>
 ## Conventions
 
 - Version inputs are upstream git tags, passed verbatim to `git clone -b $VERSION`; keep each tool workflow's `default:` current when bumping versions.
-- Images push to `docker.io/nqminhuit/` with `podman push --creds`; secrets used across workflows: `DOCKER_IO_USERNAME`, `DOCKER_IO_TOKEN`, `SEC10V_ACCESS_TOKEN`, `HF_TOKEN`, `TOOLS_DIR`, `GH_PAT`, and the `OCI_*` set.
+- Images push to `docker.io/nqminhuit/` with `podman push --creds`; secrets used across workflows: `DOCKER_IO_USERNAME`, `DOCKER_IO_TOKEN`, `TOOLS_DIR`, `GH_PAT`, and the `OCI_*` set.
 - Workflow artifacts consistently use `upload-artifact` with `archive: false` and `if-no-files-found: error`.
