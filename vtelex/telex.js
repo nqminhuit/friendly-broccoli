@@ -86,11 +86,19 @@
 
     // Returns the word after typing key at its end.
     function apply(word, key, opts = {}) {
+        return edit(word, key, opts).out;
+    }
+
+    // Like apply, plus undone: a repeated tone, đ or hook key took its mark back ("rr", "dd", "ww").
+    // Not "aa"/"oo": "xooongf" must still reach "xoòng".
+    function edit(word, key, opts) {
         const k = key.toLowerCase();
+        let undone = false;
+        const done = (out) => ({ out, undone });
         const literal = word + key;
         const { chars, upper, tone } = decompose(word);
         const s = structure(chars);
-        if (!s) return literal;
+        if (!s) return done(literal);
         const cluster = [];
         for (let i = s.start; i < s.end; i++) cluster.push(i);
         let newTone = tone;
@@ -100,6 +108,7 @@
             const t = TONE_KEYS.indexOf(k) + 1;
             if (tone === t) {
                 newTone = 0;
+                undone = true;
                 append(k, key !== k);
             } else {
                 newTone = t;
@@ -109,6 +118,7 @@
         } else if (k === 'd' && (chars[0] === 'd' || chars[0] === 'đ')) {
             if (chars[0] === 'đ') {
                 chars[0] = 'd';
+                undone = true;
                 append(k, key !== k);
             } else {
                 chars[0] = 'đ';
@@ -118,7 +128,7 @@
             if (chars[i] === HAT[k]) {
                 chars[i] = k;
                 // A literal vowel after a final makes the whole word uncomposable.
-                if (s.end < chars.length) return compose(chars, upper, tone, opts.modernTone) + key;
+                if (s.end < chars.length) return done(compose(chars, upper, tone, opts.modernTone) + key);
                 append(k, key !== k);
             } else {
                 chars[i] = HAT[chars[i]];
@@ -128,13 +138,14 @@
             const uo = cluster.find((i) => plain(chars[i]) === 'u' && plain(chars[i + 1] || '') === 'o' && i + 1 < s.end);
             if (hooked.length && !(uo !== undefined && hooked.length === 1)) {
                 hooked.forEach((i) => { chars[i] = PLAIN[chars[i]]; });
+                undone = true;
                 append(k, key !== k);
             } else if (uo !== undefined) {
                 chars[uo] = 'ư';
                 chars[uo + 1] = 'ơ';
             } else if (cluster.length) {
                 const candidates = cluster.filter((i) => HOOK[chars[i]]).reverse();
-                if (!candidates.length) return literal;
+                if (!candidates.length) return done(literal);
                 // Prefer the candidate that keeps the word valid: "oa"+w is "oă", "ua"+w is "ưa".
                 const tryHook = (i) => { const c = chars.slice(); c[i] = HOOK[c[i]]; return c; };
                 const pick = candidates.find((i) => isValid(compose(tryHook(i), upper, tone, opts.modernTone)))
@@ -147,8 +158,8 @@
             append(k, key !== k);
         }
         // A vowel after the final ("bani") means this is no longer one syllable.
-        if (!structure(chars)) return literal;
-        return compose(chars, upper, newTone, opts.modernTone);
+        if (!structure(chars)) return done(literal);
+        return done(compose(chars, upper, newTone, opts.modernTone));
     }
 
     // True when word could still be (the start of) one Vietnamese syllable.
@@ -182,7 +193,9 @@
         if (/^w$/i.test(key) && /[^u]w$|^w$/i.test(st.raw) && /ư$/i.test(word)) {
             return { raw, out: word.slice(0, -1) + st.raw.slice(-1), literal: true };
         }
-        const out = apply(word, key, opts);
+        const { out, undone } = edit(word, key, opts);
+        // Taking a mark back means the user wants this word as typed ("merrge" -> "merge").
+        if (undone) return { raw, out, literal: true };
         if (NON_ASCII.test(out) && !isValid(out) && !(opts.keep && opts.keep(out))) {
             return { raw, out: raw, literal: true };
         }

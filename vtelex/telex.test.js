@@ -67,6 +67,11 @@ const CASES = [
     ['hello', 'hello'],
     ['bans', 'bán'],
     ['banis', 'banis'],
+    ['merrge', 'merge'],
+    ['lasst', 'last'],
+    ['merrgef', 'mergef'],
+    ['dddeep', 'ddeep'],
+    ['tuwwo', 'tuwo'],
 ];
 
 for (const [keys, want] of CASES) {

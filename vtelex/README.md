@@ -24,7 +24,7 @@ Bump `version` in `manifest.json` and merge to master: `.github/workflows/vtelex
 ## Use
 
 - Each site remembers its own mode, starting in English: Alt+Space or the toolbar icon switches the current site between Vietnamese and English, and a `VI`/`EN` label flashes in the page corner. The icon's badge shows the current tab's mode. Change the key at `brave://extensions/shortcuts`.
-- Telex: `s f r x j` tones, `z` clears the tone, `aa ee oo dd` for â ê ô đ, `w` for ă ơ ư (`uow` → ươ, a lone `w` → ư). Pressing a mark key twice undoes it (`ass` → `as`, `ww` → `w`).
+- Telex: `s f r x j` tones, `z` clears the tone, `aa ee oo dd` for â ê ô đ, `w` for ă ơ ư (`uow` → ươ, a lone `w` → ư). Pressing a mark key twice undoes it (`ass` → `as`, `ww` → `w`), and the rest of that word stays as typed, so fixing `mẻ` with another `r` and going on gives `merge`.
 - Marks may come anywhere in the word: `tieengs`, `tieesng` and `tiengse` all give `tiếng`.
 - Repeating a mark cancels it: `dataa` gives `data`. `data` itself is ambiguous, so the extra `a` escapes the Telex mark.
 - Tones use the old placement (`hòa`, `thúy`, `khỏe`). For `hoà`, pass `{ modernTone: true }` to `step` in `content.js`.
