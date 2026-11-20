@@ -1,6 +1,6 @@
 # vtelex
 
-Vietnamese telex typing for Brave/Chrome as a browser extension, so no system input method (ibus, fcitx) has to run and desktop keybindings stay untouched. It only acts on bare letter keys in text inputs, textareas and rich editors; anything with Ctrl, Alt or Super passes through.
+Vietnamese telex typing for Brave/Chrome as a browser extension, so no system input method (ibus, fcitx) has to run and desktop keybindings stay untouched. It only acts on bare letter keys in text inputs, textareas and rich editors; anything with Ctrl, Alt or Super passes through, except Super+Space and Shift+Super+Space (see Use and Pad).
 
 ## Install
 
@@ -23,12 +23,21 @@ Bump `version` in `manifest.json` and merge to master: `.github/workflows/vtelex
 
 ## Use
 
-- Each site remembers its own mode, starting in English: Alt+Space or the toolbar icon switches the current site between Vietnamese and English, and a `VI`/`EN` label flashes in the page corner. The icon's badge shows the current tab's mode. Change the key at `brave://extensions/shortcuts`.
+- Each site remembers its own mode, starting in English: Super+Space (in a page) or the toolbar icon switches the current site between Vietnamese and English, and a `VI`/`EN` label flashes in the page corner. The icon's badge shows the current tab's mode.
+- The browser can't bind the Super key for commands, so the page handles Super+Space itself. The toggle command has no default key; bind one at `brave://extensions/shortcuts` if wanted. If an older install still toggles on Alt+Space, clear it there. On Windows the OS takes Win+Space, so bind a key at the shortcuts page or use the icon.
 - Telex: `s f r x j` tones, `z` clears the tone, `aa ee oo dd` for â ê ô đ, `w` for ă ơ ư (`uow` → ươ, a lone `w` → ư). Pressing a mark key twice undoes it (`ass` → `as`, `ww` → `w`), and the rest of that word stays as typed, so fixing `mẻ` with another `r` and going on gives `merge`.
 - Marks may come anywhere in the word: `tieengs`, `tieesng` and `tiengse` all give `tiếng`.
 - Repeating a mark cancels it: `dataa` gives `data`. `data` itself is ambiguous, so the extra `a` escapes the Telex mark.
 - Tones use the old placement (`hòa`, `thúy`, `khỏe`). For `hoà`, pass `{ modernTone: true }` to `step` in `content.js`.
 - A word that stops being a Vietnamese syllable reverts to the keys typed (`with`, `windows`, `google` survive), but many short English words convert (`this` → `thí`, `is` → `í`, `was` → `ứa`), as in Unikey. Switch the site to English for those.
+
+## Pad
+
+A small window to type Vietnamese and copy it, for the URL bar and other apps where vtelex can't type. It always starts in VI (Super+Space flips it inside the pad).
+
+- Shift+Super+Space inside a page opens it, and Alt+Shift+Space opens it from anywhere in the browser (rebind at `brave://extensions/shortcuts`).
+- Enter copies the text and closes the pad, Shift+Enter adds a new line, Esc closes without copying.
+- From any app on KDE: System Settings → Keyboard → Shortcuts → Add New → Command or Script, with the command `brave-browser --app=chrome-extension://<id>/pad.html` bound to Meta+Shift+Space. The ID is on the options page or at `brave://extensions`; it depends on the unpacked path, so it stays the same while loaded from `~/.local/share/vtelex`. Don't add a manifest `key` to pin it, since that changes the ID and wipes the stored settings.
 
 ## Shortcuts
 

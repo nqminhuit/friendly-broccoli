@@ -21,3 +21,5 @@ document.getElementById('reset').addEventListener('click', async () => {
     box.value = DEFAULT_MACROS;
     show('Reset to defaults');
 });
+
+document.getElementById('pad-cmd').textContent = `brave-browser --app=chrome-extension://${chrome.runtime.id}/pad.html`;

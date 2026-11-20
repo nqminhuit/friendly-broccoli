@@ -1,5 +1,6 @@
 // Rewrites the word before the caret as telex keys arrive, and expands shortcuts when a word ends,
 // in text inputs, textareas and rich editors. VI/EN is remembered per site (the top frame's host).
+// Super+Space flips the mode and Shift+Super+Space opens the pad. In the pad page (vtelex pad) it always starts in VI.
 (() => {
     'use strict';
     const { convert, step } = globalThis.vtelex;
@@ -11,12 +12,13 @@
     const BOUNDARY_RE = /^(?:Enter|[\s\p{P}])$/u;
     const SITES = 'sites';
     const MACROS = 'macros';
+    const PAD = globalThis.vtelexPad === true;
     const IS_TOP = window === window.top;
     const SITE = topHost();
     const sessions = new WeakMap();
     // The last shortcut expansion per field, which a Backspace right after it undoes.
     const undos = new WeakMap();
-    let enabled = false;
+    let enabled = PAD;
     let macros;
     // Lowercased starts of shortcuts with marks ("đ", "đc"): telex shows them instead of restoring the keys.
     let shortcutStarts;
@@ -39,6 +41,7 @@
     }
 
     function setEnabled(sites) {
+        if (PAD) return;
         enabled = !!(sites && sites[SITE]);
         if (!IS_TOP) return;
         try {
@@ -78,18 +81,47 @@
         setTimeout(() => { host.remove(); if (toastHost === host) toastHost = null; }, 1200);
     }
 
+    // Flips the site's mode in storage (the pad has no site, so it only flips locally).
+    function flip() {
+        if (PAD) {
+            enabled = !enabled;
+            toast(enabled);
+            return;
+        }
+        chrome.storage.local.get(SITES, (r) => {
+            const sites = r[SITES] || {};
+            const on = !sites[SITE];
+            if (on) sites[SITE] = true;
+            else delete sites[SITE];
+            chrome.storage.local.set({ [SITES]: sites });
+            toast(on);
+        });
+    }
+
     if (IS_TOP) {
         chrome.runtime.onMessage.addListener((msg) => {
-            if (msg.type !== 'toggle') return;
-            chrome.storage.local.get(SITES, (r) => {
-                const sites = r[SITES] || {};
-                const on = !sites[SITE];
-                if (on) sites[SITE] = true;
-                else delete sites[SITE];
-                chrome.storage.local.set({ [SITES]: sites });
-                toast(on);
-            });
+            if (msg.type === 'toggle') flip();
         });
+    }
+
+    function tell(type) {
+        try {
+            chrome.runtime.sendMessage({ type }).catch(() => {});
+        } catch {
+            // The extension was reloaded; this old script is orphaned.
+        }
+    }
+
+    // Handles Super+Space and Shift+Super+Space; returns whether the event was one of them.
+    function onSuperSpace(e) {
+        if (e.code !== 'Space' || !e.metaKey || e.ctrlKey || e.altKey) return false;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return true;
+        if (e.shiftKey) tell('open-pad');
+        else if (IS_TOP) flip();
+        else tell('toggle');
+        return true;
     }
 
     // Returns the text before the caret and a way to replace its last n chars, or null when not editable here.
@@ -143,6 +175,7 @@
     }
 
     function onKeyDown(e) {
+        if (onSuperSpace(e)) return;
         const target = e.composedPath()[0];
         if (!(target instanceof Element)) return;
         // Any key other than this Backspace forgets the expansion it could undo.

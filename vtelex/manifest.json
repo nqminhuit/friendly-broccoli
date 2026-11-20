@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "vtelex",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Vietnamese telex typing in browser text fields, no system input method.",
   "permissions": [
-    "storage"
+    "storage",
+    "clipboardWrite"
   ],
   "background": {
     "service_worker": "background.js"
@@ -18,10 +19,13 @@
   },
   "commands": {
     "toggle-telex": {
-      "suggested_key": {
-        "default": "Alt+Space"
-      },
       "description": "Toggle Vietnamese telex"
+    },
+    "open-pad": {
+      "suggested_key": {
+        "default": "Alt+Shift+Space"
+      },
+      "description": "Open the vtelex pad"
     }
   },
   "content_scripts": [
