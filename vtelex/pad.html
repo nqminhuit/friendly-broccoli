@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>vtelex pad</title>
+<style>
+  :root { color-scheme: light dark; font: 15px system-ui, sans-serif; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; padding: 8px; box-sizing: border-box; gap: 6px; }
+  textarea { flex: 1; resize: none; font: inherit; padding: 6px; }
+  small { opacity: 0.7; }
+</style>
+</head>
+<body>
+<textarea id="pad" autofocus spellcheck="false"></textarea>
+<small>Enter copies and closes &middot; Shift+Enter new line &middot; Esc closes &middot; Super+Space VI/EN</small>
+<script src="pad.js"></script>
+<script src="telex.js"></script>
+<script src="macros.js"></script>
+<script src="content.js"></script>
+<script src="pad-ui.js"></script>
+</body>
+</html>

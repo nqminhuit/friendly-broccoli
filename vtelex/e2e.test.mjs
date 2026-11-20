@@ -53,19 +53,19 @@ async function open(url) {
 }
 
 // Types text into the field; \b is Backspace. Returns the field's text with non-breaking spaces as spaces.
-async function type(selector, text) {
-    await evaluate(page, `document.querySelector('${selector}').focus()`);
+async function type(selector, text, session = page) {
+    await evaluate(session, `document.querySelector('${selector}').focus()`);
     for (const ch of text) {
         if (ch === '\b') {
-            await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 }, page);
-            await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 }, page);
+            await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 }, session);
+            await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 }, session);
             continue;
         }
         const code = { ' ': 'Space', '?': 'Slash', '.': 'Period' }[ch] || `Key${ch.toUpperCase()}`;
-        await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, code, windowsVirtualKeyCode: ch.toUpperCase().charCodeAt(0) }, page);
-        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, code }, page);
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, code, windowsVirtualKeyCode: ch.toUpperCase().charCodeAt(0) }, session);
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, code }, session);
     }
-    const value = await evaluate(page, `(e => e.tagName === 'DIV' ? e.innerText : e.value)(document.querySelector('${selector}'))`);
+    const value = await evaluate(session, `(e => e.tagName === 'DIV' ? e.innerText : e.value)(document.querySelector('${selector}'))`);
     return value.replace(/\u00a0/g, ' ');
 }
 
@@ -166,4 +166,50 @@ it('shortcuts saved on the options page apply', async () => {
     assert.match(await evaluate(page, `document.getElementById('status').textContent`), /^Saved/);
     await open(SITE);
     assert.equal(await type('#i', 'xyz '), 'xin chào ');
+});
+
+async function superSpace(modifiers) {
+    const key = { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, modifiers };
+    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...key }, page);
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', ...key }, page);
+    await sleep(200);
+}
+
+const META = 4;
+const META_SHIFT = 12;
+const padTargets = async () => (await send('Target.getTargets')).result.targetInfos.filter((t) => t.type === 'page' && t.url.endsWith('/pad.html'));
+
+it('Super+Space flips the mode without typing a space', async () => {
+    await open(SITE + 'super');
+    await toggle();
+    await sleep(100);
+    assert.equal(await badge(), 'EN');
+    await evaluate(page, `document.querySelector('#i').value = ''; document.querySelector('#i').focus()`);
+    await superSpace(META);
+    assert.equal(await badge(), 'VI');
+    assert.equal(await evaluate(page, `document.querySelector('#i').value`), '');
+    await superSpace(META);
+    assert.equal(await badge(), 'EN');
+});
+
+it('Shift+Super+Space opens the pad, which types Vietnamese and copies on Enter', async () => {
+    const before = badge();
+    await evaluate(page, `document.querySelector('#i').focus()`);
+    await superSpace(META_SHIFT);
+    assert.equal(await before, 'EN');
+    assert.equal(await badge(), 'EN');
+    for (let i = 0; i < 20 && !(await padTargets()).length; i++) await sleep(100);
+    assert.equal((await padTargets()).length, 1);
+
+    const pad = await attach((t) => t.type === 'page' && t.url.endsWith('/pad.html'));
+    await sleep(300);
+    // The shortcut expands when Enter ends the word, so it is only in the copied text.
+    assert.equal(await type('#pad', 'tieengs ko', pad), 'tiếng ko');
+    // Headless clipboard access is unreliable, so the write is captured in storage instead.
+    await evaluate(pad, `navigator.clipboard.writeText = async (text) => chrome.storage.local.set({ padTest: text })`);
+    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, pad);
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, pad);
+    for (let i = 0; i < 30 && (await padTargets()).length; i++) await sleep(100);
+    assert.equal((await padTargets()).length, 0);
+    assert.equal(await evaluate(sw, `(async () => (await chrome.storage.local.get('padTest')).padTest)()`), 'tiếng không');
 });
