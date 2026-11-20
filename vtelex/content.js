@@ -99,8 +99,9 @@
     }
 
     if (IS_TOP) {
-        chrome.runtime.onMessage.addListener((msg) => {
-            if (msg.type === 'toggle') flip();
+        // Only the background relays toggles; the pad also hears content scripts asking it for theirs.
+        chrome.runtime.onMessage.addListener((msg, sender) => {
+            if (msg.type === 'toggle' && !sender.tab) flip();
         });
     }
 
